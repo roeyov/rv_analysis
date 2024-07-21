@@ -1,0 +1,42 @@
+{
+  "plot": true,
+  "random_seed" : 562,
+
+  "simulated_params" :
+  {
+    "T0": 0.0,
+    "Period":250.0,
+    "Eccentricity":0.3,
+    "OMEGA_rad": 1.0,
+    "K1": 15.0,
+    "K2": 7.0,
+    "GAMMA": 10.0,
+    "number_of_samples": 25,
+    "noise_sigma":3.0
+  },
+
+  "lmfit_params":
+  {
+    "possible_minimization_method": ["leastsqr", "least_squares", "nelder","differential_evolution", "lbfgsb","powell"],
+    "minimization_method": "differential_evolution",
+    "search_region":
+    {
+      "Period": {"init_value":  220.0 , "min_value": 190.0  ,  "max_value": 260.0 , "vary":  true},
+      "GAMMA":{"init_value":  0.0 , "min_value": -300.0 ,  "max_value": 300.0  , "vary":  true},
+      "K1":{"init_value":  200.0 , "min_value": 0.0 ,  "max_value": 400.0 , "vary":  true},
+      "OMEGA_rad":{"init_value":  3.14 , "min_value": 0.0 ,  "max_value": 6.3 , "vary":  true},
+      "Eccentricity":{"init_value":  0.0 , "min_value": 0.0  ,  "max_value":  0.9, "vary":  true},
+      "T0":{"init_value":  0.0 , "min_value": 0.0 ,  "max_value": 0.0 , "vary":  true}
+    }
+  },
+
+  "corner_params":
+  {
+    "__lnsigma": {"init_value":  0.1 , "min_value": 0.001  ,  "max_value": 2.0},
+    "method": "emcee",
+    "nan_policy": "omit",
+    "burn" : 300,
+    "steps": 1000,
+    "thin": 20
+  }
+}
