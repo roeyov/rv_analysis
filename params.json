@@ -35,8 +35,8 @@
     "__lnsigma": {"init_value":  0.1 , "min_value": 0.001  ,  "max_value": 2.0},
     "method": "emcee",
     "nan_policy": "omit",
-    "burn" : 300,
-    "steps": 1000,
-    "thin": 20
+    "burn" : 500,
+    "steps": 10000,
+    "thin": 10
   }
 }

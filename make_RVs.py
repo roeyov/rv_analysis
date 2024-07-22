@@ -34,24 +34,11 @@ M1 = "Mass1"
 Q = "MassRatio"
 INC = "Inclination"
 
-
+# T0: -116.07, P: 925.17, ecc:0.36, omega: 1.45, k1: 6.53, k2: 21.84, gamma: 42.36, , M: 56.48, Q: 0.30, Inc: 0.29
 NUM_OF_DAYS = 730
-
 ######################################
 # # # # # # #FUNCTIONS # # # # #
 ######################################
-
-
-# For converting Mean anomalies to eccentric anomalies (M-->E)
-# def Kepler(E, M, ecc, counter):
-#     E2 = (M - ecc * (E * np.cos(E) - np.sin(E))) / (1. - ecc * np.cos(E))
-#     eps = np.abs(E2 - E)
-#     if counter > 99:
-#         return None
-#     if np.all(eps < 1E-10):
-#         return E2
-#     else:
-#         return Kepler(E2, M, ecc, counter + 1)
 
 def Kepler(E, M, ecc):
     counter = 0
@@ -119,7 +106,6 @@ def out_single_and_plot(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv, plot=Fals
     # For testing purposes:
     # Plot continuous RV curve
     if plot:
-        print(errs_v1)
         ts_dense = np.linspace(0., NUM_OF_DAYS, num=10000)
         phis_dense = (ts_dense - t0) / p - ((ts_dense - t0) / p).astype(int)
         nus_dense = nu_func(phis_dense, ecc)
@@ -164,11 +150,20 @@ def get_rv_amplitudes(m1, p, q, e, i):
     a_cubed = (G * m1_kg * p_sec * p_sec) / (4 * np.pi * np.pi)
     a = np.cbrt(a_cubed)
 
-    k2 = (2 * np.pi * a * np.sin(i)) / ((p_sec * np.sqrt(1 - (e * e))) * (1 + q))
-    k1 = q * k2
+    k2 = np.cbrt((2 * np.pi * G * m1_kg) / (p_sec * (1+q)*(1+q))) * np.sin(i) / np.sqrt(1-(e*e))
+    k1 = q*k2
 
     return k1 / 1000, k2 / 1000
 
+
+def out_single(t0, p, ecc, omega, m1, q, gamma,inc, nrv, sig_rv, plot=False):
+    k1, k2 = get_rv_amplitudes(m1, p, q, ecc, inc)
+    print("T0: {:.2f}, P: {:.2f}, ecc:{:.2f}, omega: {:.2f}, k1: {:.2f}, "
+          "k2: {:.2f}, gamma: {:.2f}, , M: {:.2f}, Q: {:.2f}, Inc: {:.2f}".format(
+            t0, p, ecc, omega, k1, k2, gamma, m1, q,inc))
+    rvs_1, ts, errs_v1 = out_single_and_plot(t0,p,ecc,omega,k1,k2,gamma, nrv,sig_rv,plot)
+
+    return rvs_1, ts, errs_v1
 
 def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_binaries):
     n_of_samples_in_files = int(1e4)
@@ -184,7 +179,6 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
     args_dict[T][SAMPLES] = (args_dict[T][SAMPLES] - 0.5) * args_dict[PERIOD][SAMPLES]
 
     args_dict[ECC][SAMPLES][args_dict[PERIOD][SAMPLES] <= 5] = 0
-    # todo eccentricity below period 5days id zero
     # todo Omega -pi - pi ??? check units along way
     # todo check K1 against Tomer's scripts
     args_dict[K1_STR][SAMPLES], args_dict[K2_STR][SAMPLES] = get_rv_amplitudes(args_dict[M1][SAMPLES],
@@ -192,12 +186,16 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
                                                                                args_dict[Q][SAMPLES],
                                                                                args_dict[ECC][SAMPLES],
                                                                                args_dict[INC][SAMPLES])
-    # for key in args_dict:
-    #     if SAMPLES not in args_dict[key]:
-    #         continue
-    #     plt.hist(args_dict[key][SAMPLES], bins=50, alpha=0.5)
-    #     plt.title(key)
-    #     plt.show()
+    for key in args_dict:
+        if SAMPLES not in args_dict[key]:
+            continue
+        try:
+            plt.hist(np.log10(args_dict[key][SAMPLES]), bins=50, alpha=0.5)
+            plt.title("log_" + key)
+            plt.show()
+        except ValueError:
+            continue
+
 
     data = []
     files_counter = 1
@@ -205,16 +203,18 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
     # f = open(out_dir.format(files_counter), 'w')
 
     for i in tqdm.tqdm(range(n_of_samples)):
-        # print("T0: {:.2f}, P: {:.2f}, ecc:{:.2f}, omega: {:.2f}, k1: {:.2f}, "
-        #       "k2: {:.2f}, gamma: {:.2f}, , M: {:.2f}, Q: {:.2f}".format(args_dict[T][SAMPLES][i],
-        #                                           args_dict[PERIOD][SAMPLES][i],
-        #                                           args_dict[ECC][SAMPLES][i],
-        #                                           args_dict[OMEGA][SAMPLES][i],
-        #                                           args_dict[K1_STR][SAMPLES][i],
-        #                                           args_dict[K2_STR][SAMPLES][i],
-        #                                           args_dict[GAMMA][SAMPLES][i],
-        #                                           args_dict[M1][SAMPLES][i],
-        #                                           args_dict[Q][SAMPLES][i]))
+        print("T0: {:.2f}, P: {:.2f}, ecc:{:.2f}, omega: {:.2f}, k1: {:.2f}, "
+              "k2: {:.2f}, gamma: {:.2f}, , M: {:.2f}, Q: {:.2f}, Inc: {:.2f}".format(
+                                                  args_dict[T][SAMPLES][i],
+                                                  args_dict[PERIOD][SAMPLES][i],
+                                                  args_dict[ECC][SAMPLES][i],
+                                                  args_dict[OMEGA][SAMPLES][i],
+                                                  args_dict[K1_STR][SAMPLES][i],
+                                                  args_dict[K2_STR][SAMPLES][i],
+                                                  args_dict[GAMMA][SAMPLES][i],
+                                                  args_dict[M1][SAMPLES][i],
+                                                  args_dict[Q][SAMPLES][i],
+                                                  args_dict[INC][SAMPLES][i]))
 
         rvs_1, ts, errs_v1 = out_single_and_plot(args_dict[T][SAMPLES][i],
                                                  args_dict[PERIOD][SAMPLES][i],
@@ -270,26 +270,32 @@ def main():
         ######################################
         # Orbit Pars:
         # Time of periastron
-        T0 = 0.8
+        T0 = -85.79
         # Period
-        P = 100
+        P = 335.66
         # Eccentricity
-        e = 0.7
+        e = 0.4
         # Argument of periastron
         Omega = 60. * np.pi / 180.  # omega in radians
         # Primary RV semi-amplitude
         K1 = 100.
         # secondary RV semi-amplitude
         K2 = 20.
+        # Primary Mass
+        m1 = 30.
+        # Mass Ratio
+        q = 0.4
+        # secondary RV semi-amplitude
+        inc = 0.5
         # systemic velocity
         Gamma = 3.
-
         # Number of RVs
         NRV = 25
-
         # RV error (RVERR = array)
         sig_RV = 3.
-        out_single_and_plot(T0, P, e, Omega, K1, K2, Gamma, NRV, sig_RV, True)
+        # out_single_and_plot(T0, P, e, Omega, K1, K2, Gamma, NRV, sig_RV, True)
+
+        out_single(T0, P, e, Omega, m1, q, Gamma, inc, NRV, sig_RV, True)
     else:
         T0_RANGE = (0, 1)  # flat times pi
         LOG_PERIODS_RANGE = (0, 4)  # flat log space
@@ -314,7 +320,7 @@ def main():
                      K2_STR: {},
                      }
         N_OF_SAMPS = int(1e4)
-
+        np.random.seed(42)
         timestr = strftime("%Y%m%d-%H%M%S")
         # OUTDIR ="/media/sf_Roey\'s/Masters/General/Scripts/scriptsOut/RVDataGen/{}/".format(timestr)
         # OUTDIR = r"/media/sf_Roey\'s/Masters/General/Scripts/scriptsOut/RVDataGen/{}/".format(timestr)

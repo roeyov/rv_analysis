@@ -1,14 +1,10 @@
-#
-
-# import emcee
 import sys
 import os
+import io
+import contextlib
+
 import matplotlib.pyplot as plt
 import numpy as np
-
-# from astropy.time import Time
-# import astropy.units as u
-# import thejoker as tj
 
 import lmfit
 import matplotlib.pylab as pylab
@@ -65,19 +61,40 @@ RADIAL_VELS = "rvs"
 
 
 def get_simulated_data(args_dict):
+    """
+    Generates simulated radial velocity data based on provided parameters.
+
+    Args:
+        args_dict (dict): A dictionary containing the simulation parameters and plot settings. It should have the following structure:
+            - SIM_PARAMS: A dictionary containing the specific simulation parameters:
+                - T (float): Some time parameter.
+                - PERIOD (float): The period of the system.
+                - ECC (float): The eccentricity of the orbit.
+                - OMEGA (float): The argument of periapsis.
+                - K1_STR (float): Radial velocity semi-amplitude of the primary component.
+                - K2_STR (float): Radial velocity semi-amplitude of the secondary component.
+                - GAMMA (float): Systemic velocity.
+                - NRV (int): Number of radial velocity data points.
+                - NOISE_SIG (float): Standard deviation of the noise to be added to the data.
+            - PLOT (bool): A flag indicating whether to generate and display plots.
+
+    Returns:
+        dict: A dictionary containing the simulated data with the following keys:
+            - TIME_STAMPS (list): List of time stamps of the observations.
+            - RADIAL_VELS (list): List of simulated radial velocities.
+            - TRUE_ERRORS (list): List of true errors in the simulated data.
+            - ERRORS (list): List of noise standard deviations for the radial velocities.
+
+    Notes:
+        - The function uses an external function `make_RVs.out_single_and_plot` to generate the radial velocities and errors.
+        - The plotting section of the code is currently commented out.
+    """
     parameters_dict = args_dict[SIM_PARAMS]
     rvs_1, ts, errs_v1 = make_RVs.out_single_and_plot(parameters_dict[T], parameters_dict[PERIOD], parameters_dict[ECC],
                                                       parameters_dict[OMEGA], parameters_dict[K1_STR],
                                                       parameters_dict[K2_STR],
                                                       parameters_dict[GAMMA], parameters_dict[NRV],
                                                       parameters_dict[NOISE_SIG], args_dict[PLOT])
-    # astropy_rvs = u.quantity.Quantity(rvs_1, unit=u.km / u.s)
-    # astropy_err_rvs = u.quantity.Quantity(np.ones(parameters_dict[NRV]) * parameters_dict, unit=u.km / u.s)
-    # t = Time(ts + 60347, format="mjd", scale="tcb")
-    # data = tj.RVData(t=t, rv=astropy_rvs, rv_err=astropy_err_rvs)
-    # if args_dict[PLOT]:
-    #     _ = data.plot()
-    #     plt.show()
     ret_dict = {TIME_STAMPS: ts.tolist(),
                 RADIAL_VELS: rvs_1.tolist(),
                 TRUE_ERRORS: errs_v1.tolist(),
@@ -86,13 +103,34 @@ def get_simulated_data(args_dict):
 
 
 def define_search_param(params, search_params_dict, field, radius=0):
+    """
+    Defines a search parameter for a given field and adds it to the parameters object.
+
+    Args:
+        params (Parameters): The parameters object to which the search parameter will be added.
+        search_params_dict (dict): A dictionary containing search parameter details with the following structure:
+            - field (str): The name of the field for which the search parameter is defined.
+            - INIT_VAL (float): The initial value of the parameter.
+            - MIN_VAL (float): The minimum value of the parameter.
+            - MAX_VAL (float): The maximum value of the parameter.
+            - VARY (bool): A flag indicating whether the parameter should vary during the search.
+        field (str): The specific field for which the search parameter is being defined.
+        radius (float, optional): An optional radius value to adjust the min and max values of the parameter. Default is 0.
+
+    Returns:
+        None: The function modifies the `params` object in place.
+
+    Notes:
+        - The function adjusts the minimum and maximum values of the parameter by subtracting and adding half of the radius, respectively.
+        - The `vary` flag determines whether the parameter will vary during the search process.
+    """
     params.add(field, value=search_params_dict[field][INIT_VAL] ,
                min=search_params_dict[field][MIN_VAL] - radius/2,
                max=search_params_dict[field][MAX_VAL] + radius/2,
                vary=search_params_dict[field][VARY])
 
 
-def lmfit_on_sample(args_dict, data):
+def lmfit_on_sample(args_dict, output, data):
     lmfit_params_dict = args_dict[LMFIT_PARAMS]
     pylab_params = {'legend.fontsize': 'large',
                     'figure.figsize': (12, 4),
@@ -103,8 +141,6 @@ def lmfit_on_sample(args_dict, data):
     pylab.rcParams.update(pylab_params)
     locleg = 'upper left'
     sys.setrecursionlimit(int(1E6))
-
-    # *********************** USER INPUT ***********************
 
     hjds1 = np.array(data[TIME_STAMPS])
     v1s = np.array(data[RADIAL_VELS])
@@ -122,12 +158,12 @@ def lmfit_on_sample(args_dict, data):
     t0_search_region = search_params_dict[PERIOD][MAX_VAL]
     define_search_param(params, search_params_dict, T, t0_search_region)
 
-    # *********************** END OF USER INPUT ***********************
-    # Initialization
     mini = lmfit.Minimizer(chisqr, params, fcn_kws={TIME_STAMPS: hjds1, RADIAL_VELS: v1s, ERRORS: errv1s})
     result = mini.minimize(method=mini_method)
-    print(lmfit.fit_report(result))
-    print(lmfit.fit_report)  # will print you a fit report from your model
+
+    dump_minimization_report(result, output, "lmfit")
+    # print(lmfit.fit_report(result))
+    # print(lmfit.fit_report)  # will print you a fit report from your model
     Gamma1_res = result.params[GAMMA].value
     K1_res = result.params[K1_STR].value
     Omega_res = result.params[OMEGA].value
@@ -175,15 +211,31 @@ def lmfit_on_sample(args_dict, data):
         plt.xlabel(r'phase')
         plt.show()
 
-    print("RMS1 is ", rms1)
-    print("mean Error: ", np.mean(errv1s))
-
-    print("multiply errors1 by: ", rms1 / np.mean(errv1s))
+    # print("RMS1 is ", rms1)
+    # print("mean Error: ", np.mean(errv1s))
+    #
+    # print("multiply errors1 by: ", rms1 / np.mean(errv1s))
     return result
 
 
-# For converting Mean anomalies to eccentric anomalies (M-->E)
 def Kepler(E, M, ecc):
+    """
+    Converts mean anomalies to eccentric anomalies using the Kepler's equation.
+
+    Args:
+        E (numpy.ndarray): Initial guess for the eccentric anomalies.
+        M (numpy.ndarray): Mean anomalies.
+        ecc (float): Eccentricity of the orbit.
+
+    Returns:
+        numpy.ndarray: Calculated eccentric anomalies.
+
+    Notes:
+        - The function uses an iterative method to solve Kepler's equation: M = E - ecc * sin(E).
+        - If the solution does not converge within 990 iterations, the function resets the initial guesses and continues.
+        - A convergence message is printed if the solution does not converge after a reset.
+        - Convergence is achieved when the change in eccentric anomaly is less than 1E-7.
+    """
     counter = 0
     conversion_count = 1
     loop_E = E
@@ -204,11 +256,47 @@ def Kepler(E, M, ecc):
 
 # Given true anomaly nu and parameters, function returns an 2-col array of modeled (Q,U)
 def v1mod(nu, gamma1, k1, omega, ecc):
+    """
+    Calculates the modeled radial velocity (v1) given the true anomaly and orbital parameters.
+
+    Args:
+        nu (float or numpy.ndarray): True anomaly.
+        gamma1 (float): Systemic velocity.
+        k1 (float): Radial velocity semi-amplitude.
+        omega (float): Argument of periapsis.
+        ecc (float): Orbital eccentricity.
+
+    Returns:
+        float or numpy.ndarray: Modeled radial velocity (v1).
+
+    Notes:
+        - The function calculates the radial velocity using the formula:
+          v1 = gamma1 + k1 * (cos(omega + nu) + ecc * cos(omega)).
+        - The input `nu` can be a single value or an array of values.
+    """
     v1 = gamma1 + k1 * (np.cos(omega + nu) + ecc * np.cos(omega))
     return v1
 
 
 def nus1(hjds, P, T0, ecc):
+    """
+    Calculates the true anomalies (nu) from heliocentric Julian dates (hjds) and orbital parameters.
+
+    Args:
+        hjds (numpy.ndarray): Array of heliocentric Julian dates.
+        P (float): Orbital period.
+        T0 (float): Time of periastron passage.
+        ecc (float): Orbital eccentricity.
+
+    Returns:
+        numpy.ndarray: Array of true anomalies (nu).
+
+    Notes:
+        - The function calculates the orbital phase (phis) from the input dates.
+        - Mean anomalies (Ms) are derived from the phases.
+        - Eccentric anomalies (Es) are obtained using the Kepler function.
+        - True anomalies (nusdata) are calculated from the eccentric anomalies.
+    """
     phis = (hjds - T0) / P - ((hjds - T0) / P).astype(int)
     phis[phis < 0] = phis[phis < 0] + 1.
     Ms = 2 * np.pi * phis
@@ -220,6 +308,30 @@ def nus1(hjds, P, T0, ecc):
 
 # Target function (returns differences between model array with parameter set p and data)
 def chisqr(p, **kws):
+    """
+    Computes the chi-squared values, which represent the differences between the modeled and observed radial velocities.
+
+    Args:
+        p (Parameters): A parameters object containing the model parameters. It should include:
+            - GAMMA: Systemic velocity parameter.
+            - K1_STR: Radial velocity semi-amplitude parameter.
+            - OMEGA: Argument of periapsis parameter.
+            - ECC: Eccentricity parameter.
+            - T: Time of periastron passage parameter.
+            - PERIOD: Orbital period parameter.
+        **kws: Additional keyword arguments containing the data and error arrays:
+            - TIME_STAMPS (numpy.ndarray): Array of observation time stamps.
+            - RADIAL_VELS (numpy.ndarray): Array of observed radial velocities.
+            - ERRORS (numpy.ndarray): Array of errors in the observed radial velocities.
+
+    Returns:
+        numpy.ndarray: Array of normalized differences between the modeled and observed radial velocities.
+
+    Notes:
+        - The function extracts the necessary parameters from the `p` object.
+        - It calculates the modeled radial velocities using the `v1mod` function and the true anomalies obtained from the `nus1` function.
+        - The differences between the modeled and observed radial velocities are normalized by the observational errors.
+    """
     Gamma1 = p[GAMMA].value
     K1 = p[K1_STR].value
     Omega = p[OMEGA].value
@@ -230,7 +342,75 @@ def chisqr(p, **kws):
     return (v1 - kws[RADIAL_VELS]) / kws[ERRORS]
 
 
-def corner_plot(args_dict, data, mini_results, truths=None):
+def dump_minimization_report(res, output, file_prefix):
+    lines = []
+    best_fit_params = res.params
+    lines.append("Best-fit parameter values:\n")
+    for name, param in best_fit_params.items():
+        lines.append(f"{name}: {param.value}\n")
+
+    # Minimized value of the objective function
+    minimized_value = res.chisqr
+    lines.append(f"Minimized chi-square value: {minimized_value}\n")
+
+    # Reduced chi-square value
+    reduced_chi_square = res.redchi
+    lines.append(f"Reduced chi-square value: {reduced_chi_square}\n")
+
+    # Success of the optimization
+    success = res.success
+    lines.append(f"Optimization success: {success}\n")
+
+    # Fit statistics
+    aic = res.aic
+    bic = res.bic
+    lines.append(f"AIC: {aic}, BIC: {bic}\n")
+
+    # Covariance matrix
+    covariance_matrix = res.covar
+    lines.append(f"Covariance matrix: \n{covariance_matrix}\n")
+
+    # Detailed fit report
+    lines.append("Fit report:\n")
+    report = io.StringIO()
+    with contextlib.redirect_stdout(report):
+        lmfit.report_fit(res)
+    lines.append(report.getvalue())
+
+    with open(os.path.join(output, "{}_fit_report.txt".format(file_prefix)), "w") as file:
+        file.writelines(lines)
+
+
+
+def corner_plot(args_dict, data, mini_results,output, truths=None):
+    """
+    Generates a corner plot for the given data and fit results using the specified parameters.
+
+    Args:
+        args_dict (dict): A dictionary containing the corner plot parameters. It should have the following structure:
+            - CORNER_PARAMS: A dictionary containing parameters for the corner plot and minimization process:
+                - LN_SIGMA: A dictionary with the following keys:
+                    - INIT_VAL (float): Initial value for the log of sigma.
+                    - MIN_VAL (float): Minimum value for the log of sigma.
+                    - MAX_VAL (float): Maximum value for the log of sigma.
+                - CORNER_METHOD (str): The minimization method to be used.
+                - NAN_POLICY (str): Policy for handling NaN values.
+                - BURN (int): Number of burn-in steps.
+                - STEPS (int): Number of MCMC steps.
+                - THIN (int): Thinning factor for MCMC sampling.
+        data (dict): A dictionary containing the data for the minimization process.
+        mini_results (MinimizerResult): The initial minimization results object.
+        truths (dict, optional): A dictionary containing the true values of the parameters for reference in the corner plot. Default is None.
+
+    Returns:
+        None: The function generates and displays a corner plot.
+
+    Notes:
+        - The function first adds the log of sigma parameter to the minimization results.
+        - It performs the minimization using the `lmfit.minimize` function.
+        - The resulting chain of parameter samples is used to generate a corner plot.
+        - If `truths` is provided, it will be used to indicate the true parameter values on the corner plot.
+    """
     corner_params = args_dict[CORNER_PARAMS]
     mini_results.params.add(LN_SIGMA, value=np.log(corner_params[LN_SIGMA][INIT_VAL]),
                             min=np.log(corner_params[LN_SIGMA][MIN_VAL]),
@@ -242,26 +422,66 @@ def corner_plot(args_dict, data, mini_results, truths=None):
                          burn=corner_params[BURN],
                          steps=corner_params[STEPS],
                          thin=corner_params[THIN],
-                         params=mini_results.params, is_weighted=False, progress=False)
+                         params=mini_results.params, is_weighted=False, progress=True)
 
-    # result_emcee = mini.minimize(params=emcee_params)
-    print(res.var_names)
-    print(list(res.params.valuesdict().values()))
+    dump_minimization_report(res, output, "corner")
 
+    prediction = [res.params[PERIOD].value,
+                  res.params[GAMMA].value,
+                  res.params[K1_STR].value,
+                  res.params[OMEGA].value,
+                  res.params[ECC].value,
+                  res.params[T].value,
+                  0]
+
+    figure = corner.corner(res.flatchain, truths=prediction, truth_color='red', labels=res.var_names)
+
+    # Add the second set of truths manually
     if truths:
-        # truths[T] = truths[T] % truths[PERIOD]
-        emcee_plot = corner.corner(res.flatchain, labels=res.var_names,
-                                   truths=truths)
-    else:
-        emcee_plot = corner.corner(res.flatchain, labels=res.var_names)
+        num_of_params = len(res.var_names)
+        axes = np.array(figure.axes).reshape((num_of_params, num_of_params))
+        for i in range(num_of_params):
+            for j in range(i + 1):
+                ax = axes[i, j]
+                ax.axvline(truths[j], color='blue', linestyle='--')
+                if i != j:
+                    ax.axhline(truths[i], color='blue', linestyle='--')
+                    ax.plot(truths[j], truths[i], 'bo')
+
+    # Add a title to the corner plot
+    figure.suptitle("MCMC corner plot\nred cross is prediction\nblue cross Are the Truths")
+
+    # Show the plot
     plt.show()
 
 
 def main():
+    """
+    Main function to run the script, which can generate or load sample data, and perform analysis.
+
+    This script uses argparse to handle command-line arguments. It can either generate sample data
+    based on JSON parameters or load existing sample data from a JSON file, and then perform
+    minimization and generate corner plots.
+
+    Command-line Arguments:
+        --output_dir, -o: The directory where output files will be saved. Required.
+        --json_params_file, -j: Path to the JSON file containing parameters. Required.
+        --generate_sample, -g: If specified, generates sample data based on the JSON parameters.
+        --load_sample, -l: Directory path to the JSON file containing sample data to load.
+        --seed, -s: Seed for random number generation to ensure consistent outputs for debugging. Default is 1234.
+
+    Workflow:
+        1. Parses command-line arguments.
+        2. Sets the random seed for reproducibility.
+        3. Checks if the output directory exists and is empty or creates it.
+        4. Loads parameters from the specified JSON file.
+        5. Generates or loads sample data as specified by the arguments.
+        6. Performs minimization on the sample data.
+        7. Generates and displays a corner plot of the results.
+    """
     parser = argparse.ArgumentParser(description="A simple example of argparse")
 
     # Add arguments
-    parser.add_argument('--plot', help='should plot', action='store_true')
     parser.add_argument('--output_dir', '-o', type=str, help='The output dir', required=True)
     parser.add_argument('--json_params_file', '-j', type=str, help='json format parameters', required=True)
     parser.add_argument('--generate_sample', '-g', help='should Generate', action='store_true')
@@ -276,6 +496,7 @@ def main():
     if os.path.isdir(args.output_dir):
         if not os.listdir(args.output_dir):
             print("outDir is not empty. choose different out")
+            exit(1)
     else:
         os.makedirs(args.output_dir)
 
@@ -296,25 +517,24 @@ def main():
                   0]
         data["truths"] = truths
         samples_path = os.path.join(args.output_dir, "sample.json")
-        print(data)
+
         with open(samples_path, 'w') as json_file:
             json.dump(data, json_file)
     elif args.load_sample:
         samples_path = args.load_sample
     else:
-        print("no data were chosen. Either generate sample or provide a sample json path")
+        print("no data was chosen. Either generate sample or provide a sample json path")
         exit(1)
 
     print("Uploading Sample from file: {}".format(samples_path))
     with open(samples_path, 'r') as json_file:
         data = json.load(json_file)
 
-    mini_results = lmfit_on_sample(args_dict, data)
-    #todo add best prediction plot
+    mini_results = lmfit_on_sample(args_dict, args.output_dir, data)
     if TRUTHS in data.keys():
-        corner_plot(args_dict, data, mini_results, data[TRUTHS])
+        corner_plot(args_dict, data, mini_results, args.output_dir, data[TRUTHS])
     else:
-        corner_plot(args_dict, data, mini_results)
+        corner_plot(args_dict, data, mini_results, args.output_dir)
     exit(0)
 
 
