@@ -1,3 +1,4 @@
+import shutil
 import sys
 import os
 import io
@@ -455,6 +456,14 @@ def corner_plot(args_dict, data, mini_results,output, truths=None):
     plt.show()
 
 
+def make_runlog(args):
+    os.makedirs(os.path.join(args.output_dir, 'runlog'))
+    command_line_string = ' '.join(sys.argv)
+    with open(os.path.join(args.output_dir, 'runlog','howto.txt'), 'w') as howto_file:
+        howto_file.write(command_line_string)
+    shutil.copy(args.json_params_file, os.path.join(args.output_dir, 'runlog', 'params.json'))
+
+
 def main():
     """
     Main function to run the script, which can generate or load sample data, and perform analysis.
@@ -494,11 +503,13 @@ def main():
     np.random.default_rng(seed=args.seed)
 
     if os.path.isdir(args.output_dir):
-        if not os.listdir(args.output_dir):
+        if  len(os.listdir(args.output_dir)):
             print("outDir is not empty. choose different out")
             exit(1)
     else:
-        os.makedirs(args.output_dir)
+        os.makedirs(os.path.join(args.output_dir))
+
+    make_runlog(args)
 
     with open(args.json_params_file, 'r') as json_file:
         args_dict = json.load(json_file)
