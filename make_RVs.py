@@ -179,19 +179,24 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
     args_dict[T][SAMPLES] = (args_dict[T][SAMPLES] - 0.5) * args_dict[PERIOD][SAMPLES]
 
     args_dict[ECC][SAMPLES][args_dict[PERIOD][SAMPLES] <= 5] = 0
-    # todo Omega -pi - pi ??? check units along way
-    # todo check K1 against Tomer's scripts
+
     args_dict[K1_STR][SAMPLES], args_dict[K2_STR][SAMPLES] = get_rv_amplitudes(args_dict[M1][SAMPLES],
                                                                                args_dict[PERIOD][SAMPLES],
                                                                                args_dict[Q][SAMPLES],
                                                                                args_dict[ECC][SAMPLES],
                                                                                args_dict[INC][SAMPLES])
+
+    ## histogram plots
     for key in args_dict:
         if SAMPLES not in args_dict[key]:
             continue
         try:
-            plt.hist(np.log10(args_dict[key][SAMPLES]), bins=50, alpha=0.5)
-            plt.title("log_" + key)
+            # plt.hist(np.log10(args_dict[key][SAMPLES]), bins=50, alpha=0.5)
+            # plt.title("log_" + key)
+            #
+            plt.hist(args_dict[key][SAMPLES], bins=50, alpha=0.5)
+            plt.title(key)
+
             plt.show()
         except ValueError:
             continue
@@ -203,18 +208,18 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
     # f = open(out_dir.format(files_counter), 'w')
 
     for i in tqdm.tqdm(range(n_of_samples)):
-        print("T0: {:.2f}, P: {:.2f}, ecc:{:.2f}, omega: {:.2f}, k1: {:.2f}, "
-              "k2: {:.2f}, gamma: {:.2f}, , M: {:.2f}, Q: {:.2f}, Inc: {:.2f}".format(
-                                                  args_dict[T][SAMPLES][i],
-                                                  args_dict[PERIOD][SAMPLES][i],
-                                                  args_dict[ECC][SAMPLES][i],
-                                                  args_dict[OMEGA][SAMPLES][i],
-                                                  args_dict[K1_STR][SAMPLES][i],
-                                                  args_dict[K2_STR][SAMPLES][i],
-                                                  args_dict[GAMMA][SAMPLES][i],
-                                                  args_dict[M1][SAMPLES][i],
-                                                  args_dict[Q][SAMPLES][i],
-                                                  args_dict[INC][SAMPLES][i]))
+        # print("T0: {:.2f}, P: {:.2f}, ecc:{:.2f}, omega: {:.2f}, k1: {:.2f}, "
+        #       "k2: {:.2f}, gamma: {:.2f}, , M: {:.2f}, Q: {:.2f}, Inc: {:.2f}".format(
+        #                                           args_dict[T][SAMPLES][i],
+        #                                           args_dict[PERIOD][SAMPLES][i],
+        #                                           args_dict[ECC][SAMPLES][i],
+        #                                           args_dict[OMEGA][SAMPLES][i],
+        #                                           args_dict[K1_STR][SAMPLES][i],
+        #                                           args_dict[K2_STR][SAMPLES][i],
+        #                                           args_dict[GAMMA][SAMPLES][i],
+        #                                           args_dict[M1][SAMPLES][i],
+        #                                           args_dict[Q][SAMPLES][i],
+        #                                           args_dict[INC][SAMPLES][i]))
 
         rvs_1, ts, errs_v1 = out_single_and_plot(args_dict[T][SAMPLES][i],
                                                  args_dict[PERIOD][SAMPLES][i],
@@ -224,14 +229,14 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
                                                  args_dict[K2_STR][SAMPLES][i],
                                                  args_dict[GAMMA][SAMPLES][i],
                                                  nrv, sig_rv,
-                                                 plot=True)
+                                                 plot=False)
 
 
         if rvs_1 is None:
             non_converging += 1
             # print(float(non_converging)/i)
             continue
-        features = np.concatenate([rvs_1, errs_v1, ts, np.ediff1d(ts)])
+        features = np.concatenate([rvs_1, ts, np.ediff1d(ts), [sig_rv]])
         labels = int(are_binaries)
 
         data.append([args_dict[T][SAMPLES][i],
@@ -247,12 +252,9 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
                      features,
                      labels])
         if (i + 1) % n_of_samples_in_files == 0:
-            # for Gemini:
-            # pass
 
             df = pd.DataFrame(data, columns=columns)
             df.to_parquet(out_dir.format(files_counter))
-            # print("dumped to {}".format(out_dir.format(files_counter)))
             files_counter += 1
 
             data = []
@@ -302,10 +304,12 @@ def main():
         ECC_RANGE = (0, 0.97)  # flat space
         OMEGA_RANGE = (-np.pi, np.pi)  # flat space
         INC_RANGE = (0, np.pi / 2)  # sine space
+        # INC_RANGE = (0, 0)  # sine space
         M1_RANGE = (15, 80)  # flat on mass space
         Q_RANGE = (0, 1)  # flat space
         GAMMA_RANGE = (0, 50)  # flat space
         NRV = 25
+
         sig_RV = 3.
         ARGS_DICT = {T: {RANGE: T0_RANGE},
                      ECC: {RANGE: ECC_RANGE},
@@ -321,11 +325,12 @@ def main():
                      }
         N_OF_SAMPS = int(1e4)
         np.random.seed(42)
-        timestr = strftime("%Y%m%d-%H%M%S")
-        # OUTDIR ="/media/sf_Roey\'s/Masters/General/Scripts/scriptsOut/RVDataGen/{}/".format(timestr)
+        # timestr = strftime("%Y%m%d-%H%M%S")
+        timestr = strftime("debug")
+        OUTDIR = r"C:\Users\roeyo\Documents\Roey's\Masters\General\scriptsOut\RVDataGen\{}".format(timestr)
         # OUTDIR = r"/media/sf_Roey\'s/Masters/General/Scripts/scriptsOut/RVDataGen/{}/".format(timestr)
-        # os.makedirs(OUTDIR)
-        out_fp_format = "abc" + r"{}.txt"
+        os.makedirs(OUTDIR, exist_ok=True)
+        out_fp_format = OUTDIR + r"\{}.txt"
         out_multiple_and_dump(ARGS_DICT, NRV, sig_RV, N_OF_SAMPS, out_fp_format, 1)
 
 

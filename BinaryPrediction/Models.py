@@ -3,8 +3,9 @@ import torch.nn as nn
 import numpy as np
 from scipy.stats import binned_statistic
 from scipy.signal import lombscargle
+from utils.constants import *
 
-columns_to_select = "p", "", "", "", "", ""
+columns_to_select = []
 
 
 class PyTorchModel:
@@ -64,11 +65,8 @@ class ClassicModel:
 
         # Step a: Check conditions
         max_min_diff = np.max(speeds) - np.min(speeds)
-        second_condition = self.placeholder_condition(features)  # Placeholder for the second condition
-        binary_decision = False
-
-        if max_min_diff > self.rv_diff and second_condition:
-            binary_decision = True
+        # todo go over article of significant
+        significance = self.significance(features)  # Placeholder for the second condition
 
         # Step b: Compute Lomb-Scargle periodogram
         freq = np.linspace(0.01, 10, len(time))
@@ -77,18 +75,9 @@ class ClassicModel:
         max_power_period = 1 / freq[max_power_index]
 
         fal = 0.1  # Placeholder for False Alarm Level
-        if power[max_power_index] > fal:
-            binary_decision = True
-        elif not binary_decision:
-            binary_decision = False
-            max_power_period = np.inf
+        return max_min_diff, significance, max_power_period
 
-        if not binary_decision:
-            return np.inf, False
-        else:
-            return max_power_period, binary_decision
-
-    def placeholder_condition(self, features):
+    def significance(self, features):
         a = features['speeds']
         b = features['errs']
 
@@ -114,6 +103,7 @@ class ClassicModel:
         for features in df:
             period, decision = self.predict({'speeds': features['speeds'], 'time': features['time']})
             binary_decisions.append(decision)
+            periods.append(period)
 
         # Calculate binned accuracy
         accuracy_per_param = {}
@@ -123,7 +113,7 @@ class ClassicModel:
             bin_means, bin_edges, _ = binned_statistic(param_values, binary_decisions, statistic='mean', bins=bins)
             accuracy_per_param[c] = (bin_edges, bin_means)
         out_dict = {
-            PRED_IS_BINARY: binary_decisions
+            PRED_IS_BINARY: binary_decisions,
             PRED_PERIOD: 
         }
         return binary_decisions,periods, accuracy_per_param
