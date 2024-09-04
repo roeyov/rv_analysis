@@ -1,3 +1,6 @@
+
+NUM_OF_DAYS = 730
+
 SIM_PARAMS = "simulated_params"
 T = "T0"
 N_OF_PS = "NumOfPeriods"
@@ -44,3 +47,17 @@ TRUE_ERRORS = "true_errs"
 ERRORS = "errs"
 RADIAL_VELS = "rvs"
 
+MAX_MIN_DIFF = "maxMinDiff"
+SIGNIFICANCE = "significance"
+
+BEST_PERIOD = "bestPeriod"
+BEST_PERIOD_POWER = "bestPeriodPower"
+FALSE_ALARM_PROBABILITY = "fasleAlarmProbability"
+FALSE_ALARM_LEVELS = "falseAlarmLevels"
+
+PDC_BEST_PERIOD = "bestPeriodPDC"
+PDC_BEST_PERIOD_POWER = "bestPeriodPowerPDC"
+PDC_FALSE_ALARM_PROBABILITY = "falseAlarmProbabilityPDC"
+
+LS_FREQS = "lombScargleFreqs"
+LS_POWERS = "lombScarglePowers"

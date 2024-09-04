@@ -1,4 +1,3 @@
-import shutil
 import sys
 import os
 import io
@@ -15,6 +14,8 @@ import make_RVs
 import json
 
 from utils.constants import *
+from utils.utils import make_runlog
+
 
 def get_simulated_data(args_dict):
     """
@@ -411,14 +412,6 @@ def corner_plot(args_dict, data, mini_results,output, truths=None):
     plt.show()
 
 
-def make_runlog(args):
-    os.makedirs(os.path.join(args.output_dir, 'runlog'))
-    command_line_string = ' '.join(sys.argv)
-    with open(os.path.join(args.output_dir, 'runlog','howto.txt'), 'w') as howto_file:
-        howto_file.write(command_line_string)
-    shutil.copy(args.json_params_file, os.path.join(args.output_dir, 'runlog', 'params.json'))
-
-
 def main():
     """
     Main function to run the script, which can generate or load sample data, and perform analysis.
@@ -464,7 +457,7 @@ def main():
     else:
         os.makedirs(os.path.join(args.output_dir))
 
-    make_runlog(args)
+    make_runlog(args.output_dir, [args.json_params_file])
 
     with open(args.json_params_file, 'r') as json_file:
         args_dict = json.load(json_file)

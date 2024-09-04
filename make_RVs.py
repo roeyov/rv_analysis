@@ -9,33 +9,11 @@ import tqdm
 from scipy import constants
 from scipy.integrate import quad
 from scipy.interpolate import interp1d
+from Scripts.utils.constants import *
 
 np.set_printoptions(precision=2)
-######################################
-# # # # # # # CONSTANTS  # # # # # # #
-######################################
 
-T = "T0"
-N_OF_PS = "NumOfPeriods"
-LOG_PERIOD = "LogPeriod"
-PERIOD = "Period"
-ECC = "Eccentricity"
-OMEGA = "OMEGA"
-K1_STR = "K1"
-K2_STR = "K2"
-GAMMA = "GAMMA"
-RANGE = "Range"
-SAMPLES = "Samples"
-RVS = "RadialVelocities"
-ERR_RVS = "RVErrors"
-TS = "TimeStamps"
-TS_DIFF = TS + "Diff"
-M1 = "Mass1"
-Q = "MassRatio"
-INC = "Inclination"
 
-# T0: -116.07, P: 925.17, ecc:0.36, omega: 1.45, k1: 6.53, k2: 21.84, gamma: 42.36, , M: 56.48, Q: 0.30, Inc: 0.29
-NUM_OF_DAYS = 730
 ######################################
 # # # # # # #FUNCTIONS # # # # #
 ######################################
@@ -79,7 +57,13 @@ def nu_func(phi, ecc):
 def get_data(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv):
     sig_rv_arr = np.array([sig_rv] * nrv)
     # Generate random array of observation times between 0 & P
-    ts = np.sort(uniform_random_sample((0, 1), nrv)) * NUM_OF_DAYS
+    ts = np.array([21.237810950500375, 39.81322922155508, 70.39068313788141, 87.64951530969252, 124.00440861012743,
+                   175.98458228063222, 177.91291246836624, 181.21505173479656, 237.0971423237931, 245.8519368577724,
+                   277.16791778047076, 282.6053951058358, 289.3806121153417, 336.56911825134324, 350.9063473545216,
+                   378.84074894414124, 416.54529249890464, 437.4414993870156, 440.32003888646483, 521.0441737852865,
+                   528.3212105473858, 531.4205351764895, 559.386564421057, 669.9923075487587, 729.0830389820358])
+
+    # ts = np.sort(uniform_random_sample((0, 1), nrv)) * NUM_OF_DAYS
     # Generate corresponding phases
     phases = (ts - t0) / p - ((ts - t0) / p).astype(int)
     # Generate mean anomalies
@@ -110,7 +94,7 @@ def out_single_and_plot(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv, plot=Fals
         phis_dense = (ts_dense - t0) / p - ((ts_dense - t0) / p).astype(int)
         nus_dense = nu_func(phis_dense, ecc)
         if nus_dense is None:
-            return None,None,None
+            return None, None, None
         rvs_dense = RV12(nus_dense, gamma, k1, k2, omega, ecc)[0]
 
         plt.plot(ts_dense, rvs_dense, label='RV curve')
@@ -150,24 +134,25 @@ def get_rv_amplitudes(m1, p, q, e, i):
     a_cubed = (G * m1_kg * p_sec * p_sec) / (4 * np.pi * np.pi)
     a = np.cbrt(a_cubed)
 
-    k2 = np.cbrt((2 * np.pi * G * m1_kg) / (p_sec * (1+q)*(1+q))) * np.sin(i) / np.sqrt(1-(e*e))
-    k1 = q*k2
+    k2 = np.cbrt((2 * np.pi * G * m1_kg) / (p_sec * (1 + q) * (1 + q))) * np.sin(i) / np.sqrt(1 - (e * e))
+    k1 = q * k2
 
     return k1 / 1000, k2 / 1000
 
 
-def out_single(t0, p, ecc, omega, m1, q, gamma,inc, nrv, sig_rv, plot=False):
+def out_single(t0, p, ecc, omega, m1, q, gamma, inc, nrv, sig_rv, plot=False):
     k1, k2 = get_rv_amplitudes(m1, p, q, ecc, inc)
     print("T0: {:.2f}, P: {:.2f}, ecc:{:.2f}, omega: {:.2f}, k1: {:.2f}, "
           "k2: {:.2f}, gamma: {:.2f}, , M: {:.2f}, Q: {:.2f}, Inc: {:.2f}".format(
-            t0, p, ecc, omega, k1, k2, gamma, m1, q,inc))
-    rvs_1, ts, errs_v1 = out_single_and_plot(t0,p,ecc,omega,k1,k2,gamma, nrv,sig_rv,plot)
+        t0, p, ecc, omega, k1, k2, gamma, m1, q, inc))
+    rvs_1, ts, errs_v1 = out_single_and_plot(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv, plot)
 
     return rvs_1, ts, errs_v1
 
+
 def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_binaries):
-    n_of_samples_in_files = int(1e4)
-    columns = [T, ECC, OMEGA, K1_STR, K2_STR, GAMMA, PERIOD, M1, Q, INC, "features", "labels"]
+    n_of_samples_in_files = int(1e3)
+    columns = [T, ECC, OMEGA, K1_STR, K2_STR, GAMMA, PERIOD, M1, Q, INC, RADIAL_VELS, TIME_STAMPS, ERRORS, "labels"]
     for key in args_dict.keys():
         if key == INC:
             args_dict[key][SAMPLES] = sine_inclination_sample(args_dict[key][RANGE], n_of_samples)
@@ -187,20 +172,19 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
                                                                                args_dict[INC][SAMPLES])
 
     ## histogram plots
-    for key in args_dict:
-        if SAMPLES not in args_dict[key]:
-            continue
-        try:
-            # plt.hist(np.log10(args_dict[key][SAMPLES]), bins=50, alpha=0.5)
-            # plt.title("log_" + key)
-            #
-            plt.hist(args_dict[key][SAMPLES], bins=50, alpha=0.5)
-            plt.title(key)
-
-            plt.show()
-        except ValueError:
-            continue
-
+    # for key in args_dict:
+    #     if SAMPLES not in args_dict[key]:
+    #         continue
+    #     try:
+    #         # plt.hist(np.log10(args_dict[key][SAMPLES]), bins=50, alpha=0.5)
+    #         # plt.title("log_" + key)
+    #         #
+    #         plt.hist(args_dict[key][SAMPLES], bins=50, alpha=0.5)
+    #         plt.title(key)
+    #
+    #         plt.show()
+    #     except ValueError:
+    #         continue
 
     data = []
     files_counter = 1
@@ -231,7 +215,6 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
                                                  nrv, sig_rv,
                                                  plot=False)
 
-
         if rvs_1 is None:
             non_converging += 1
             # print(float(non_converging)/i)
@@ -249,10 +232,9 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
                      args_dict[M1][SAMPLES][i],
                      args_dict[Q][SAMPLES][i],
                      args_dict[INC][SAMPLES][i],
-                     features,
+                     rvs_1, ts, np.ones(rvs_1.shape) * sig_rv,
                      labels])
         if (i + 1) % n_of_samples_in_files == 0:
-
             df = pd.DataFrame(data, columns=columns)
             df.to_parquet(out_dir.format(files_counter))
             files_counter += 1
@@ -260,7 +242,7 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
             data = []
     if len(data):
         df = pd.DataFrame(data, columns=columns)
-        df.to_csv(out_dir.format(files_counter))
+        df.to_parquet(out_dir.format(files_counter))
     # f.close()
 
 
@@ -299,12 +281,12 @@ def main():
 
         out_single(T0, P, e, Omega, m1, q, Gamma, inc, NRV, sig_RV, True)
     else:
+        generate_trues = False
         T0_RANGE = (0, 1)  # flat times pi
         LOG_PERIODS_RANGE = (0, 4)  # flat log space
         ECC_RANGE = (0, 0.97)  # flat space
         OMEGA_RANGE = (-np.pi, np.pi)  # flat space
-        INC_RANGE = (0, np.pi / 2)  # sine space
-        # INC_RANGE = (0, 0)  # sine space
+        INC_RANGE = (0, np.pi / 2) if generate_trues else (0, 0)  # sine space
         M1_RANGE = (15, 80)  # flat on mass space
         Q_RANGE = (0, 1)  # flat space
         GAMMA_RANGE = (0, 50)  # flat space
@@ -324,14 +306,20 @@ def main():
                      K2_STR: {},
                      }
         N_OF_SAMPS = int(1e4)
+        dataset_name = "same_ts"
         np.random.seed(42)
-        # timestr = strftime("%Y%m%d-%H%M%S")
-        timestr = strftime("debug")
-        OUTDIR = r"C:\Users\roeyo\Documents\Roey's\Masters\General\scriptsOut\RVDataGen\{}".format(timestr)
-        # OUTDIR = r"/media/sf_Roey\'s/Masters/General/Scripts/scriptsOut/RVDataGen/{}/".format(timestr)
-        os.makedirs(OUTDIR, exist_ok=True)
-        out_fp_format = OUTDIR + r"\{}.txt"
-        out_multiple_and_dump(ARGS_DICT, NRV, sig_RV, N_OF_SAMPS, out_fp_format, 1)
+        if generate_trues:
+            timestr = strftime("{}_{}_Trues".format(dataset_name, str(N_OF_SAMPS)))
+            OUTDIR = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\RVDataGen\{}".format(timestr)
+            os.makedirs(OUTDIR, exist_ok=True)
+            out_fp_format = OUTDIR + r"\{}.txt"
+            out_multiple_and_dump(ARGS_DICT, NRV, sig_RV, N_OF_SAMPS, out_fp_format, 1)
+        else:
+            timestr = strftime("{}_{}_Falses".format(dataset_name, str(N_OF_SAMPS)))
+            OUTDIR = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\RVDataGen\{}".format(timestr)
+            os.makedirs(OUTDIR, exist_ok=True)
+            out_fp_format = OUTDIR + r"\{}.txt"
+            out_multiple_and_dump(ARGS_DICT, NRV, sig_RV, N_OF_SAMPS, out_fp_format, 0)
 
 
 if __name__ == "__main__":
