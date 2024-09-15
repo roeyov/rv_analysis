@@ -57,13 +57,13 @@ def nu_func(phi, ecc):
 def get_data(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv):
     sig_rv_arr = np.array([sig_rv] * nrv)
     # Generate random array of observation times between 0 & P
-    ts = np.array([21.237810950500375, 39.81322922155508, 70.39068313788141, 87.64951530969252, 124.00440861012743,
-                   175.98458228063222, 177.91291246836624, 181.21505173479656, 237.0971423237931, 245.8519368577724,
-                   277.16791778047076, 282.6053951058358, 289.3806121153417, 336.56911825134324, 350.9063473545216,
-                   378.84074894414124, 416.54529249890464, 437.4414993870156, 440.32003888646483, 521.0441737852865,
-                   528.3212105473858, 531.4205351764895, 559.386564421057, 669.9923075487587, 729.0830389820358])
+    # ts = np.array([21.237810950500375, 39.81322922155508, 70.39068313788141, 87.64951530969252, 124.00440861012743,
+    #                175.98458228063222, 177.91291246836624, 181.21505173479656, 237.0971423237931, 245.8519368577724,
+    #                277.16791778047076, 282.6053951058358, 289.3806121153417, 336.56911825134324, 350.9063473545216,
+    #                378.84074894414124, 416.54529249890464, 437.4414993870156, 440.32003888646483, 521.0441737852865,
+    #                528.3212105473858, 531.4205351764895, 559.386564421057, 669.9923075487587, 729.0830389820358])
 
-    # ts = np.sort(uniform_random_sample((0, 1), nrv)) * NUM_OF_DAYS
+    ts = np.sort(uniform_random_sample((0, 1), nrv)) * NUM_OF_DAYS
     # Generate corresponding phases
     phases = (ts - t0) / p - ((ts - t0) / p).astype(int)
     # Generate mean anomalies
@@ -152,7 +152,7 @@ def out_single(t0, p, ecc, omega, m1, q, gamma, inc, nrv, sig_rv, plot=False):
 
 def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_binaries):
     n_of_samples_in_files = int(1e3)
-    columns = [T, ECC, OMEGA, K1_STR, K2_STR, GAMMA, PERIOD, M1, Q, INC, RADIAL_VELS, TIME_STAMPS, ERRORS, "labels"]
+    columns = [T, ECC, OMEGA, K1_STR, K2_STR, GAMMA, PERIOD, M1, Q, INC, RADIAL_VELS, TIME_STAMPS, ERRORS,"features", "labels"]
     for key in args_dict.keys():
         if key == INC:
             args_dict[key][SAMPLES] = sine_inclination_sample(args_dict[key][RANGE], n_of_samples)
@@ -233,6 +233,7 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
                      args_dict[Q][SAMPLES][i],
                      args_dict[INC][SAMPLES][i],
                      rvs_1, ts, np.ones(rvs_1.shape) * sig_rv,
+                     features,
                      labels])
         if (i + 1) % n_of_samples_in_files == 0:
             df = pd.DataFrame(data, columns=columns)
@@ -307,7 +308,7 @@ def main():
                      }
         N_OF_SAMPS = int(1e4)
         dataset_name = "same_ts"
-        np.random.seed(42)
+        # np.random.seed(42)
         if generate_trues:
             timestr = strftime("{}_{}_Trues".format(dataset_name, str(N_OF_SAMPS)))
             OUTDIR = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\RVDataGen\{}".format(timestr)

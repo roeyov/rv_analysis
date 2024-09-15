@@ -1,5 +1,6 @@
-from Scripts.make_RVs import out_single_and_plot
-from astropy.io import ascii
+# from Scripts.make_RVs import out_single_and_plot
+# from astropy.io import ascii
+import matplotlib.pyplot
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import StrMethodFormatter
@@ -127,3 +128,25 @@ def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 50
 #
 #     period, fap, fal, freq, pow = ls(hjds1, v1s,data_err=errs_v1, pmin=pmin, pmax=pmax)
 #     plotls(freq, pow, fal, pmin=pmin, pmax=pmax)
+
+probs = np.arange(-1, 1, 0.0001)
+fap1 = chi2.sf(probs * 25 + 1, 1)  # Survival function of chi-square distribution
+
+# Create scatter plot
+plt.figure(figsize=(8, 6))
+plt.scatter(probs, fap1, color='blue', alpha=0.6, edgecolors='black', label='FAP1')
+
+# Add labels and title
+plt.xlabel('Probability (probs)', fontsize=14)
+plt.ylabel('FAP1', fontsize=14)
+plt.title('Scatter Plot of FAP1 vs. Probability', fontsize=16)
+
+# Add a grid for better readability
+plt.grid(True, linestyle='--', alpha=0.7)
+
+# Add legend
+plt.legend()
+
+# Show the plot
+plt.tight_layout()
+plt.show()

@@ -2,13 +2,23 @@ import pandas as pd
 import numpy as np
 import os
 import matplotlib.pyplot as plt
-from Scripts.utils.periodagram import *
+# from Scripts.utils.periodagram import *
 from sklearn.metrics import roc_curve, auc
+import torch
 
-directory_out_fmt = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\ModelEvaluator\{}\model_output"
+
+directory_out_fmt = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\ModelEvaluator\periodogram_comp\{}\model_output"
 directory_in_fmt = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\RVDataGen\{}"
-dir_name_false = "same_ts_100000_Falses"
+dir_name_false = "same_ts_10000_Falses"
 dir_name_true = "same_ts_10000_Trues"
+
+
+def load_and_predict_models(df,models_dir):
+    paths = [p for p in os.listdir(models_dir) if p.endswith("pth")]
+    for p_model in paths:
+        model = torch.load(os.path.join(models_dir,p_model))
+        df[p_model.split('.')[0]] = model()
+
 
 def load_parquet(fp, file_names=None):
     # List to hold individual DataFrames
@@ -27,178 +37,142 @@ def load_parquet(fp, file_names=None):
     return combined_df, iter_file_names
 
 
+def unity(array):
+    return array
+
+
+def plot_roc_by_field(some_df, field_to_roc, hist_scaler=unity):
+    plt.hist(hist_scaler(some_df[some_df.labels == 0][field_to_roc]), bins=200, alpha=0.6, density=True, color='r',
+             label='Falses')
+    plt.hist(hist_scaler(some_df[some_df.labels == 1][field_to_roc]), bins=200, alpha=0.6, density=True, color='b',
+             label='Trues')
+
+    # Add a vertical line at x=0.114
+    plt.axvline(x=0.114, color='green', linestyle='--', linewidth=2)
+
+    # Add a label near the vertical line
+    plt.text(0.114 + 0.01, plt.ylim()[1] * 0.9, 'FAP by chi2.sf', color='green', fontsize=12, rotation=90)
+
+    # Add legend
+    plt.legend()
+
+    plt.show()
+
+    fpr, tpr, thresholds = roc_curve(some_df.labels, some_df[field_to_roc])
+
+    # Calculate the AUC
+    roc_auc = auc(fpr, tpr)
+    # Plot the ROC curve
+    plt.figure(figsize=(10, 6))
+    plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+
+    # Plot the diagonal line (no-skill classifier)
+    plt.plot([0, 1], [0, 1], color='grey', linestyle='--')
+
+    # Set labels, title, and legend
+    plt.xlabel('False Positive Rate', fontsize=14)
+    plt.ylabel('True Positive Rate', fontsize=14)
+    plt.title('Receiver Operating Characteristic (ROC) Curve', fontsize=16, weight='bold')
+    plt.legend(loc='lower right')
+
+    # Show grid
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    # Show the plot
+    plt.show()
+
+
+ORBITAL_PARAMS = ['T0', 'Eccentricity', 'OMEGA_rad', 'K1', 'K2', 'GAMMA', 'Period',
+                  'Mass1', 'MassRatio', 'Inclination']
+
+
+def get_worst_trues(row, field_to_check, threshold):
+    return row[field_to_check] <= threshold
+
+
+def plot_field_distribution(some_df, fields_to_hist=ORBITAL_PARAMS, boolean_func_to_apply=(lambda x: True), args=()):
+    # Apply the boolean function to filter the DataFrame
+    boolean_array = some_df.apply(boolean_func_to_apply, axis=1, args=args)
+
+    sub_df = some_df[boolean_array]
+
+    # Determine the number of fields to plot
+    num_plots = len(fields_to_hist)
+
+    # Create subplots in a grid layout
+    fig, axes = plt.subplots(nrows=(num_plots + 2) // 3, ncols=3, figsize=(15, 5 * ((num_plots + 2) // 3)))
+    axes = axes.flatten()  # Flatten axes for easier iteration
+
+    plot_idx = 0
+
+    # Loop through the specified fields and plot histograms
+    for field_to_hist in fields_to_hist:
+        ax = axes[plot_idx]  # Get the current axis
+        try:
+            ax.hist(sub_df[field_to_hist], bins=100, alpha=0.5, density=True)
+            ax.hist(some_df[field_to_hist], bins=100, alpha=0.5, density=True)
+            ax.set_title(field_to_hist)
+            plot_idx += 1
+        except ValueError:
+            print(f"Skipping field {field_to_hist} due to a ValueError.")
+            continue
+
+    # Hide unused subplots if any
+    for i in range(plot_idx, len(axes)):
+        fig.delaxes(axes[i])
+
+    num_rows = len(sub_df)
+    fig.text(0.5, 0.01, f"Number of rows in filtered DataFrame: {num_rows}", ha='center', fontsize=12)
+
+    # Adjust layout to avoid overlap
+    plt.tight_layout()
+    plt.savefig("dist_pdc.png")  # Save as PNG, but you can use other formats like PDF, SVG, etc.
+
+    plt.show()
+
+
+
+def plot_dist_worst_trues(df, field_to_check, tnr=0.95):
+    falses = df[df.labels == 0]
+    threshold = np.percentile(falses[field_to_check], tnr * 100)
+    plot_field_distribution(df[df.labels == 1], boolean_func_to_apply=get_worst_trues, args=(field_to_check, threshold))
+
+
 combined_df_false, files_found_false = load_parquet(directory_out_fmt.format(dir_name_false))
 combined_df_true, files_found_true = load_parquet(directory_out_fmt.format(dir_name_true))
-combined_df_in_false,_ = load_parquet(directory_in_fmt.format(dir_name_false), files_found_false)
-combined_df_in_true,_ = load_parquet(directory_in_fmt.format(dir_name_true),files_found_true)
-# print(np.unique( combined_df_false['falseAlarmLevels'].apply(lambda x: x[0] if len(x) > 2 else None),return_counts=True))
-# print(np.unique( combined_df_true['falseAlarmLevels'].apply(lambda x: x[0] if len(x) > 2 else None),return_counts=True))
-arr = np.log10([row.bestPeriodPower / row.falseAlarmLevels[2] for i,row in combined_df_false.iterrows()])
-plt.figure(figsize=(10, 6))
-plt.hist(
-    np.log10(combined_df_false.bestPeriodPower),
-    bins=200,
-    color='blue',
-    alpha=0.7,
-    # edgecolor='black',
-    density=True,
-    # cumulative=True
-)
+combined_df_in_false, _ = load_parquet(directory_in_fmt.format(dir_name_false), files_found_false)
+combined_df_in_true, _ = load_parquet(directory_in_fmt.format(dir_name_true), files_found_true)
 
-sub_log_period = (0.3 < np.log10(combined_df_in_true.Period)) & (np.log10(combined_df_in_true.Period) < 3)
-plt.hist(
-    np.log10(combined_df_true[sub_log_period].bestPeriodPower),
-    bins=200,
-    color='red',
-    alpha=0.7,
-    # edgecolor='black',
-    density=True
-    # cumulative=-1
-)
-# plt.hist(
-#     arr,
-#     bins=200,
-#     color='blue',
-#     alpha=0.7,
-#     edgecolor='black'
-# )
+one = pd.concat([combined_df_in_false, combined_df_false], axis=1)
+two = pd.concat([combined_df_in_true, combined_df_true], axis=1)
+final = pd.concat([one, two], axis=0)
 
-# Adding labels, title, and grid
-plt.title('Histogram of Best Period Power', fontsize=16, weight='bold')
-plt.xlabel('Best Period Power', fontsize=14)
-plt.ylabel('Frequency', fontsize=14)
-plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+falses = final[final.labels == 0]
+threshold = np.percentile(falses["bestPeriodPower"], 95)
+final['PassedLombScargle'] = ~final.apply(get_worst_trues, axis=1, args=("bestPeriodPower",threshold))
 
-# Adding a text box for any additional details
-plt.text(0.95, 0.95, 'N = {}'.format(len(combined_df_false.bestPeriodPower)),
-         horizontalalignment='right',
-         verticalalignment='top',
-         transform=plt.gca().transAxes,
-         fontsize=12)
-plt.text(0.95, 0.95, 'N Falses = {}\nN Trues = {}'.format(len(combined_df_false.bestPeriodPower),
-                                                          len(combined_df_true[sub_log_period].bestPeriodPower)),
-         horizontalalignment='right',
-         verticalalignment='top',
-         transform=plt.gca().transAxes,
-         fontsize=12)
+threshold = np.percentile(falses["bestPeriodPowerPDC"], 95)
+final['PassedPDC'] = ~final.apply(get_worst_trues, axis=1, args=("bestPeriodPowerPDC",threshold))
+final['PassedMaxMin'] = final.maxMinDiff > 20
 
-# Tight layout for better spacing
-plt.tight_layout()
+# final.loc[final.maxMinDiff > 20, "bestPeriodPowerPDC"] = 1
+# final.loc[final.maxMinDiff > 20, "bestPeriodPower"] = 100
 
-# Show the plot
-plt.show()
+print(final.columns)
+# bestPeriodPowerPDC
 
-# Calculate the ROC curve
-print(combined_df_in_false.columns)
-y_test = np.concatenate([combined_df_in_false.labels, combined_df_in_true[sub_log_period].labels])
-y_probs = np.concatenate([np.log10(combined_df_false.bestPeriodPower), np.log10(combined_df_true[sub_log_period].bestPeriodPower)])
-fpr, tpr, thresholds = roc_curve(y_test, y_probs)
-
-# Calculate the AUC
-roc_auc = auc(fpr, tpr)
-# Plot the ROC curve
-plt.figure(figsize=(10, 6))
-plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
-
-# Plot the diagonal line (no-skill classifier)
-plt.plot([0, 1], [0, 1], color='grey', linestyle='--')
-
-# Set labels, title, and legend
-plt.xlabel('False Positive Rate', fontsize=14)
-plt.ylabel('True Positive Rate', fontsize=14)
-plt.title('Receiver Operating Characteristic (ROC) Curve', fontsize=16, weight='bold')
-plt.legend(loc='lower right')
-
-# Show grid
-plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-
-# Show the plot
-plt.show()
-# combine_max_df = pd.concat(
-#     [combined_df[combined_df.bestPeriodPower > np.array([row[2] for row in combined_df.falseAlarmLevels])],
-#      combined_df_in[combined_df.bestPeriodPower > np.array([row[2] for row in combined_df.falseAlarmLevels])]], axis=1)
-# plt.hist(
-#     np.log10(combined_df[combined_df.bestPeriodPower > np.array([row[0] for row in combined_df.falseAlarmLevels])].bestPeriod),
-#     bins=50,
-#     color='blue',
-#     alpha=0.7,
-#     edgecolor='black'
-# )
-#
-# # Adding title and axis labels
-# plt.title('Histogram of Log-Best Periods that passed 0.5')
-# plt.xlabel('Log(Best Period)')
-# plt.ylabel('Frequency')
-#
-# # Adding a grid
-# plt.grid(True, linestyle='--', alpha=0.6)
-# plt.show()
-#
-# plt.hist(
-#     np.log10(combined_df[combined_df.bestPeriodPower > np.array([row[1] for row in combined_df.falseAlarmLevels])].bestPeriod),
-#     bins=50,
-#     color='blue',
-#     alpha=0.7,
-#     edgecolor='black'
-# )
-#
-# # Adding title and axis labels
-# plt.title('Histogram of Log-Best Periods that passed 0.01')
-# plt.xlabel('Log(Best Period)')
-# plt.ylabel('Frequency')
-#
-# # Adding a grid
-# plt.grid(True, linestyle='--', alpha=0.6)
-# plt.show()
-#
-# plt.hist(
-#     np.log10(combined_df[combined_df.bestPeriodPower > np.array([row[2] for row in combined_df.falseAlarmLevels])].bestPeriod),
-#     bins=50,
-#     color='blue',
-#     alpha=0.7,
-#     edgecolor='black'
-# )
-#
-# # Adding title and axis labels
-# plt.title('Histogram of Log-Best Periods that passed 0.001')
-# plt.xlabel('Log(Best Period)')
-# plt.ylabel('Frequency')
-#
-# # Adding a grid
-# plt.grid(True, linestyle='--', alpha=0.6)
-# plt.show()
-# row = combine_max_df.iloc[1]
-# period1, fap1, fal1, freq1, pow1 = ls(np.array(row.ts), np.array(row.rvs), data_err=np.array(row.errs), pmin=1, pmax=1100)
-# x = np.linspace(0, 730, 1000)
-# # Array of positions where the Dirac delta functions should be located
-# positions = np.array(row.ts)
-# # Initialize the array for the delta function sum
-# delta_sum = np.zeros_like(x)
-# # Create the sum of Dirac delta functions
-# for pos in positions:
-#     # Find the closest index in x corresponding to the position of the delta
-#     index = np.argmin(np.abs(x - pos))
-#     delta_sum[index] += 1
-# print(list(row.ts))
-# period2, fap2, fal2, freq2, pow2 = ls(np.array(x), np.array(delta_sum),  pmin=1, pmax=1100)
-# plotls(freq1, pow1, fal1, pmin=1, pmax=1100, star_id=r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\Scripts\BinaryPrediction\ls_2")
-# plotls(freq2, pow2, fal2, pmin=1, pmax=1100, star_id=r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\Scripts\BinaryPrediction\ts_2")
+# rocs and distributions
+# plot_roc_by_field(final ,"bestPeriodPower",np.log10)
+# plot_dist_worst_trues(final, "bestPeriodPower")
 
 
-# Create a figure with 2 rows and 2 columns of subplots
-fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+plot_roc_by_field(final, "bestPeriodPowerPDC")
+plot_dist_worst_trues(final, "bestPeriodPowerPDC")
 
-# Flatten the axes array for easier iteration
-axes = axes.flatten()
-# Loop through each subplot
-for i, ax in enumerate(axes):
-    y = np.log10(combined_df_true[(i+1 > np.log10(combined_df_in_true.Period)) & (np.log10(combined_df_in_true.Period) >i) & (np.log10(combined_df_in_true.Period) >0.3)].bestPeriodPower)  # Generate some data with a phase shift
-    ax.hist(y, label=f'Subplot {i+1}',bins=200,density=True)
-    ax.set_title(f'Subplot {i+1}, N = {len(y)}')
-    ax.legend()
+# Counts by test passes
+trues = final[final.labels == 1]
+combination_counts = trues.groupby(['PassedMaxMin', 'PassedPDC', 'PassedLombScargle']).size().reset_index(name='count')
+print(combination_counts)
 
-# Adjust layout
-plt.tight_layout()
+print(trues.groupby(['PassedMaxMin', 'PassedPDC', 'PassedLombScargle']))
 
-# Show the plot
-plt.show()
