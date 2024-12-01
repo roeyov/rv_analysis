@@ -34,8 +34,8 @@ GAMMA = 10
 NRV = 25
 sig_rv = 3.0
 
-np.random.seed(2993)
-rnd = np.random.default_rng(seed=5492)
+# np.random.seed(2993)
+# rnd = np.random.default_rng(seed=5492)
 # def                         out_single_and_plot(t0, p,  ecc, omega, k1, k2, gamma, nrv, sig_rv, plot=False):
 rvs_1, ts, errs_v1 = make_RVs.out_single_and_plot(T0, P, ECC, OMEGA_rad, K1, K2, GAMMA, NRV, sig_rv, N_OF_PS, True)
 astropy_rvs = u.quantity.Quantity(rvs_1, unit=u.km / u.s)

@@ -1,6 +1,11 @@
 # Short script to create mock RVs from a given binary (Roey Ovadia, Tomer Shenar, tshenar@tau.ac.il)
 import os
+import sys
 
+# Add the Scripts directory to sys.path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, script_dir)
+from utils.constants import *
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -9,7 +14,6 @@ import tqdm
 from scipy import constants
 from scipy.integrate import quad
 from scipy.interpolate import interp1d
-from Scripts.utils.constants import *
 
 np.set_printoptions(precision=2)
 
@@ -57,13 +61,15 @@ def nu_func(phi, ecc):
 def get_data(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv):
     sig_rv_arr = np.array([sig_rv] * nrv)
     # Generate random array of observation times between 0 & P
-    # ts = np.array([21.237810950500375, 39.81322922155508, 70.39068313788141, 87.64951530969252, 124.00440861012743,
-    #                175.98458228063222, 177.91291246836624, 181.21505173479656, 237.0971423237931, 245.8519368577724,
-    #                277.16791778047076, 282.6053951058358, 289.3806121153417, 336.56911825134324, 350.9063473545216,
-    #                378.84074894414124, 416.54529249890464, 437.4414993870156, 440.32003888646483, 521.0441737852865,
-    #                528.3212105473858, 531.4205351764895, 559.386564421057, 669.9923075487587, 729.0830389820358])
+    ts = np.array([ 74.5177001 ,  97.64613847, 103.9829237 , 183.06141608,
+           228.11894284, 238.69681915, 258.76892231, 295.83020203,
+           338.11024624, 356.48782477, 409.01431527, 432.39915669,
+           450.18902947, 453.56448127, 467.40229203, 477.5505655 ,
+           490.73553866, 514.63869076, 521.51148672, 603.3569005 ,
+           644.44251155, 649.57725408, 660.60566377, 663.63165303,
+           683.56149292])
 
-    ts = np.sort(uniform_random_sample((0, 1), nrv)) * NUM_OF_DAYS
+    # ts = np.sort(uniform_random_sample((0, 1), nrv)) * NUM_OF_DAYS
     # Generate corresponding phases
     phases = (ts - t0) / p - ((ts - t0) / p).astype(int)
     # Generate mean anomalies
@@ -152,7 +158,7 @@ def out_single(t0, p, ecc, omega, m1, q, gamma, inc, nrv, sig_rv, plot=False):
 
 def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_binaries):
     n_of_samples_in_files = int(1e3)
-    columns = [T, ECC, OMEGA, K1_STR, K2_STR, GAMMA, PERIOD, M1, Q, INC, RADIAL_VELS, TIME_STAMPS, ERRORS,"features", "labels"]
+    columns = [T, ECC, OMEGA, K1_STR, K2_STR, GAMMA, PERIOD, M1, Q, INC, RADIAL_VELS, TIME_STAMPS, ERRORS,FEATURES,LABELS]
     for key in args_dict.keys():
         if key == INC:
             args_dict[key][SAMPLES] = sine_inclination_sample(args_dict[key][RANGE], n_of_samples)
@@ -170,21 +176,8 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
                                                                                args_dict[Q][SAMPLES],
                                                                                args_dict[ECC][SAMPLES],
                                                                                args_dict[INC][SAMPLES])
-
-    ## histogram plots
-    # for key in args_dict:
-    #     if SAMPLES not in args_dict[key]:
-    #         continue
-    #     try:
-    #         # plt.hist(np.log10(args_dict[key][SAMPLES]), bins=50, alpha=0.5)
-    #         # plt.title("log_" + key)
-    #         #
-    #         plt.hist(args_dict[key][SAMPLES], bins=50, alpha=0.5)
-    #         plt.title(key)
-    #
-    #         plt.show()
-    #     except ValueError:
-    #         continue
+    args_dict[MAX_MIN_DIFF] = {}
+    min_max_diff = []
 
     data = []
     files_counter = 1
@@ -219,9 +212,11 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
             non_converging += 1
             # print(float(non_converging)/i)
             continue
-        features = np.concatenate([rvs_1, ts, np.ediff1d(ts), [sig_rv]])
+        min_max_diff_1 =  max(rvs_1) - min(rvs_1)
+        calced_features = [sig_rv,min_max_diff_1, np.mean(rvs_1), np.std(rvs_1)]
+        features = np.concatenate([rvs_1, ts, np.ediff1d(ts), calced_features])
         labels = int(are_binaries)
-
+        min_max_diff.append(min_max_diff_1)
         data.append([args_dict[T][SAMPLES][i],
                      args_dict[ECC][SAMPLES][i],
                      args_dict[OMEGA][SAMPLES][i],
@@ -241,6 +236,24 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
             files_counter += 1
 
             data = []
+    args_dict[MAX_MIN_DIFF][SAMPLES] = min_max_diff
+
+
+    # histogram plots
+    for key in args_dict:
+        # if SAMPLES not in args_dict[key]:
+        # if key != MAX_MIN_DIFF:
+        #     continue
+        try:
+            plt.hist(np.log10(args_dict[key][SAMPLES]), bins=100, alpha=0.5)
+            plt.title("log_" + key + ' '+ str(np.sum(np.array(args_dict[key][SAMPLES])<20)))
+
+            # plt.hist(args_dict[key][SAMPLES], bins=50, alpha=0.5)
+            # plt.title(key)
+
+            plt.show()
+        except ValueError:
+            continue
     if len(data):
         df = pd.DataFrame(data, columns=columns)
         df.to_parquet(out_dir.format(files_counter))
@@ -282,9 +295,9 @@ def main():
 
         out_single(T0, P, e, Omega, m1, q, Gamma, inc, NRV, sig_RV, True)
     else:
-        generate_trues = False
+        generate_trues = True
         T0_RANGE = (0, 1)  # flat times pi
-        LOG_PERIODS_RANGE = (0, 4)  # flat log space
+        LOG_PERIODS_RANGE = (0, 3)  # flat log space
         ECC_RANGE = (0, 0.97)  # flat space
         OMEGA_RANGE = (-np.pi, np.pi)  # flat space
         INC_RANGE = (0, np.pi / 2) if generate_trues else (0, 0)  # sine space
@@ -307,7 +320,7 @@ def main():
                      K2_STR: {},
                      }
         N_OF_SAMPS = int(1e4)
-        dataset_name = "same_ts"
+        dataset_name = "time_analysis"
         # np.random.seed(42)
         if generate_trues:
             timestr = strftime("{}_{}_Trues".format(dataset_name, str(N_OF_SAMPS)))

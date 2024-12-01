@@ -5,7 +5,7 @@ import argparse
 import tqdm
 import cProfile
 from Scripts.utils.utils import make_runlog
-from Models import ClassicModel, PyTorchModel
+from Models import ClassicModel, PyTorchModel, MultiOutputNN
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ClassicModel Parameters
@@ -14,10 +14,13 @@ SNR_SIGNIFICANCE = 4.0
 
 # PyTorchModel Parameters
 # PYTORCH_MODEL = someModel
-MODEL_DIR = "path/to/model"
+base_dir = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\torchModelsLocal\train_data_2_2000000\{}.{}"
+MODEL_DIR = base_dir.format("model","pth")
+SCALER_DIR = base_dir.format("scaler","pickle")
 classic_model = ClassicModel(RV_DIFF, SNR_SIGNIFICANCE)
+torch_model = PyTorchModel(MODEL_DIR,SCALER_DIR)
 MODELS = {classic_model.__class__.__name__: classic_model,
-          # str(type(PyTorchModel)): PyTorchModel(PYTORCH_MODEL, MODEL_DIR)
+          torch_model.__class__.__name__: torch_model,
           }
 
 
@@ -68,7 +71,7 @@ def main():
     args = parser.parse_args()
     if os.path.isdir(args.output_dir):
         if len(os.listdir(args.output_dir)):
-            print("outDir is not empty. choose different out")
+            print("outDir {} is not empty. choose different out".format(args.output_dir))
             exit(1)
     os.makedirs(os.path.join(args.output_dir,"model_output"))
     make_runlog(args.output_dir)

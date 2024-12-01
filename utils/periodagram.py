@@ -1,11 +1,10 @@
-# from Scripts.make_RVs import out_single_and_plot
-# from astropy.io import ascii
+from make_RVs import out_single_and_plot
 import matplotlib.pyplot
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import StrMethodFormatter
 import matplotlib.pylab as pylab
-from Scripts.PDC.pdc_func import calc_pdc
+from PDC.pdc_func import calc_pdc
 from scipy.stats.distributions import chi2
 
 params = {'legend.fontsize': 'large',
@@ -29,7 +28,7 @@ def pdc(time, data, data_err=[], pmin=1., pmax=1000):
     return best_period1, fap1, freq, pdc_power_reg
 
 def ls(time, data, data_err=[], probabilities = [0.5, 0.01, 0.001], pmin=1., pmax=1000, norm='model',
-       ls_method='fast', fa_method = 'baluev', samples_per_peak=1000, nterms=1, center_data = True):
+       ls_method='fast', fa_method = 'baluev', samples_per_peak=50, nterms=1, center_data = True):
     '''
     Wrapper around astropy's Lomb-Scargle. See:
     https://docs.astropy.org/en/stable/api/astropy.timeseries.LombScargle.html#astropy.timeseries.LombScargle
@@ -79,7 +78,7 @@ def ls(time, data, data_err=[], probabilities = [0.5, 0.01, 0.001], pmin=1., pma
 
 
 
-def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000], star_id='Sim', pmin=1., pmax=1000.):
+def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000], star_id='', pmin=1., pmax=1000.):
     '''
     Function to create publication-ready plot of the periodogram obtained with "ls"
 ​
@@ -94,21 +93,22 @@ def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 50
             Periodogram computed by "ls"
     '''
 
-    fig, ax = plt.subplots(figsize=(4, 4))
+    fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(1/frequency, power, 'k-', alpha=0.5)
     ax.yaxis.set_label_coords(-0.09, 0.5)
     ax.set(xlim=(0.3, 2), ylim=(-0.03*power.max(), power.max()+0.1*power.max()),
         xlabel='Period (days)',
-        ylabel='Lomb-Scargle Power')
+        ylabel='PDC Power')
     fig.suptitle("Primary best Period : {0:.3f} days".format(1/frequency[np.argmax(power)]))
     plt.xscale('log')
     tickLabels = map(str, bins)
     ax.set_xticks(bins)
     ax.set_xticklabels(tickLabels)
     print(fal)
-    ax.plot( (0.5, 800), (fal[0], fal[0]), '-r', lw=1.2)
-    ax.plot( (0.5, 800), (fal[1], fal[1]), '--y', lw=1.2)
-    ax.plot( (0.5, 800), (fal[2], fal[2]), ':g', lw=1.2)
+    if len(fal) > 0:
+        ax.plot( (0.5, 800), (fal[0], fal[0]), '-r', lw=1.2)
+        ax.plot( (0.5, 800), (fal[1], fal[1]), '--y', lw=1.2)
+        ax.plot( (0.5, 800), (fal[2], fal[2]), ':g', lw=1.2)
     ax.set_xlim(pmin, pmax)
     if power.max()+0.1*power.max() >= 10:
         ax.get_yaxis().set_major_formatter(StrMethodFormatter('{x:.0f}'))
@@ -121,32 +121,38 @@ def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 50
     plt.close()
 
 
-# if __name__ == '__main__':
+if __name__ == '__main__':
 #
-#     v1s, hjds1, errs_v1 = out_single_and_plot(t0=0 ,p = 50, ecc = 0.3, omega = 10, k1=0, k2= 0, gamma=10, nrv=25, sig_rv=3.0, plot=True)
-#     ervv1s = [3.] * 25
-#
-#     period, fap, fal, freq, pow = ls(hjds1, v1s,data_err=errs_v1, pmin=pmin, pmax=pmax)
-#     plotls(freq, pow, fal, pmin=pmin, pmax=pmax)
+    v1s, hjds1, errs_v1 = out_single_and_plot(t0=0 ,p = 50, ecc = 0.4, omega = 10, k1=40, k2= 20, gamma=30, nrv=25, sig_rv=3.0, plot=True)
+    ervv1s = [3.] * 25
 
-probs = np.arange(-1, 1, 0.0001)
-fap1 = chi2.sf(probs * 25 + 1, 1)  # Survival function of chi-square distribution
+    period, fap, fal, freq, pow = ls(hjds1, v1s,data_err=ervv1s, pmin=1, pmax=1000)
+    plotls(freq, pow, fal, pmin=pmin, pmax=pmax)
 
-# Create scatter plot
-plt.figure(figsize=(8, 6))
-plt.scatter(probs, fap1, color='blue', alpha=0.6, edgecolors='black', label='FAP1')
+    best_period1, fap1, freq, pdc_power_reg = pdc(hjds1, v1s, data_err=ervv1s, pmin=1., pmax=1000)
+    plotls(freq, pdc_power_reg, fal=[] , pmin=pmin, pmax=pmax)
+    # probs = np.arange(-1, 1, 0.0001)
+    # fap1 = chi2.sf(probs * 25 , 1)  # Survival function of chi-square distribution
+    #
+    # # Create scatter plot
+    # plt.figure(figsize=(8, 6))
+    # plt.scatter(probs, fap1, color='blue', alpha=0.6, edgecolors='black', label='FAP1')
+    #
+    # # Add labels and title
+    # plt.xlabel('Probability (probs)', fontsize=14)
+    # plt.ylabel('FAP1', fontsize=14)
+    # plt.title('Scatter Plot of FAP1 vs. Probability', fontsize=16)
+    #
+    # # Add a grid for better readability
+    # plt.grid(True, linestyle='--', alpha=0.7)
+    #
+    # # Add legend
+    # plt.legend()
+    #
+    # # Show the plot
+    # plt.tight_layout()
+    # plt.show()
 
-# Add labels and title
-plt.xlabel('Probability (probs)', fontsize=14)
-plt.ylabel('FAP1', fontsize=14)
-plt.title('Scatter Plot of FAP1 vs. Probability', fontsize=16)
+# print(chi2.sf(0.05 * 25 , 1) ) # Survival function of chi-square distribution
 
-# Add a grid for better readability
-plt.grid(True, linestyle='--', alpha=0.7)
 
-# Add legend
-plt.legend()
-
-# Show the plot
-plt.tight_layout()
-plt.show()
