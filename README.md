@@ -74,11 +74,12 @@ To connect an existing local directory to an existing remote Git repository usin
      (Replace `main` with the branch name if different.)
    - If your local repository has changes to push, stage and commit them:
      ```bash
-     git add .
-     git commit -m "Initial commit from local directory"
+     git citool
+     ```
+   - commit the wanted files using citool GUI 
+     ```bash
      git push -u origin main
      ```
-
 ---
 
 Your local directory is now connected to the remote Git repository via SSH! Let me know if you encounter any issues.
