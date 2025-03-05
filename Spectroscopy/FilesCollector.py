@@ -2,6 +2,34 @@ import os
 import json
 from constants import *
 
+
+def load_elements_list(file_path):
+    """
+    Extract the first word from each line of a given text file.
+
+    Parameters:
+        file_path (str): Path to the input text file.
+
+    Returns:
+        list: A list of the first words from each line.
+    """
+    first_words = []
+
+    try:
+        with open(file_path, 'r') as file:
+            for line in file:
+                # Split the line into words and take the first word if it exists
+                words = line.split()
+                if words:
+                    first_words.append(words[0])
+    except FileNotFoundError:
+        print(f"Error: File not found: {file_path}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+    return first_words
+
+
 def load_json_elements(json_file, json_key):
     with open(json_file, 'r') as f:
         data = json.load(f)

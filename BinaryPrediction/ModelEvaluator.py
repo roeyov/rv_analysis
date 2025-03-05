@@ -4,7 +4,7 @@ import numpy as np
 import argparse
 import tqdm
 import cProfile
-from Scripts.utils.utils import make_runlog
+from utils.utils import make_runlog
 from Models import ClassicModel, PyTorchModel, MultiOutputNN
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -16,11 +16,11 @@ SNR_SIGNIFICANCE = 4.0
 # PYTORCH_MODEL = someModel
 base_dir = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\torchModelsLocal\train_data_2_2000000\{}.{}"
 MODEL_DIR = base_dir.format("model","pth")
-SCALER_DIR = base_dir.format("scaler","pickle")
+# SCALER_DIR = base_dir.format("scaler","pickle")
 classic_model = ClassicModel(RV_DIFF, SNR_SIGNIFICANCE)
-torch_model = PyTorchModel(MODEL_DIR,SCALER_DIR)
+# torch_model = PyTorchModel(MODEL_DIR,SCALER_DIR)
 MODELS = {classic_model.__class__.__name__: classic_model,
-          torch_model.__class__.__name__: torch_model,
+          # torch_model.__class__.__name__: torch_model,
           }
 
 

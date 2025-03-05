@@ -1,7 +1,9 @@
 
 
-OSTARS_IDS_JSON = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\Data\BLOeM Project Overview.json"  # Update to your JSON file path
-DATA_RELEASE_3_PATH = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\Data\BLOeM_DR3.0" # Update to the directory you want to search
+OSTARS_IDS_JSON = r"/Users/roeyovadia/Documents/Data/BLOeM Project Overview.json"  # Update to your JSON file path
+DATA_RELEASE_3_PATH = r"/Users/roeyovadia/Documents/Data/BLOeM_DR3.0"
+DATA_RELEASE_4_PATH = r"/Users/roeyovadia/Documents/Data/BLOeM_DR4.0_Combined" # Update to the directory you want to search
+TEMPLATE_PATH = r"/Users/roeyovadia/Documents/Data/templateAttempt" # Update to the directory you want to search
 
 FITS_SUF_A = 'a.fits'
 FITS_SUF_A_RECT = 'a_rect.fits'

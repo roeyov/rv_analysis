@@ -4,8 +4,8 @@ import numpy as np
 from scipy.stats import binned_statistic
 from scipy.signal import lombscargle
 import joblib
-from Scripts.utils.constants import *
-from Scripts.utils.periodagram import ls, plotls, pdc
+from utils.constants import *
+from utils.periodagram import ls, plotls, pdc
 
 columns_to_select = [PERIOD, RADIAL_VELS, TIME_STAMPS, ERRORS]
 

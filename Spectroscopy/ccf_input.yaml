@@ -1,0 +1,61 @@
+# Interpolation method used in processing
+intr_kind: cubic
+
+# Whether to plot the first result
+plot_first: false
+
+# Whether to plot all results
+plot_all: false
+
+# Fraction of the range to fit
+fit_range_fraction: 0.95
+
+# Oversampling factor for calculations
+OverSampleFac: 1
+
+# rotate_star: true
+
+# Whether to calculate speed separately
+seperate_speed: true
+
+# Ranges for cross-correlation in the spectrum
+cross_cor_ranges:
+#  "H Gamma": (4330.0, 4350.0)
+#  "H Delta": (4091.0, 4111.0)
+#  "H Epsilon": (3960.0, 3980.0)
+  "He I 4471": (4460.0, 4485.0)
+  "He I 4388": (4378.0, 4398.0)
+  "He I + He II 4026": (4016.0, 4036.0)
+  "He II 4542": (4530.0, 4555.0)
+  "He II 4200": (4190.0, 4210.0)
+
+# Velocity range for the analysis
+velocity_range: [-450.0, 600.0]  # In km/s
+
+# Signal-to-noise ratio calculation range
+S2Nrange: [4445.0, 4460.0]  # In Angstroms
+
+# Path to observation data
+path_to_observations: "/Users/roeyovadia/Documents/Data/BLOeM_DR4.0_Combined/"
+
+# Path to the list of objects to process
+#path_to_list_of_objects: "/Users/roeyovadia/Documents/Data/lists/sb1_ostars.txt"
+path_to_list_of_objects: ""
+list_of_objects: ["BLOeM_3-049"]
+
+# Identifier string for files
+str_identifier: "Combined.fits"
+
+# Path to save the output files
+path_to_output: "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/eg/"
+#path_to_output: ''
+
+# Path to the template files for cross-correlation
+#template_path: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sb1_ostars_rot/"
+template_path: "/Users/roeyovadia/Documents/Data/Crowther_templates/per_star_templates"
+#template_path: ""
+
+#path_to_meta_data_csv: ""
+path_to_meta_data_csv: "/Users/roeyovadia/Documents/Data/results_bloem_24nov24.csv"
+
+columns_to_load: ["ID", "vsini", "vsini_er_plus", "vsini_er_minus"]
