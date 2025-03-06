@@ -23,6 +23,39 @@ VELOCITY_REGION = (-400,400)
 S2N = "SNR"
 C_LIGHT = 299792.458
 
+def calculate_equivalent_width(wavelength, normalized_flux, flux_err=None):
+    """
+    Calculate the equivalent width (EW) and its uncertainty.
+
+    Parameters:
+      wavelength : 1D numpy array of wavelength values (e.g., in Angstroms)
+      normalized_flux       : 1D numpy array of flux values corresponding to the spectral line
+      flux_err   : (Optional) 1D numpy array of uncertainties in flux; if provided,
+                   the error in EW is computed.
+
+    Returns:
+      ew    : The equivalent width (in same wavelength units)
+      ew_err: The propagated error on EW (or None if flux_err is not provided)
+    """
+    # Calculate the integrand: (1 - flux/continuum)
+    integrand = 1 - normalized_flux
+
+    # Use trapezoidal integration to compute the equivalent width.
+    ew = np.trapz(integrand, wavelength)
+
+    # If no error is provided, return None for ew_err.
+    if flux_err is None:
+        return ew, None
+
+    # For error propagation, we need the effective pixel width.
+    # If the wavelength array is non-uniform, we approximate by taking the median spacing.
+    delta_lambda = np.median(np.diff(wavelength))
+
+    # Propagate the error: each bin contributes (delta_lambda/continuum * flux_err_i)
+    ew_err = np.sqrt(np.sum((delta_lambda * flux_err)**2))
+
+    return ew, ew_err
+
 def rotational_broadening(ModWaves, ModFlux, v_rot, epsilon=0.6):
     """
     Apply rotational broadening to a spectrum in linear wavelength scale.
@@ -113,14 +146,15 @@ def cross_cor_real(flux, temp, wgl, cci, sr, vel_range, n_res, fit_rif=0.95):
     RightEdgeArr = np.abs(fit_rif * CCFMAX1 - CCFarr[IndMax+1:])
 
     if len(LeftEdgeArr) == 0 or len(RightEdgeArr) == 0:
-        fig1, ax1 = plt.subplots()
-        ax1.plot(vel_range, CCFarr, color='C0')
-        ax1.set_xlabel('Radial velocity [km/s]')
-        ax1.set_ylabel('Normalized CCF')
-        # if not os.path.isdir(os.path.join(input_df.path_to_output,'CCFParabolas')):
-        #     os.mkdir(os.path.join(input_df.path_to_output,'CCFParabolas'))
-        # fig1.savefig('CCFParabolas/CCF_parabola_' + cutname + '.pdf')
-        plt.show(block=True)
+        if input_df.plot_first or input_df.plot_all:
+            fig1, ax1 = plt.subplots()
+            ax1.plot(vel_range, CCFarr, color='C0')
+            ax1.set_xlabel('Radial velocity [km/s]')
+            ax1.set_ylabel('Normalized CCF')
+            # if not os.path.isdir(os.path.join(input_df.path_to_output,'CCFParabolas')):
+            #     os.mkdir(os.path.join(input_df.path_to_output,'CCFParabolas'))
+            # fig1.savefig('CCFParabolas/CCF_parabola_' + cutname + '.pdf')
+            plt.show(block=True)
         print("Can't find local maximum in CCF")
         return np.array([np.nan, np.nan])
 
@@ -135,7 +169,7 @@ def cross_cor_real(flux, temp, wgl, cci, sr, vel_range, n_res, fit_rif=0.95):
     CCFAtMax = min(1-1E-20, c - (b**2)/(4*a))
     # print(IndFit1, IndFit2, a, b, c, CCFAtMax, vmax, IndMax)
 
-    if input_df.plot_first is True or input_df.plot_all is True:
+    if input_df.plot_first or input_df.plot_all:
         # plot the ccf
         FineVeloGrid = np.arange(vel_range[IndFit1], vel_range[IndFit2], .1)
         parable = (a * FineVeloGrid ** 2 + b * FineVeloGrid + c)
@@ -209,10 +243,6 @@ def  cross_cor(data, star_name, temp, lines_to_ranges, seperate_speed=False):
         broadened_template = rotational_broadening(chosen_temp[WAVELENGTH], chosen_temp[SCI_NORM], rot_vel)
         template = interp1d(chosen_temp[WAVELENGTH], broadened_template, bounds_error=False,
             fill_value=1., kind=input_df.intr_kind)(wave_grid_log)
-        # template = interp1d(chosen_temp[WAVELENGTH], chosen_temp[SCI_NORM], bounds_error=False,
-        #     fill_value=1., kind=input_df.intr_kind)(wave_grid_log)
-        # template = rotational_broadening(wave_grid_log, template, rot_vel)
-
     else:
         template = interp1d(chosen_temp[WAVELENGTH], chosen_temp[SCI_NORM], bounds_error=False,
                             fill_value=1., kind=input_df.intr_kind)(wave_grid_log)
@@ -225,6 +255,9 @@ def  cross_cor(data, star_name, temp, lines_to_ranges, seperate_speed=False):
             for i in range(len(int_fs)):
                 fluxes = interp1d(spectrum[WAVELENGTH], np.nan_to_num(spectrum[SCI_NORM]),
                                   bounds_error=False, fill_value=1., kind=input_df.intr_kind)(wave_grid_log[np.arange(int_is[i], int_fs[i])])
+                ew, ew_err = calculate_equivalent_width(wave_grid_log[np.arange(int_is[i], int_fs[i])],fluxes, data[mjd][S2N])
+
+
                 CCFeval = cross_cor_real(np.copy(fluxes - np.mean(fluxes)),
                                          np.copy(template - np.mean(template)),
                                          wave_grid_log[np.arange(int_is[i], int_fs[i])],
@@ -235,8 +268,11 @@ def  cross_cor(data, star_name, temp, lines_to_ranges, seperate_speed=False):
                                          input_df.fit_range_fraction)
                 if np.isnan(CCFeval[0]) or np.isnan(CCFeval[1]):
                     pass
+
                 out_dict[mjd]["{} RV".format(ranges_to_lines[ranges[i]])] = CCFeval[0]
                 out_dict[mjd]["{} RVsig".format(ranges_to_lines[ranges[i]])] = CCFeval[1]
+                out_dict[mjd]["{} EW".format(ranges_to_lines[ranges[i]])] = ew
+                out_dict[mjd]["{} EWsig".format(ranges_to_lines[ranges[i]])] = ew_err
 
 
         fluxes = interp1d(spectrum[WAVELENGTH], np.nan_to_num(spectrum[SCI_NORM]),

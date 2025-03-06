@@ -177,7 +177,5 @@ if __name__ == '__main__':
     for star in elements:
         a = load_all_spectra(all_files[star], MJD_MID, WAVELENGTH,SCI_NORM)
         # Run the animation
-        # animate_data(a, star, interval_scaling=200, outdir =r"/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/spectrasDrawer/{}".format(formatted_date))
         animate_data(a, filename=star, interval_scaling=200, outdir=r"/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/spectrasDrawer/HeI_{}".format(formatted_date), WAVELENGTH_REGION=WAVELENGTH_REGION)
-        # animate_data(a, filename=star, interval_scaling=200, outdir=r"/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/spectrasDrawer/entire_spec_{}".format(formatted_date))
 
