@@ -4,7 +4,6 @@ import os
 import yaml
 
 import pandas as pd
-import itertools
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.ndimage import convolve1d
@@ -22,6 +21,52 @@ S2N_REGION = (4500,4550)
 VELOCITY_REGION = (-400,400)
 S2N = "SNR"
 C_LIGHT = 299792.458
+
+from itertools import cycle
+
+
+def plot_rv_vs_mjd(df):
+    """
+    Plots RV versus MJD from a DataFrame created by dict_to_df().
+
+    For each RV type (i.e. columns whose name contains "RV" but not "RVsig" or "MJD"),
+    the function plots the values versus MJD using a unique color and marker.
+    If a corresponding uncertainty column (with "RVsig" in the header) exists, error bars are plotted.
+
+    Parameters:
+        df (pandas.DataFrame): DataFrame with a column 'MJD' and multiple RV columns.
+    """
+    # Identify RV columns (exclude MJD and uncertainty columns)
+    rv_columns = [col for col in df.columns
+                  if ("RV" in col) and ("RVsig" not in col) and (col != "MJD")]
+
+    # Define marker and color cycles
+    markers = cycle(['o', 's', 'v', '^', 'D', '*', 'p', 'h'])
+    colors = cycle(['blue', 'green', 'red', 'purple', 'orange', 'brown', 'cyan', 'magenta'])
+
+    plt.figure(figsize=(8, 6))
+
+    for rv_col in rv_columns:
+        marker = next(markers)
+        color = next(colors)
+        # Determine the corresponding uncertainty column (if available)
+        uncertainty_col = rv_col.replace("RV", "RVsig")
+        if uncertainty_col in df.columns:
+            plt.errorbar(df["MJD"], df[rv_col], yerr=df[uncertainty_col],
+                         fmt=marker, linestyle='', color=color,
+                         label=rv_col, capsize=3, alpha=0.8)
+        else:
+            plt.plot(df["MJD"], df[rv_col], marker=marker, linestyle='',
+                     color=color, label=rv_col, alpha=0.8)
+
+    plt.xlabel("MJD [d]")
+    plt.ylabel("RV [km/s]")
+    plt.title("RV vs MJD")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
 
 def calculate_equivalent_width(wavelength, normalized_flux, flux_err=None):
     """
@@ -146,7 +191,7 @@ def cross_cor_real(flux, temp, wgl, cci, sr, vel_range, n_res, fit_rif=0.95):
     RightEdgeArr = np.abs(fit_rif * CCFMAX1 - CCFarr[IndMax+1:])
 
     if len(LeftEdgeArr) == 0 or len(RightEdgeArr) == 0:
-        if input_df.plot_first or input_df.plot_all:
+        if  input_df.plot_all or input_df.original_plot_first:
             fig1, ax1 = plt.subplots()
             ax1.plot(vel_range, CCFarr, color='C0')
             ax1.set_xlabel('Radial velocity [km/s]')
@@ -274,7 +319,6 @@ def  cross_cor(data, star_name, temp, lines_to_ranges, seperate_speed=False):
                 out_dict[mjd]["{} EW".format(ranges_to_lines[ranges[i]])] = ew
                 out_dict[mjd]["{} EWsig".format(ranges_to_lines[ranges[i]])] = ew_err
 
-
         fluxes = interp1d(spectrum[WAVELENGTH], np.nan_to_num(spectrum[SCI_NORM]),
                           bounds_error=False, fill_value=1., kind=input_df.intr_kind)(wave_grid_log[cross_corr_index])
         CCFeval = cross_cor_real(np.copy(fluxes - np.mean(fluxes)),
@@ -286,57 +330,42 @@ def  cross_cor(data, star_name, temp, lines_to_ranges, seperate_speed=False):
                                  n_res, input_df.fit_range_fraction)
         if np.isnan(CCFeval[0]) or np.isnan(CCFeval[1]):
             pass
-        # out_dict[mjd]["merged RV"] = CCFeval[0]
-        # out_dict[mjd]["merged RVsig"] = CCFeval[1]
+        out_dict[mjd]["merged RV"] = CCFeval[0]
+        out_dict[mjd]["merged RVsig"] = CCFeval[1]
 
-    df = dict_to_df(out_dict)
-    result_df = process_df(df, sigma_clip=3, verbose=True)
-    # print(out_dict)
+    out_df = dict_to_df(out_dict)
+
+    # Plot measured RVs
+    if True:
+        plot_rv_vs_mjd(out_df)
+
+    return out_df
+
+def create_coadded_spectra(data,rv_out_df, rv_name="merged RV"):
+    first_mjd = next(iter(data.keys()))
+
     # Initialize data storage
     t = []
-    v_dict = {}
-    sig_v_dict = {}
-    t_dict = {}
     # Extract RV values for each MJD
     s2n_sqrd_sum = np.sum([data[mjd][S2N] ** 2 for mjd in data.keys()])
     coadd_spec = 0
     wave_grid = data[first_mjd][WAVELENGTH]
 
-    for mjd in sorted(out_dict.keys()):
+    for mjd in sorted(rv_out_df.MJD.values):
         try:
-            for rv_key in out_dict[mjd]:
-                if "RV" in rv_key and "sig" not in rv_key:
-                    if out_dict[mjd].get(rv_key + "sig", 0)  < 0 : continue
-                    v_dict.setdefault(rv_key, []).append(out_dict[mjd][rv_key])
-                    sig_v_dict.setdefault(rv_key, []).append(out_dict[mjd].get(rv_key + "sig", 0))
-                    t_dict.setdefault(rv_key, []).append(mjd)
-
-            cur_v = out_dict[mjd]["merged RV"]
+            cur_v = rv_out_df[rv_out_df.MJD == mjd][rv_name].values[0]
             weight_s2n = data[mjd][S2N] ** 2 / s2n_sqrd_sum
             shift_spec = interp1d(data[mjd][WAVELENGTH] * (1. - cur_v / C_LIGHT),
                                   np.nan_to_num(data[mjd][SCI_NORM]),
                                   bounds_error=False, fill_value=1.,
                                   kind=input_df.intr_kind)(wave_grid)
             coadd_spec += weight_s2n * shift_spec
-
             t.append(mjd)
         except KeyError:
             continue
 
-    # Plot measured RVs
-    if True:
-        fig, ax = plt.subplots()
-        for rv_key in sorted(v_dict.keys()):
-            ax.errorbar(t_dict[rv_key], v_dict[rv_key] , yerr=sig_v_dict[rv_key], fmt=marker_dict[rv_key][0],
-                        label=rv_key,c=marker_dict[rv_key][1], alpha=0.51)
-
-        ax.set_xlabel('MJD [d]')
-        ax.set_ylabel(r'$\Delta$RV [km/s]')
-        ax.set_title(r'{} '.format(star_name))
-        ax.legend()
-        plt.show(block=True)
     coadd_spec_dict = {WAVELENGTH:wave_grid, SCI_NORM:coadd_spec}
-    return out_dict,coadd_spec_dict
+    return  coadd_spec_dict
 
 def load_input_from_yaml(yaml_file):
     """
@@ -366,13 +395,15 @@ def load_input_from_yaml(yaml_file):
 
 def make_marker_dict(windows):
     global marker_dict
-    marker_styles = itertools.cycle(['o', 's', '^', 'D', 'v', '<', '>'])
-    color_styles = itertools.cycle(['b', 'g', 'r', 'c', 'm', 'k'])
+    marker_styles = cycle(['o', 's', '^', 'D', 'v', '<', '>'])
+    color_styles = cycle(['b', 'g', 'r', 'c', 'm', 'k'])
 
     marker_dict = {}
     for window, marker,color in zip(windows+["merged"], marker_styles, color_styles):
         marker_dict["{} RV".format(window)] = marker, color
 
+def calc_final_rv():
+    pass
 
 def main():
     global input_df, marker_dict, meta_data
@@ -421,22 +452,20 @@ def main():
 
     make_marker_dict(sorted(lines_to_windows.keys()))
 
-    original_plot_first = input_df.plot_first
-    final_dict = {}
+    input_df["original_plot_first"] = input_df.plot_first
     for star in sorted(elements):
         print('Star {}'.format(star))
         a = load_all_spectra(all_files[star], MJD_MID, WAVELENGTH, SCI_NORM)
 
-        cc_result, coadd_spec = cross_cor(a,star, template[star], lines_to_windows,seperate_speed=input_df.seperate_speed)
-
-        final_dict[star] = cc_result
-
-        x = pd.DataFrame(cc_result)
+        cc_result = cross_cor(a,star, template[star], lines_to_windows,seperate_speed=input_df.seperate_speed)
+        calc_final_rv()
+        coadd_spec = create_coadded_spectra(a, cc_result , rv_name="merged RV")
+        x = cc_result
         y = pd.DataFrame(coadd_spec, columns=[WAVELENGTH, SCI_NORM])
         if input_df.path_to_output != '':
             y.to_csv(os.path.join(input_df.path_to_output, star + "_CoAdded.csv"), index=False, sep=' ')
             x.to_csv(os.path.join(input_df.path_to_output, star + "_CCF_RVs.csv"), index=False, sep=' ')
-        input_df.plot_first = original_plot_first
+        input_df.plot_first = input_df["original_plot_first"]
 
 if __name__ == '__main__':
     main()

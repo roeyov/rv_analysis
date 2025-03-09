@@ -2,7 +2,7 @@
 intr_kind: cubic
 
 # Whether to plot the first result
-plot_first: false
+plot_first: true
 
 # Whether to plot all results
 plot_all: false
