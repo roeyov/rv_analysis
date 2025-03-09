@@ -55,9 +55,12 @@ def compute_weighted_mean_row(row, lines, sigma_clip=3, verbose=False):
     for line in lines:
         rv_key = f"{line} RV"
         err_key = f"{line} RVsig"
-        if rv_key in row and err_key in row:
+        ew_key = f"{line} EW"
+        if rv_key in row and err_key in row and ew_key in row:
             # Only include if both RV and uncertainty are not NaN.
-            if pd.notnull(row[rv_key]) and pd.notnull(row[err_key]):
+
+            if pd.notnull(row[rv_key]) and pd.notnull(row[err_key]) and pd.notnull(row[ew_key]):
+                # if row[ew_key] < 0.1: continue
                 rvs.append(row[rv_key])
                 errors.append(row[err_key])
                 line_names.append(line)
@@ -70,8 +73,8 @@ def compute_weighted_mean_row(row, lines, sigma_clip=3, verbose=False):
 
     # Compute initial weighted mean with weights = 1 / error.
     weights = 1.0 / errors
-    # wm_initial = np.sum(rvs * weights) / np.sum(weights)
-    wm_initial = np.nanmedian(rvs)
+    wm_initial = np.sum(rvs * weights) / np.sum(weights)
+    # wm_initial = np.nanmedian(rvs)
     # Identify outliers: measurements that deviate more than sigma_clip times their own error.
     mask = np.abs(rvs - wm_initial) <= sigma_clip * errors
     outlier_lines = [line_names[i] for i in range(len(mask)) if not mask[i]]
@@ -114,7 +117,7 @@ def process_df(df, sigma_clip=3, verbose=False):
                    - "outliers" (list of spectral lines flagged as outliers)
     """
     # Define the spectral lines (without suffixes) to use.
-    lines = ["He I + He II 4026", "He II 4200", "He I 4388", "He I 4471", "He II 4542"]
+    lines = ["He I + He II 4026", "He II 4200", "He I 4388", "He I 4471", "He II 4542", "H Gamma","H Delta","H Epsilon"]
     results = []
 
     for idx, row in df.iterrows():
