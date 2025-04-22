@@ -25,6 +25,7 @@ NRV = "number_of_samples"
 FEATURES = "features"
 LABELS = "labels"
 PLOT = "plot"
+MJD = "MJD"
 
 LMFIT_PARAMS = "lmfit_params"
 SEARCH_REGION = "search_region"

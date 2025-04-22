@@ -1,3 +1,5 @@
+import pandas as pd
+
 from make_RVs import out_single_and_plot
 import matplotlib.pyplot
 import numpy as np
@@ -70,10 +72,8 @@ def ls(time, data, data_err=[], probabilities = [0.5, 0.01, 0.001], pmin=1., pma
         fap1 = 0.0
     else:
         fap1 = ls1.false_alarm_probability(power1.max(), method=fa_method)
-    # print('   FAP of the highest peak x100    : ', f'{fap1*100:.5f}')
     max_freq1 = frequency1[np.argmax(power1)]
     best_period1 = 1/max_freq1
-    print("   Primary best Period             :  {0:.4f} days".format(best_period1))
     return best_period1, fap1, fal1, frequency1, power1
 
 
@@ -104,7 +104,6 @@ def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 50
     tickLabels = map(str, bins)
     ax.set_xticks(bins)
     ax.set_xticklabels(tickLabels)
-    print(fal)
     if len(fal) > 0:
         ax.plot( (0.5, 800), (fal[0], fal[0]), '-r', lw=1.2)
         ax.plot( (0.5, 800), (fal[1], fal[1]), '--y', lw=1.2)
@@ -115,16 +114,20 @@ def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 50
     else:
         ax.get_yaxis().set_major_formatter(StrMethodFormatter('{x:.1f}'))
     if star_id:
-        #plt.title(' periodogram')
-        plt.savefig(star_id+'_periodogram.png')
+        plt.title(star_id + ' periodogram')
+        # plt.savefig(star_id+'_periodogram.png')
     plt.show()
     plt.close()
 
 
 if __name__ == '__main__':
-#
-    v1s, hjds1, errs_v1 = out_single_and_plot(t0=0 ,p = 50, ecc = 0.4, omega = 10, k1=40, k2= 20, gamma=30, nrv=25, sig_rv=3.0, plot=True)
-    ervv1s = [3.] * 25
+    path_to_csv = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/stripped_star_pot_wCOadded/BLOeM_5-104_CCF_RVs.csv"
+    data = pd.read_csv(path_to_csv, sep=' ')
+    v1s = data['Mean RV']
+    hjds1 = data['MJD']
+    ervv1s = data['Mean RVsig']
+    # v1s, hjds1, errs_v1 = out_single_and_plot(t0=0 ,p = 50, ecc = 0.4, omega = 10, k1=40, k2= 20, gamma=30, nrv=25, sig_rv=3.0, plot=True)
+    # ervv1s = [3.] * 25
 
     period, fap, fal, freq, pow = ls(hjds1, v1s,data_err=ervv1s, pmin=1, pmax=1000)
     plotls(freq, pow, fal, pmin=pmin, pmax=pmax)

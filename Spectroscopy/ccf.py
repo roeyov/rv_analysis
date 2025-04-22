@@ -10,22 +10,22 @@ from scipy.ndimage import convolve1d
 import matplotlib.pyplot as plt
 import matplotlib
 # matplotlib.use('TkAgg')
+from Spectroscopy.MeanRVCalculater import calculate_weighted_rv_with_flags
+
 
 from spectrasDrawer import load_all_spectra, load_templates, load_template
 from FilesCollector import find_files_with_strings, load_elements_list
-from MeanRVCalculater import process_df, dict_to_df
+from MeanRVCalculater import calculate_weighted_rv_with_flags, dict_to_df
 from constants import *
 
 input_df = marker_dict = meta_data = None
-S2N_REGION = (4500,4550)
-VELOCITY_REGION = (-400,400)
 S2N = "SNR"
 C_LIGHT = 299792.458
 
 from itertools import cycle
 
 
-def plot_rv_vs_mjd(df):
+def plot_rv_vs_mjd(df, name, plot_only=None, filter=False):
     """
     Plots RV versus MJD from a DataFrame created by dict_to_df().
 
@@ -37,38 +37,42 @@ def plot_rv_vs_mjd(df):
         df (pandas.DataFrame): DataFrame with a column 'MJD' and multiple RV columns.
     """
     # Identify RV columns (exclude MJD and uncertainty columns)
-    rv_columns = [col for col in df.columns
-                  if ("RV" in col) and ("RVsig" not in col) and (col != "MJD")]
-
-    # Define marker and color cycles
-    markers = cycle(['o', 's', 'v', '^', 'D', '*', 'p', 'h'])
-    colors = cycle(['blue', 'green', 'red', 'purple', 'orange', 'brown', 'cyan', 'magenta'])
+    if plot_only is None:
+        rv_columns = [col for col in df.columns
+                  if ("RV" in col) and ("RVsig" not in col) and ("flag" not in col) and (col != "MJD")]
+    else:
+        rv_columns = [key+" RV" for key in plot_only]
 
     plt.figure(figsize=(8, 6))
 
     for rv_col in rv_columns:
-        marker = next(markers)
-        color = next(colors)
+        # if "4542" in rv_col: continue
+        marker, color = marker_dict[rv_col]
         # Determine the corresponding uncertainty column (if available)
         uncertainty_col = rv_col.replace("RV", "RVsig")
+        flag_col = rv_col.replace("RV", "flag")
+        if filter and flag_col in df.columns:
+            df_to_plot = df[df[flag_col] == 0]
+        else:
+            df_to_plot = df
         if uncertainty_col in df.columns:
-            plt.errorbar(df["MJD"], df[rv_col], yerr=df[uncertainty_col],
+            plt.errorbar(df_to_plot["MJD"], df_to_plot[rv_col], yerr=df_to_plot[uncertainty_col],
                          fmt=marker, linestyle='', color=color,
                          label=rv_col, capsize=3, alpha=0.8)
         else:
-            plt.plot(df["MJD"], df[rv_col], marker=marker, linestyle='',
+            plt.plot(df_to_plot["MJD"], df_to_plot[rv_col], marker=marker, linestyle='',
                      color=color, label=rv_col, alpha=0.8)
 
     plt.xlabel("MJD [d]")
     plt.ylabel("RV [km/s]")
-    plt.title("RV vs MJD")
+    plt.title("RV vs MJD {}".format(name))
     plt.legend()
     plt.tight_layout()
     plt.show()
 
 
 
-def calculate_equivalent_width(wavelength, normalized_flux, flux_err=None):
+def calculate_equivalent_width(wavelength, normalized_flux, snr=None):
     """
     Calculate the equivalent width (EW) and its uncertainty.
 
@@ -89,7 +93,7 @@ def calculate_equivalent_width(wavelength, normalized_flux, flux_err=None):
     ew = np.trapz(integrand, wavelength)
 
     # If no error is provided, return None for ew_err.
-    if flux_err is None:
+    if snr is None:
         return ew, None
 
     # For error propagation, we need the effective pixel width.
@@ -97,7 +101,7 @@ def calculate_equivalent_width(wavelength, normalized_flux, flux_err=None):
     delta_lambda = np.median(np.diff(wavelength))
 
     # Propagate the error: each bin contributes (delta_lambda/continuum * flux_err_i)
-    ew_err = np.sqrt(np.sum((delta_lambda * flux_err)**2))
+    ew_err = np.sqrt((wavelength[-1] - wavelength[0])*delta_lambda)/snr
 
     return ew, ew_err
 
@@ -191,7 +195,7 @@ def cross_cor_real(flux, temp, wgl, cci, sr, vel_range, n_res, fit_rif=0.95):
     RightEdgeArr = np.abs(fit_rif * CCFMAX1 - CCFarr[IndMax+1:])
 
     if len(LeftEdgeArr) == 0 or len(RightEdgeArr) == 0:
-        if  input_df.plot_all or input_df.original_plot_first:
+        if  input_df.plot_all or input_df.original_plot_first or True:
             fig1, ax1 = plt.subplots()
             ax1.plot(vel_range, CCFarr, color='C0')
             ax1.set_xlabel('Radial velocity [km/s]')
@@ -284,7 +288,7 @@ def  cross_cor(data, star_name, temp, lines_to_ranges, seperate_speed=False):
 
     chosen_temp = data[first_mjd] if temp is None else temp
     if input_df.path_to_meta_data_csv != "":
-        rot_vel = meta_data[meta_data.ID == star_name].vsini.values[0]
+        rot_vel = meta_data[meta_data.ID.str.contains(star_name)].vsini.values[0]
         broadened_template = rotational_broadening(chosen_temp[WAVELENGTH], chosen_temp[SCI_NORM], rot_vel)
         template = interp1d(chosen_temp[WAVELENGTH], broadened_template, bounds_error=False,
             fill_value=1., kind=input_df.intr_kind)(wave_grid_log)
@@ -334,11 +338,6 @@ def  cross_cor(data, star_name, temp, lines_to_ranges, seperate_speed=False):
         out_dict[mjd]["merged RVsig"] = CCFeval[1]
 
     out_df = dict_to_df(out_dict)
-
-    # Plot measured RVs
-    if True:
-        plot_rv_vs_mjd(out_df)
-
     return out_df
 
 def create_coadded_spectra(data,rv_out_df, rv_name="merged RV"):
@@ -355,6 +354,7 @@ def create_coadded_spectra(data,rv_out_df, rv_name="merged RV"):
         try:
             cur_v = rv_out_df[rv_out_df.MJD == mjd][rv_name].values[0]
             weight_s2n = data[mjd][S2N] ** 2 / s2n_sqrd_sum
+            if np.isnan(cur_v) or np.isnan(weight_s2n): continue
             shift_spec = interp1d(data[mjd][WAVELENGTH] * (1. - cur_v / C_LIGHT),
                                   np.nan_to_num(data[mjd][SCI_NORM]),
                                   bounds_error=False, fill_value=1.,
@@ -393,13 +393,16 @@ def load_input_from_yaml(yaml_file):
         print(f"An error occurred: {e}")
 
 
-def make_marker_dict(windows):
+def make_marker_dict():
     global marker_dict
-    marker_styles = cycle(['o', 's', '^', 'D', 'v', '<', '>'])
-    color_styles = cycle(['b', 'g', 'r', 'c', 'm', 'k'])
+    line_names = ['H_Gamma', 'H_Delta', 'H_Epsilon', 'HeI_4471', 'HeI_4388', 'HeI+HeII_4026', 'HeII_4542', 'HeII_4200',
+                  'Median', 'Mean', 'NII_4447', 'NII_4440']
+    # Define marker and color cycles
+    markers = cycle(['o', 's', 'v', '^', 'D', '*', 'p', 'h'])
+    colors = cycle(['blue', 'green', 'red', 'purple', 'orange', 'brown', 'cyan', 'magenta'])
 
     marker_dict = {}
-    for window, marker,color in zip(windows+["merged"], marker_styles, color_styles):
+    for window, marker,color in zip(line_names+["merged", "Mean"], markers, colors):
         marker_dict["{} RV".format(window)] = marker, color
 
 def calc_final_rv():
@@ -450,17 +453,24 @@ def main():
     if input_df.path_to_meta_data_csv != '':
         meta_data = pd.read_csv(input_df.path_to_meta_data_csv, usecols=input_df.columns_to_load)
 
-    make_marker_dict(sorted(lines_to_windows.keys()))
+    make_marker_dict()
 
     input_df["original_plot_first"] = input_df.plot_first
     for star in sorted(elements):
         print('Star {}'.format(star))
+        if star not in template.keys(): continue
         a = load_all_spectra(all_files[star], MJD_MID, WAVELENGTH, SCI_NORM)
 
         cc_result = cross_cor(a,star, template[star], lines_to_windows,seperate_speed=input_df.seperate_speed)
-        calc_final_rv()
-        coadd_spec = create_coadded_spectra(a, cc_result , rv_name="merged RV")
-        x = cc_result
+        # Plot measured RVs
+        if True:
+            plot_rv_vs_mjd(cc_result, star)
+        mean_calc = calculate_weighted_rv_with_flags(cc_result)
+        if True:
+            plot_rv_vs_mjd(mean_calc, star, plot_only=["Mean"], filter=True)
+            plot_rv_vs_mjd(mean_calc, star, filter=True)
+        coadd_spec = create_coadded_spectra(a, cc_result , rv_name="Mean RV")
+        x = mean_calc
         y = pd.DataFrame(coadd_spec, columns=[WAVELENGTH, SCI_NORM])
         if input_df.path_to_output != '':
             y.to_csv(os.path.join(input_df.path_to_output, star + "_CoAdded.csv"), index=False, sep=' ')

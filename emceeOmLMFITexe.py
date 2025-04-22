@@ -5,6 +5,7 @@ import contextlib
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 import lmfit
 import matplotlib.pylab as pylab
@@ -13,6 +14,7 @@ import corner
 import make_RVs
 import json
 
+from Spectroscopy.constants import MJD_MID
 from utils.constants import *
 from utils.utils import make_runlog
 
@@ -87,7 +89,7 @@ def define_search_param(params, search_params_dict, field, radius=0):
                vary=search_params_dict[field][VARY])
 
 
-def lmfit_on_sample(args_dict, output, data):
+def lmfit_on_sample(args_dict, output, data, star_name=''):
     lmfit_params_dict = args_dict[LMFIT_PARAMS]
     pylab_params = {'legend.fontsize': 'large',
                     'figure.figsize': (12, 4),
@@ -119,7 +121,7 @@ def lmfit_on_sample(args_dict, output, data):
     result = mini.minimize(method=mini_method)
 
     dump_minimization_report(result, output, "lmfit")
-    # print(lmfit.fit_report(result))
+    print(lmfit.fit_report(result))
     # print(lmfit.fit_report)  # will print you a fit report from your model
     Gamma1_res = result.params[GAMMA].value
     K1_res = result.params[K1_STR].value
@@ -138,6 +140,7 @@ def lmfit_on_sample(args_dict, output, data):
     plt.plot(JDsplot, v1mod(nusdata, Gamma1_res, K1_res, Omega_res, ecc_res), color='black', label='primary')
     plt.xlabel('MJD')
     plt.ylabel(r'RV [${\rm km}\,{\rm s}^{-1}$]')
+    plt.title(f"orbital fit {star_name}")
     plt.legend(loc=locleg)
     plt.show()
     # Create continous phase grid
@@ -166,6 +169,7 @@ def lmfit_on_sample(args_dict, output, data):
         plt.legend()
         plt.ylabel(r'RV $[{\rm km}\,{\rm s}^{-1}]$')
         plt.xlabel(r'phase')
+        plt.title(f"folded orbital fit {star_name}")
         plt.show()
 
     # print("RMS1 is ", rms1)
@@ -450,12 +454,13 @@ def main():
     np.random.seed(args.seed)
     np.random.default_rng(seed=args.seed)
 
-    if os.path.isdir(args.output_dir):
-        if  len(os.listdir(args.output_dir)):
-            print("outDir is not empty. choose different out")
-            exit(1)
-    else:
-        os.makedirs(os.path.join(args.output_dir))
+    # if os.path.isdir(args.output_dir):
+    #
+    #     if  len(os.listdir(args.output_dir)):
+    #         print("outDir is not empty. choose different out")
+    #         exit(1)
+    # else:
+    #     os.makedirs(os.path.join(args.output_dir))
 
     make_runlog(args.output_dir, [args.json_params_file])
 
@@ -486,16 +491,27 @@ def main():
         exit(1)
 
     print("Uploading Sample from file: {}".format(samples_path))
-    with open(samples_path, 'r') as json_file:
-        data = json.load(json_file)
+    if samples_path.endswith(".json"):
+        with open(samples_path, 'r') as json_file:
+            data = json.load(json_file)
+    elif samples_path.endswith(".csv"):
+        data = pd.read_csv(samples_path, sep=' ')
+        data.rename(columns={'MJD': TIME_STAMPS,
+                           'Mean RV': RADIAL_VELS,
+                           'Mean RVsig': ERRORS}, inplace=True)
 
-    mini_results = lmfit_on_sample(args_dict, args.output_dir, data)
-    if TRUTHS in data.keys():
-        corner_plot(args_dict, data, mini_results, args.output_dir, data[TRUTHS])
     else:
-        corner_plot(args_dict, data, mini_results, args.output_dir)
+        print("Unknown input data format")
+        exit(1)
+    mini_results = lmfit_on_sample(args_dict, args.output_dir, data)
+
+    # if TRUTHS in data.keys():
+    #     corner_plot(args_dict, data, mini_results, args.output_dir, data[TRUTHS])
+    # else:
+    #     corner_plot(args_dict, data, mini_results, args.output_dir)
     exit(0)
 
 
 if __name__ == '__main__':
     main()
+
