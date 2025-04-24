@@ -13,6 +13,8 @@ import argparse
 import corner
 import make_RVs
 import json
+from types import SimpleNamespace
+
 
 from Spectroscopy.constants import MJD_MID
 from utils.constants import *
@@ -89,40 +91,44 @@ def define_search_param(params, search_params_dict, field, radius=0):
                vary=search_params_dict[field][VARY])
 
 
-def lmfit_on_sample(args_dict, output, data, star_name=''):
-    lmfit_params_dict = args_dict[LMFIT_PARAMS]
-    pylab_params = {'legend.fontsize': 'large',
-                    'figure.figsize': (12, 4),
-                    'axes.labelsize': 'x-large',
-                    'axes.titlesize': 'x-large',
-                    'xtick.labelsize': 'x-large',
-                    'ytick.labelsize': 'x-large'}
-    pylab.rcParams.update(pylab_params)
+def summarize_result(result, star_name):
+    """
+    Turn a single lmfit.MinimizerResult into a flat dict.
+    """
+    row = {}
+    # 1) Global fit statistics
+    row['star_name'] = star_name
+    row['method'] = result.method
+    row['nfev'] = result.nfev  # function evals
+    row['ndata'] = result.ndata  # data points
+    row['nvarys'] = result.nvarys  # fitted vars
+    row['chisqr'] = result.chisqr
+    row['redchi'] = result.redchi
+    row['aic'] = result.aic
+    row['bic'] = result.bic
+
+    # 2) Per-parameter summaries
+    # result.params is an OrderedDict of Parameter objects
+    for name, par in result.params.items():
+        init = result.init_values.get(name, None)  # initial guess
+        row[f'{name}_init'] = init
+        row[f'{name}_value'] = par.value
+        row[f'{name}_vary'] = par.vary
+        # if stderr is None → warning that uncertainty wasn't estimated
+        row[f'{name}_stderr'] = par.stderr
+
+    return row
+
+
+def print_lmfit_result(data, args_dict, star_name, result):
     locleg = 'upper left'
     sys.setrecursionlimit(int(1E6))
 
     hjds1 = np.array(data[TIME_STAMPS])
     v1s = np.array(data[RADIAL_VELS])
     errv1s = np.abs(data[ERRORS])
-    mini_method = lmfit_params_dict[MINI_METHOD]
 
-    # Please note initial values for parameters, bounds, and whether they should vary or not
-    params = lmfit.Parameters()
-    search_params_dict = lmfit_params_dict[SEARCH_REGION]
-    define_search_param(params, search_params_dict, PERIOD)
-    define_search_param(params, search_params_dict, GAMMA)
-    define_search_param(params, search_params_dict, K1_STR)
-    define_search_param(params, search_params_dict, OMEGA)
-    define_search_param(params, search_params_dict, ECC)
-    t0_search_region = search_params_dict[PERIOD][MAX_VAL]
-    define_search_param(params, search_params_dict, T, t0_search_region)
-
-    mini = lmfit.Minimizer(chisqr, params, fcn_kws={TIME_STAMPS: hjds1, RADIAL_VELS: v1s, ERRORS: errv1s})
-    result = mini.minimize(method=mini_method)
-
-    dump_minimization_report(result, output, "lmfit")
     print(lmfit.fit_report(result))
-    # print(lmfit.fit_report)  # will print you a fit report from your model
     Gamma1_res = result.params[GAMMA].value
     K1_res = result.params[K1_STR].value
     Omega_res = result.params[OMEGA].value
@@ -136,6 +142,7 @@ def lmfit_on_sample(args_dict, output, data, star_name=''):
     Es = Kepler(np.pi, Ms, ecc_res)
     eccfac = np.sqrt((1 + ecc_res) / (1 - ecc_res))
     nusdata = 2. * np.arctan(eccfac * np.tan(0.5 * Es))
+
     plt.errorbar(hjds1, v1s, yerr=errv1s, fmt='o', color='black')
     plt.plot(JDsplot, v1mod(nusdata, Gamma1_res, K1_res, Omega_res, ecc_res), color='black', label='primary')
     plt.xlabel('MJD')
@@ -159,23 +166,110 @@ def lmfit_on_sample(args_dict, output, data, star_name=''):
     nusdata = 2. * np.arctan(eccfac * np.tan(0.5 * Es))
     rms1 = (np.sum((v1mod(nusdata, Gamma1_res, K1_res, Omega_res, ecc_res) - v1s) ** 2) / len(v1s)) ** 0.5
 
-    if args_dict[PLOT]:
-        fig, ax = plt.subplots(figsize=[6, 3])
-        plt.errorbar(phsdata, v1s, yerr=errv1s, fmt='o', color='red')
+    plt.errorbar(phsdata, v1s, yerr=errv1s, fmt='o', color='red')
+    plt.plot(phs, v1mod(nus, Gamma1_res, K1_res, Omega_res, ecc_res), color='red', label=r'Primary')
+    plt.plot([0., 1., ], [Gamma1_res, Gamma1_res], color='black')
+    plt.xlim(0., 1.)
+    plt.legend()
+    plt.ylabel(r'RV $[{\rm km}\,{\rm s}^{-1}]$')
+    plt.xlabel(r'phase')
+    plt.title(f"folded orbital fit {star_name}")
+    plt.show()
 
-        plt.plot(phs, v1mod(nus, Gamma1_res, K1_res, Omega_res, ecc_res), color='red', label=r'Primary')
-        plt.plot([0., 1., ], [Gamma1_res, Gamma1_res], color='black')
-        plt.xlim(0., 1.)
-        plt.legend()
-        plt.ylabel(r'RV $[{\rm km}\,{\rm s}^{-1}]$')
-        plt.xlabel(r'phase')
-        plt.title(f"folded orbital fit {star_name}")
-        plt.show()
 
-    # print("RMS1 is ", rms1)
-    # print("mean Error: ", np.mean(errv1s))
-    #
-    # print("multiply errors1 by: ", rms1 / np.mean(errv1s))
+def get_rv_weighted_mean(data):
+    v1s     = np.array(data[RADIAL_VELS])
+    errv1s  = np.abs(data[ERRORS])
+    weights = 1.0 / errv1s ** 2
+    gamma0 = np.sum(v1s * weights) / np.sum(weights)
+    return gamma0
+
+def lmfit_on_sample(args_dict, output, data, star_name='', null_hyp=False):
+    """
+    Fit an orbital model to RV vs. MJD data, or—if null_hyp=True—fit
+    the null hypothesis of a constant velocity and compute its reduced chi².
+
+    Parameters
+    ----------
+    args_dict : dict
+        Dictionary holding your LMFIT_PARAMS entry, etc.
+    output : path or file-like
+        Where to dump fit reports.
+    data : dict-like
+        Must contain keys TIME_STAMPS, RADIAL_VELS, and ERRORS.
+    star_name : str, optional
+        A label for printing/reporting.
+    null_hyp : bool, optional
+        If True, skip the orbital fit and instead compute reduced χ² of
+        a constant–velocity model (weighted mean). Default is False.
+
+    Returns
+    -------
+    If null_hyp is False:
+        result : lmfit.MinimizerResult
+            The full orbital fit result.
+    If null_hyp is True:
+        dict with keys
+            'null_gamma'  : float
+                Best-fit constant velocity.
+            'null_redchi' : float
+                Reduced χ² of the constant model.
+    """
+    # ---- style & recursion setup ----
+    pylab_params = {
+        'legend.fontsize': 'large',
+        'figure.figsize': (12, 4),
+        'axes.labelsize': 'x-large',
+        'axes.titlesize': 'x-large',
+        'xtick.labelsize': 'x-large',
+        'ytick.labelsize': 'x-large'
+    }
+    pylab.rcParams.update(pylab_params)
+    sys.setrecursionlimit(int(1e6))
+
+    # ---- extract data arrays ----
+    hjds1   = np.array(data[TIME_STAMPS])
+    v1s     = np.array(data[RADIAL_VELS])
+    errv1s  = np.abs(data[ERRORS])
+
+    # ---- null hypothesis: constant velocity fit ----
+    if null_hyp:
+        # weighted mean as best-fit constant velocity
+        gamma0   = get_rv_weighted_mean(data)
+        # compute total chi²
+        chisq    = np.sum(((v1s - gamma0) / errv1s)**2)
+        dof      = len(v1s) - 1   # one fitted parameter (gamma)
+        redchi   = chisq / dof
+
+        # report
+        # print(f"[{star_name}] Null hypothesis fit → γ = {gamma0:.5g}, "
+        #       f"χ²_red = {redchi:.3f}")
+        return SimpleNamespace(gamma=gamma0, redchi=redchi)
+
+    # ---- full orbital fit ----
+    lmfit_params_dict = args_dict[LMFIT_PARAMS]
+    mini_method       = lmfit_params_dict[MINI_METHOD]
+    params            = lmfit.Parameters()
+    search_params     = lmfit_params_dict[SEARCH_REGION]
+
+    # define your five orbital parameters
+    define_search_param(params, search_params, PERIOD)
+    define_search_param(params, search_params, GAMMA)
+    define_search_param(params, search_params, K1_STR)
+    define_search_param(params, search_params, OMEGA)
+    define_search_param(params, search_params, ECC)
+    t0_max = search_params[PERIOD][MAX_VAL]
+    define_search_param(params, search_params, T, t0_max)
+
+    mini = lmfit.Minimizer(
+        chisqr, params,
+        fcn_kws={TIME_STAMPS: hjds1,
+                 RADIAL_VELS: v1s,
+                 ERRORS: errv1s}
+    )
+    result = mini.minimize(method=mini_method)
+
+    dump_minimization_report(result, output, "lmfit")
     return result
 
 

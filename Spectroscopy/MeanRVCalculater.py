@@ -28,167 +28,156 @@ def dict_to_df(data_dict):
     return df
 
 
-def compute_weighted_mean_row(row, lines, sigma_clip=3, verbose=False):
+import pandas as pd
+import numpy as np
+
+
+def calculate_weighted_rv_with_flags(df):
     """
-    For a single row (one MJD), compute the weighted mean of the RV measurements
-    from the specified spectral lines.
+    For each MJD (each row in the dataframe), calculate the weighted mean RV
+    (and its uncertainty) using the following steps:
 
-    Each measurement is weighted by 1/(RVsig). An initial weighted mean is computed,
-    and then any measurement whose absolute difference from that mean exceeds
-    sigma_clip * (its own uncertainty) is flagged as an outlier and excluded.
+      1. For each measurement i, ignore the measurement if its equivalent width (EW)
+         is "consistent with zero" (i.e. if the interval EW_i ± EW_i_sig contains zero).
+         Flag these measurements with a flag value of 2.
+      2. Using the remaining measurements, compute a first-iteration weighted mean RV,
+         where the weight for measurement i is 1/(RV_i_sig)^2.
+      3. Flag any measurement (from the candidate list) that deviates by more than
+         3σ from the first-iteration weighted mean with a flag value of 1.
+      4. Compute the final weighted mean RV and its uncertainty using only the measurements
+         that were not flagged by sigma clipping (i.e. that have flag 0).
+      5. Add two new columns to the dataframe: "RV_Mean" and "RV_Meansig" which hold the
+         final weighted mean RV and its uncertainty, respectively.
+      6. For each measurement sample (i), add a new column "RV_{i}_flag" that indicates
+         whether that measurement was:
+             0 - used (valid)
+             1 - dropped due to sigma clipping
+             2 - dropped because EW is consistent with zero (or missing)
 
-    Parameters:
-      row        : A row from the DataFrame corresponding to one MJD.
-      lines      : List of spectral line names (without the " RV" and " RVsig" suffix).
-      sigma_clip : The clipping threshold (default is 3).
-      verbose    : If True, prints out which lines were flagged as outliers.
+    The input dataframe is expected to have the following columns:
+        - "MJD"
+        - For each measurement index i (from 0 to N):
+            "RV_{i}", "RV_{i}sig", "EW_{i}", "EW_{i}sig"
+
+    Args:
+        df (pd.DataFrame): Input dataframe with the required columns.
 
     Returns:
-      wm           : The recomputed weighted mean using non-outlier measurements.
-      wm_error     : An estimated error on the weighted mean.
-      outlier_lines: List of spectral line names flagged as outliers.
+        pd.DataFrame: The dataframe with new columns "RV_Mean", "RV_Meansig" and
+                      "RV_{i}_flag" for each measurement.
     """
-    rvs = []
-    errors = []
-    line_names = []
+    # Determine measurement indices by scanning for columns starting with "RV_"
+    # (excluding our output columns that may contain "Mean" or "flag").
+    measurement_indices = []
+    for col in df.columns:
+        if col.endswith(" RV") and ("Mean" not in col) and ("flag" not in col) and ('merged' not in col):
+            try:
+                idx = col.split(' ')[0]
+                measurement_indices.append(idx)
+            except (IndexError, ValueError):
+                continue
+    measurement_indices = sorted(set(measurement_indices))
 
-    for line in lines:
-        rv_key = f"{line} RV"
-        err_key = f"{line} RVsig"
-        ew_key = f"{line} EW"
-        if rv_key in row and err_key in row and ew_key in row:
-            # Only include if both RV and uncertainty are not NaN.
+    # Initialize dictionaries to store the flag for each measurement index (per row)
+    flags_dict = {i: [] for i in measurement_indices}
 
-            if pd.notnull(row[rv_key]) and pd.notnull(row[err_key]) and pd.notnull(row[ew_key]):
-                # if row[ew_key] < 0.1: continue
-                rvs.append(row[rv_key])
-                errors.append(row[err_key])
-                line_names.append(line)
+    # Lists to hold final weighted mean results per row.
+    rv_mean_list = []
+    rv_meansig_list = []
+    rv_median_list = []
 
-    if not rvs:
-        return None, None, []
+    # Process each row (each MJD)
+    for _, row in df.iterrows():
+        row_flags = {}  # Will hold the flag for each measurement in this row.
+        candidates = []  # List of candidates: tuples of (i, rv, rvsig)
 
-    rvs = np.array(rvs)
-    errors = np.array(errors)
+        # Step 1: Process each measurement and flag based on EW.
+        for i in measurement_indices:
+            rv_val = row.get(f"{i} RV")
+            rvsig_val = row.get(f"{i} RVsig")
+            ew_val = row.get(f"{i} EW")
+            ewsig_val = row.get(f"{i} EWsig")
 
-    # Compute initial weighted mean with weights = 1 / error.
-    weights = 1.0 / errors
-    wm_initial = np.sum(rvs * weights) / np.sum(weights)
-    # wm_initial = np.nanmedian(rvs)
-    # Identify outliers: measurements that deviate more than sigma_clip times their own error.
-    mask = np.abs(rvs - wm_initial) <= sigma_clip * errors
-    outlier_lines = [line_names[i] for i in range(len(mask)) if not mask[i]]
+            # If any value is missing, treat it as an invalid measurement (flag 2)
+            if pd.isna(rv_val) or pd.isna(rvsig_val) or pd.isna(ew_val) or pd.isna(ewsig_val):
+                row_flags[i] = 2
+                continue
 
-    # If all measurements are flagged, fall back to using all data.
-    if np.sum(mask) == 0:
-        mask = np.ones_like(rvs, dtype=bool)
-        outlier_lines = []
+            # Check if the equivalent width is "consistent with zero":
+            # If the interval [EW - EWsig, EW + EWsig] contains zero, drop it.
+            if (ew_val - ewsig_val) <= 0 <= (ew_val + 2*ewsig_val):
+                row_flags[i] = 2
+                continue
 
-    rvs_clean = rvs[mask]
-    errors_clean = errors[mask]
-    weights_clean = 1.0 / errors_clean
+            # Otherwise, mark as tentatively valid (flag 0) and add to candidate list.
+            row_flags[i] = 0
+            candidates.append((i, rv_val, rvsig_val))
 
-    # Recalculate weighted mean with non-outlier data.
-    wm = np.sum(rvs_clean * weights_clean) / np.sum(weights_clean)
+        # If no candidates survive the EW filter, record NaN for the weighted mean.
+        if len(candidates) == 0:
+            rv_mean_list.append(np.nan)
+            rv_meansig_list.append(np.nan)
+            rv_median_list.append(np.nan)
+        else:
+            # Step 2: First iteration weighted mean using candidate measurements.
+            weights = [1 / (rvsig ** 2) for (_, rv, rvsig) in candidates]
+            weighted_mean = sum(rv * w for (_, rv, rvsig), w in zip(candidates, weights)) / sum(weights)
+            median = np.median([rv for (_, rv, _), w in zip(candidates, weights)])
+            weighted_error = np.sqrt(1 / sum(weights))
 
-    # Estimate error on the weighted mean:
-    # Compute effective number of measurements.
-    n_eff = (np.sum(weights_clean) ** 2) / np.sum(weights_clean ** 2)
-    weighted_std = np.sqrt(np.sum(weights_clean * (rvs_clean - wm) ** 2) / np.sum(weights_clean))
-    wm_error = weighted_std / np.sqrt(n_eff) if n_eff > 0 else np.nan
+            # Step 3: Sigma clipping: flag measurements deviating more than 3 sigma.
+            candidates_clipped = []
+            for (i, rv, rvsig) in candidates:
+                if abs(rv - weighted_mean) > 3 * rvsig:
+                    row_flags[i] = 1  # Dropped due to sigma clipping.
+                else:
+                    candidates_clipped.append((i, rv, rvsig))
 
-    return wm, wm_error, outlier_lines
+            # Step 4: Calculate final weighted mean from the non-clipped candidates.
+            if len(candidates_clipped) == 0:
+                final_mean = np.nan
+                final_median = np.nan
+                final_error = np.nan
+            else:
+                final_weights = [1 / (rvsig ** 2) for (_, rv, rvsig) in candidates_clipped]
+                final_mean = sum(rv * w for (_, rv, rvsig), w in zip(candidates_clipped, final_weights)) / sum(
+                    final_weights)
+                # Calculate the weighted mean
+                average = final_mean
+                # Calculate the weighted variance
+                values =  np.array([rv for (_, rv, _) in candidates_clipped])
+                variance = np.average((values - average) ** 2, weights=final_weights)
+                # Return the square root of the variance
+                final_error = np.sqrt(variance)
+                # final_error = np.sqrt(1 / sum(final_weights))
 
-
-def process_df(df, sigma_clip=3, verbose=False):
-    """
-    Process the entire DataFrame to compute the weighted mean RV for each MJD.
-
-    Parameters:
-      df         : DataFrame with a column "MJD" and spectral line measurements.
-      sigma_clip : Sigma clipping threshold for outlier rejection.
-      verbose    : If True, prints which spectral lines were flagged as outliers for each MJD.
-
-    Returns:
-      result_df  : A DataFrame with one row per MJD containing:
-                   - "MJD"
-                   - "weighted_mean_RV"
-                   - "weighted_RV_error"
-                   - "outliers" (list of spectral lines flagged as outliers)
-    """
-    # Define the spectral lines (without suffixes) to use.
-    lines = ["He I + He II 4026", "He II 4200", "He I 4388", "He I 4471", "He II 4542", "H Gamma","H Delta","H Epsilon"]
-    results = []
-
-    for idx, row in df.iterrows():
-        mjd = row["MJD"]
-        wm, wm_err, outlier_lines = compute_weighted_mean_row(row, lines, sigma_clip, verbose)
-        if verbose and outlier_lines:
-            print(f"MJD {mjd}: Outliers flagged for lines: {', '.join(outlier_lines)}")
-        results.append({
-            "MJD": mjd,
-            "weighted_mean_RV": wm,
-            "weighted_RV_error": wm_err,
-            "outliers": outlier_lines
-        })
-
-    result_df = pd.DataFrame(results)
-    return result_df
+                final_median = np.median([rv for (_, rv, _), w in zip(candidates_clipped, final_weights)])
+            rv_mean_list.append(final_mean)
+            rv_meansig_list.append(final_error)
+            rv_median_list.append(final_median)
 
 
-if __name__ == "__main__":
-    # Example input dictionary in the correct format.
-    data = {
-        60246.12028475: {
-            'He I + He II 4026 RV': 165.9564822111413,
-            'He I + He II 4026 RVsig': 11.193757760975938,
-            'He II 4200 RV': 138.4306197193985,
-            'He II 4200 RVsig': 99.47144700668612,
-            'He I 4388 RV': 158.4119210199751,
-            'He I 4388 RVsig': 15.05380549035133,
-            'He I 4471 RV': 148.15337022507413,
-            'He I 4471 RVsig': 10.76720011327219,
-            'He II 4542 RV': -7.729746392688202,
-            'He II 4542 RVsig': 58.67017259803256,
-            'merged RV': 155.61109984358148,
-            'merged RVsig': 6.794008596771086
-        },
-        60248.1702796: {
-            'He I + He II 4026 RV': 236.6063665234032,
-            'He I + He II 4026 RVsig': 22.579788189829856,
-            'He II 4200 RV': 334.1774580171801,
-            'He II 4200 RVsig': 63.313003311877914,
-            'He I 4388 RV': 297.03339109262726,
-            'He I 4388 RVsig': 29.0220972249562,
-            'He I 4471 RV': 294.00060729291465,
-            'He I 4471 RVsig': 13.726635694082024,
-            'He II 4542 RV': 476.1366816570362,
-            'He II 4542 RVsig': 40.5581331673549,
-            'merged RV': 273.9233058180814,
-            'merged RVsig': 10.370221966281585
-        },
-        60256.1754323: {
-            'He I + He II 4026 RV': 151.6887237191828,
-            'He I + He II 4026 RVsig': 12.718837382123025,
-            'He II 4200 RV': 78.96401658076336,
-            'He II 4200 RVsig': 87.53300003852038,
-            'He I 4388 RV': 147.6009203005802,
-            'He I 4388 RVsig': 16.549016182576874,
-            'He I 4471 RV': 121.4263953284827,
-            'He I 4471 RVsig': 9.478777550830303,
-            'He II 4542 RV': 23.58607051622731,
-            'He II 4542 RVsig': 69.17661650201921,
-            'merged RV': 135.88715126795924,
-            'merged RVsig': 7.167506641453741
-        },
-        # ... Add additional MJD entries as needed.
-    }
+            # rv_mean_list.append(weighted_mean)
+            # rv_meansig_list.append(weighted_error)
+            # rv_median_list.append(median)
 
-    # Convert the dictionary to a DataFrame.
-    df = dict_to_df(data)
+        # Append the computed flags for this row into the flags_dict.
+        for i in measurement_indices:
+            # If a measurement index is missing from row_flags, default to flag 2.
+            flags_dict[i].append(row_flags.get(i, 2))
 
-    # Process the DataFrame to compute weighted means (with sigma clipping and verbose output).
-    result_df = process_df(df, sigma_clip=3, verbose=True)
+    # Step 5: Add the final weighted mean columns.
+    df["Mean RV"] = rv_mean_list
+    df["Median RV"] = rv_median_list
+    df["Mean RVsig"] = rv_meansig_list
 
-    print("\nWeighted Mean RV per MJD:")
-    print(result_df)
+    # Add flag columns for each measurement sample.
+    for i in measurement_indices:
+        df[f"{i} flag"] = flags_dict[i]
+
+    return df
+# Example usage:
+# Assuming you have a dataframe `df` with the proper columns:
+# df = pd.read_csv("your_file.csv")
+# df = calculate_weighted_rv(df)
+# df.to_csv("output_with_weighted_rv.csv", index=False)
