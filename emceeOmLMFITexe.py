@@ -120,14 +120,12 @@ def summarize_result(result, star_name):
     return row
 
 
-def print_lmfit_result(data, args_dict, star_name, result):
+def print_lmfit_result(data, args_dict, star_name, result ,out_dir=None):
     locleg = 'upper left'
     sys.setrecursionlimit(int(1E6))
-
     hjds1 = np.array(data[TIME_STAMPS])
     v1s = np.array(data[RADIAL_VELS])
     errv1s = np.abs(data[ERRORS])
-
     print(lmfit.fit_report(result))
     Gamma1_res = result.params[GAMMA].value
     K1_res = result.params[K1_STR].value
@@ -149,7 +147,10 @@ def print_lmfit_result(data, args_dict, star_name, result):
     plt.ylabel(r'RV [${\rm km}\,{\rm s}^{-1}$]')
     plt.title(f"orbital fit {star_name}")
     plt.legend(loc=locleg)
+    if out_dir:
+        plt.savefig(f"{out_dir}/{star_name}_original.png")
     plt.show()
+
     # Create continous phase grid
     phs = np.linspace(0., 1., num=1000)
     Ms = 2 * np.pi * phs
@@ -160,11 +161,6 @@ def print_lmfit_result(data, args_dict, star_name, result):
     # Create data phase grid
     phsdata = (hjds1 - T0_res) / P_res - ((hjds1 - T0_res) / P_res).astype(int)
     phsdata[phsdata < 0] = phsdata[phsdata < 0] + 1.
-    Ms = 2 * np.pi * phsdata
-    Es = Kepler(np.pi, Ms, ecc_res)
-    eccfac = np.sqrt((1 + ecc_res) / (1 - ecc_res))
-    nusdata = 2. * np.arctan(eccfac * np.tan(0.5 * Es))
-    rms1 = (np.sum((v1mod(nusdata, Gamma1_res, K1_res, Omega_res, ecc_res) - v1s) ** 2) / len(v1s)) ** 0.5
 
     plt.errorbar(phsdata, v1s, yerr=errv1s, fmt='o', color='red')
     plt.plot(phs, v1mod(nus, Gamma1_res, K1_res, Omega_res, ecc_res), color='red', label=r'Primary')
@@ -174,6 +170,8 @@ def print_lmfit_result(data, args_dict, star_name, result):
     plt.ylabel(r'RV $[{\rm km}\,{\rm s}^{-1}]$')
     plt.xlabel(r'phase')
     plt.title(f"folded orbital fit {star_name}")
+    if out_dir:
+        plt.savefig(f"{out_dir}/{star_name}_folded.png")
     plt.show()
 
 

@@ -1,3 +1,5 @@
+import os.path
+
 import pandas as pd
 
 from make_RVs import out_single_and_plot
@@ -78,7 +80,7 @@ def ls(time, data, data_err=[], probabilities = [0.5, 0.01, 0.001], pmin=1., pma
 
 
 
-def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000], star_id='', pmin=1., pmax=1000.):
+def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000], star_id='', pmin=1., pmax=1000., out_dir=None):
     '''
     Function to create publication-ready plot of the periodogram obtained with "ls"
 ​
@@ -115,7 +117,8 @@ def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 50
         ax.get_yaxis().set_major_formatter(StrMethodFormatter('{x:.1f}'))
     if star_id:
         plt.title(star_id + ' periodogram')
-        # plt.savefig(star_id+'_periodogram.png')
+    if out_dir:
+        plt.savefig(out_dir)
     plt.show()
     plt.close()
 

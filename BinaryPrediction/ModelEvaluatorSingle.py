@@ -29,34 +29,31 @@ def load_final_data_from_ccf_out(data):
     err_vs = data['Mean RVsig']
     return rvs, mjds, err_vs
 
-def find_periods(rvs, mjds, err_vs, star_name):
+def find_periods(rvs, mjds, err_vs, star_name,out_dir=None):
     pmin = 1.0
     pmax = 1000.0
-
     period, fap, fal, freq, pow = ls(mjds, rvs,data_err=err_vs, pmin=pmin, pmax=pmax)
-    ls_sig_periods = significant_periods(1/freq,pow)
-    if period <= pmin or period >= pmax:
-        return np.nan, np.nan, np.nan, np.nan, np.nan
-    best_period1, fap1, freq, pdc_power_reg = pdc(mjds  , rvs, data_err=err_vs, pmin=pmin, pmax=pmax)
+    ls_sig_periods = significant_periods(1 / freq, pow)
 
-    pdc_sig_periods = significant_periods(1/freq,pdc_power_reg)
-    return ls_sig_periods + pdc_sig_periods
-
-def find_period(rvs, mjds, err_vs, star_name):
-    pmin = 1.0
-    pmax = 1000.0
-
-    period, fap, fal, freq, pow = ls(mjds, rvs,data_err=err_vs, pmin=pmin, pmax=pmax)
     if period > pmin and period < pmax:
-        plotls(freq, pow, fal, pmin=pmin, pmax=pmax, star_id=star_name +'_LS')
+        if out_dir is None:
+            plotls(freq, pow, fal, pmin=pmin, pmax=pmax, star_id=star_name +'_LS')
+        else:
+            plotls(freq, pow, fal, pmin=pmin, pmax=pmax, star_id=star_name +'_LS', out_dir=os.path.join(out_dir, star_name+"_ls_periodogram.png"))
     else:
         period =  fap = fal = np.nan
+
     best_period1, fap1, freq, pdc_power_reg = pdc(mjds  , rvs, data_err=err_vs, pmin=pmin, pmax=pmax)
+    pdc_sig_periods = significant_periods(1/freq,pdc_power_reg)
+
     if best_period1 > pmin and best_period1 < pmax:
-        plotls(freq, pdc_power_reg, fal=[] , pmin=pmin, pmax=pmax, star_id=star_name+'_PDC')
+        if out_dir is None:
+            plotls(freq, pdc_power_reg, fal=[] , pmin=pmin, pmax=pmax, star_id=star_name+'_PDC')
+        else:
+            plotls(freq, pdc_power_reg, fal=[] , pmin=pmin, pmax=pmax, star_id=star_name+'_PDC',out_dir=os.path.join(out_dir, star_name+"_pdc_periodogram.png"))
     else:
         best_period1 =  fap1 = np.nan
-    return period, fap, fal, best_period1, fap1
+    return period, fap, fal, best_period1, fap1, ls_sig_periods + pdc_sig_periods
 
 def get_bloem_object_name(path_to_csv):
     pattern = r'\d-\d{3}'
@@ -144,17 +141,19 @@ def change_search_region_default(args_dict, field_name, init_val, min_val, max_v
 
 
 
-def main_single(path_to_csv):
+def main_single(path_to_csv,path_to_out = None):
     JSON_PARAM_FILE = '/Users/roeyovadia/Roey/Masters/Reasearch/Scripts/params.json'
     data = pd.read_csv(path_to_csv, sep=' ')
     star_name = get_bloem_object_name(path_to_csv)
-
+    star_out_path = None
+    if path_to_out:
+        star_out_path = os.path.join(path_to_out, star_name)
+        os.makedirs(star_out_path, exist_ok=True)
     rvs, mjds, err_vs = load_final_data_from_ccf_out(data)
-    ls_p, ls_fap, ls_fal, pdc_p, pdc_fap = find_period(rvs, mjds, err_vs, star_name)
+    ls_p, ls_fap, ls_fal, pdc_p, pdc_fap, possible_periods = find_periods(rvs, mjds, err_vs, star_name,out_dir=star_out_path)
     out_dir = os.path.dirname(path_to_csv)
     with open(JSON_PARAM_FILE, 'r') as json_file:
         args_dict = json.load(json_file)
-    possible_periods = find_periods(rvs, mjds, err_vs, star_name)
     cur_red_chi = 1e9
     best_period = best_result = None
     data.rename(columns={'MJD': TIME_STAMPS,
@@ -166,8 +165,7 @@ def main_single(path_to_csv):
     for chosen_period in possible_periods:
         if np.isnan(ls_fap):
             break
-        change_search_region_default(args_dict, PERIOD, chosen_period, chosen_period - 0.1, chosen_period + 0.1, False)
-
+        change_search_region_default(args_dict, PERIOD, chosen_period, chosen_period*0.99, chosen_period*1.01, False)
         mini_results = lmfit_on_sample(args_dict, out_dir, data, star_name)
         if abs(mini_results.redchi -1) < abs(cur_red_chi-1):
             cur_red_chi = mini_results.redchi
@@ -177,6 +175,7 @@ def main_single(path_to_csv):
     change_search_region_default(args_dict, PERIOD, 0, -0.1,  0.1, False)
     change_search_region_default(args_dict, K1_STR, 0, -0.1,  0.1, False)
     mini_results = lmfit_on_sample(args_dict, out_dir, data, star_name, null_hyp=True)
+
     if abs(mini_results.redchi - 1) < abs(cur_red_chi - 1):
         cur_red_chi = mini_results.redchi
         best_period = 0
@@ -203,20 +202,23 @@ def main_single(path_to_csv):
         print(best_result)
     else:
         row = summarize_result(best_result, star_name)
-        print_lmfit_result(data,args_dict,star_name,best_result)
-    # print(row)
+        print_lmfit_result(data,args_dict,star_name,best_result, out_dir=star_out_path)
     is_binary_th = binary_rv_threshold(rvs, err_vs, drv_tresh=20, sign_threshold=4)
     is_binary_periodic_ls = ls_fap < 0.001
     is_binary_periodic_pdc = pdc_fap < 0.001
-    if not is_binary_th and (is_binary_periodic_ls or is_binary_periodic_pdc):
-        print(f"{star_name} is passed due to periodogram")
 
-    return  row, (is_binary_periodic_pdc << DecsionFlags.PDC_BIN.value) | \
+    bin_flag = (is_binary_periodic_pdc << DecsionFlags.PDC_BIN.value) | \
             (is_binary_periodic_ls <<  DecsionFlags.LOMB_SCARGLE_BIN.value) | \
             (is_binary_th << DecsionFlags.DELTA_RV_BIN.value)
 
+    row["drv_dec"] = is_binary_th
+    row["ls_fap_dec"] = is_binary_periodic_ls
+    row["pdc_fap_dec"] = is_binary_periodic_pdc
+    row["bin_flag"] = bin_flag
+    return  row, bin_flag
 
-def main_multiple(path_to_ccf_out_dir):
+
+def main_multiple(path_to_ccf_out_dir, out_dir=None):
     all_rows = []
     binarity_counter =[0,0,0,0,0,0,0,0]
     decision_results = []
@@ -225,7 +227,7 @@ def main_multiple(path_to_ccf_out_dir):
         print(csv)
 
         path_to_csv = os.path.join(path_to_ccf_out_dir, csv)
-        row, ret_val = main_single(path_to_csv)
+        row, ret_val = main_single(path_to_csv, out_dir)
         print(ret_val)
         binarity_counter[ret_val] += 1
         decision_results.append([get_bloem_object_name(path_to_csv),ret_val])
@@ -238,31 +240,24 @@ def main_multiple(path_to_ccf_out_dir):
     df = df[cols]
 
     # save to CSV
-    df.to_csv("lmfit_summary.csv", index=False)
+    df.to_csv(f"{out_dir}/lmfit_summary.csv", index=False)
     return pd.DataFrame(decision_results, columns=['BLOEM OBJECT', 'DECISION RESULTS'])
 
 
 if __name__ == '__main__':
 
-    import sys
-
-    # Open a file for writing
-    log_file = open("output.log", "w")
-
-    # Redirect stdout to the file
-    # sys.stdout = log_file
 
 
     path_to_input = '/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/ostars_sb1_from_coAdded/'
-    # path_to_input = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sb1_ostars_coAdded/BLOeM_5-097_CCF_RVs.csv'
+    # path_to_input = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sb1_ostars_coAdded/BLOeM_2-086_CCF_RVs.csv'
+    path_to_output = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/sb1_ostars_coAdded/'
+    os.makedirs(path_to_output, exist_ok=True)
+
     if os.path.isdir(path_to_input):
-        main_multiple(path_to_input)
+        main_multiple(path_to_input, out_dir=path_to_output)
     elif os.path.isfile(path_to_input):
-        print("Decision Flag Is: ",main_single(path_to_input))
+        print("Decision Flag Is: ",main_single(path_to_input, path_to_output))
 
     else:
         print('Please provide a valid path')
         exit(1)
-
-    # Don't forget to close the file when you're done
-    log_file.close()
