@@ -53,7 +53,9 @@ def find_periods(rvs, mjds, err_vs, star_name,out_dir=None):
             plotls(freq, pdc_power_reg, fal=[] , pmin=pmin, pmax=pmax, star_id=star_name+'_PDC',out_dir=os.path.join(out_dir, star_name+"_pdc_periodogram.png"))
     else:
         best_period1 =  fap1 = np.nan
-    return period, fap, fal, best_period1, fap1, ls_sig_periods + pdc_sig_periods
+
+    final_list = [i for i in  ls_sig_periods + pdc_sig_periods if (i!= pmin and i!= pmax)]
+    return period, fap, fal, best_period1, fap1, final_list
 
 def get_bloem_object_name(path_to_csv):
     pattern = r'\d-\d{3}'
@@ -163,9 +165,11 @@ def main_single(path_to_csv,path_to_out = None):
     change_search_region_default(args_dict, GAMMA, get_rv_weighted_mean(data), min(rvs), max(rvs), True)
 
     for chosen_period in possible_periods:
-        if np.isnan(ls_fap):
+        if np.isnan(ls_fap) :
             break
-        change_search_region_default(args_dict, PERIOD, chosen_period, chosen_period*0.99, chosen_period*1.01, False)
+        # if chosen_period < 100:
+        #     continue
+        change_search_region_default(args_dict, PERIOD, chosen_period, chosen_period*0.95, chosen_period*1.05, False)
         mini_results = lmfit_on_sample(args_dict, out_dir, data, star_name)
         if abs(mini_results.redchi -1) < abs(cur_red_chi-1):
             cur_red_chi = mini_results.redchi
@@ -175,34 +179,33 @@ def main_single(path_to_csv,path_to_out = None):
     change_search_region_default(args_dict, PERIOD, 0, -0.1,  0.1, False)
     change_search_region_default(args_dict, K1_STR, 0, -0.1,  0.1, False)
     mini_results = lmfit_on_sample(args_dict, out_dir, data, star_name, null_hyp=True)
-
-    if abs(mini_results.redchi - 1) < abs(cur_red_chi - 1):
-        cur_red_chi = mini_results.redchi
-        best_period = 0
-        best_result = mini_results
     ## end Null Hypothesis
-
-    if hasattr(best_result, 'redchi') and not hasattr(best_result, 'params'):
-        # it’s the null-hyp branch
+    if best_result:
+        row = summarize_result(best_result, star_name)
+        phs = print_lmfit_result(data, args_dict, star_name, best_result, out_dir=star_out_path)
+        row["phs"] = phs
+    else:
         row = {
             'star_name': star_name,
             'method':    'null_hyp',
             'nfev':      None,
             'ndata':     len(data[TIME_STAMPS]),
             'nvarys':    1,
-            'chisqr':    (best_result.redchi * (len(data[TIME_STAMPS]) - 1)),
-            'redchi':    best_result.redchi,
+            'chisqr':    None,
+            'redchi':    None,
             'aic':       None,
             'bic':       None,
             'gamma_init': None,
-            'gamma_value': best_result.gamma,
+            'gamma_value': None,
             'gamma_vary':  False,
             'gamma_stderr': None,
+            'phs': None,
         }
-        print(best_result)
-    else:
-        row = summarize_result(best_result, star_name)
-        print_lmfit_result(data,args_dict,star_name,best_result, out_dir=star_out_path)
+    row["null_chisqr"] = mini_results.redchi * (len(data[TIME_STAMPS]) - 1)
+    row["null_redchi"] = mini_results.redchi
+    row["null_gamma"] = mini_results.gamma
+    print("null_chisqr=",row["null_chisqr"],"null_redchi=",row["null_redchi"],"null_gamma=",row["null_gamma"])
+
     is_binary_th = binary_rv_threshold(rvs, err_vs, drv_tresh=20, sign_threshold=4)
     is_binary_periodic_ls = ls_fap < 0.001
     is_binary_periodic_pdc = pdc_fap < 0.001
@@ -249,7 +252,7 @@ if __name__ == '__main__':
 
 
     path_to_input = '/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/ostars_sb1_from_coAdded/'
-    # path_to_input = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sb1_ostars_coAdded/BLOeM_2-086_CCF_RVs.csv'
+    # path_to_input = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sb1_ostars_coAdded/BLOeM_1-056_CCF_RVs.csv'
     path_to_output = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/sb1_ostars_coAdded/'
     os.makedirs(path_to_output, exist_ok=True)
 

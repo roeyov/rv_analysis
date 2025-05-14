@@ -140,15 +140,31 @@ def print_lmfit_result(data, args_dict, star_name, result ,out_dir=None):
     Es = Kepler(np.pi, Ms, ecc_res)
     eccfac = np.sqrt((1 + ecc_res) / (1 - ecc_res))
     nusdata = 2. * np.arctan(eccfac * np.tan(0.5 * Es))
+    rv_curve = v1mod(nusdata, Gamma1_res, K1_res, Omega_res, ecc_res)
+    # compute your model on the same hjds1 grid for residuals:
+    vmod_at_data = np.interp(hjds1, JDsplot, rv_curve)
+    residuals = v1s - vmod_at_data
 
-    plt.errorbar(hjds1, v1s, yerr=errv1s, fmt='o', color='black')
-    plt.plot(JDsplot, v1mod(nusdata, Gamma1_res, K1_res, Omega_res, ecc_res), color='black', label='primary')
-    plt.xlabel('MJD')
-    plt.ylabel(r'RV [${\rm km}\,{\rm s}^{-1}$]')
-    plt.title(f"orbital fit {star_name}")
-    plt.legend(loc=locleg)
+    # make a 2×1 figure, share the x-axis
+    fig, (ax_fit, ax_resid) = plt.subplots(2, 1, sharex=True,figsize=(10, 10),
+                                           gridspec_kw={'height_ratios': [3, 1]})
+
+    # --- top panel: data + model ---
+    ax_fit.errorbar(hjds1, v1s, yerr=errv1s, fmt='o', color='black')
+    ax_fit.plot(JDsplot, rv_curve, color='black', label='primary')
+    ax_fit.set_ylabel(r'RV [${\rm km}\,{\rm s}^{-1}$]')
+    ax_fit.set_title(f"orbital fit {star_name}, Period {P_res:.2f} d, ecc {ecc_res:.3f}")
+    ax_fit.legend(loc=locleg)
+
+    # --- bottom panel: residuals ---
+    ax_resid.errorbar(hjds1, residuals, yerr=errv1s, fmt='o', color='gray')
+    ax_resid.axhline(0, color='black', lw=0.8)
+    ax_resid.set_xlabel('MJD')
+    ax_resid.set_ylabel('O–C')
+
+    fig.tight_layout()
     if out_dir:
-        plt.savefig(f"{out_dir}/{star_name}_original.png")
+        fig.savefig(f"{out_dir}/{star_name}_with_residuals.png")
     plt.show()
 
     # Create continous phase grid
@@ -161,18 +177,38 @@ def print_lmfit_result(data, args_dict, star_name, result ,out_dir=None):
     # Create data phase grid
     phsdata = (hjds1 - T0_res) / P_res - ((hjds1 - T0_res) / P_res).astype(int)
     phsdata[phsdata < 0] = phsdata[phsdata < 0] + 1.
+    rv_curve_2 = v1mod(nus, Gamma1_res, K1_res, Omega_res, ecc_res)
+    # first compute the model at your data phases (either via interpolation or direct call):
+    # assuming phs is your dense grid and rv_curve_2 the model on that grid:
+    vmod_at_data = np.interp(phsdata, phs, rv_curve_2)
+    residuals = v1s - vmod_at_data
 
-    plt.errorbar(phsdata, v1s, yerr=errv1s, fmt='o', color='red')
-    plt.plot(phs, v1mod(nus, Gamma1_res, K1_res, Omega_res, ecc_res), color='red', label=r'Primary')
-    plt.plot([0., 1., ], [Gamma1_res, Gamma1_res], color='black')
-    plt.xlim(0., 1.)
-    plt.legend()
-    plt.ylabel(r'RV $[{\rm km}\,{\rm s}^{-1}]$')
-    plt.xlabel(r'phase')
-    plt.title(f"folded orbital fit {star_name}")
+    # now build the two‐panel figure
+    fig, (ax_fit, ax_resid) = plt.subplots(
+        2, 1, sharex=True,figsize=(10, 10),
+        gridspec_kw={'height_ratios': [3, 1]}
+    )
+
+    # --- top: folded RV + model + systemic line ---
+    ax_fit.errorbar(phsdata, v1s, yerr=errv1s, fmt='o', color='red')
+    ax_fit.plot(phs, rv_curve_2, color='red', label=r'Primary')
+    ax_fit.plot([0., 1.], [Gamma1_res, Gamma1_res], color='black', lw=1)
+    ax_fit.set_xlim(0., 1.)
+    ax_fit.legend()
+    ax_fit.set_ylabel(r'RV $[{\rm km}\,{\rm s}^{-1}]$')
+    ax_fit.set_title(f"folded orbital fit {star_name}")
+
+    # --- bottom: residuals ---
+    ax_resid.errorbar(phsdata, residuals, yerr=errv1s, fmt='o', color='gray')
+    ax_resid.axhline(0, color='black', lw=0.8)
+    ax_resid.set_xlabel('Phase')
+    ax_resid.set_ylabel('O–C')
+
+    fig.tight_layout()
     if out_dir:
-        plt.savefig(f"{out_dir}/{star_name}_folded.png")
+        fig.savefig(f"{out_dir}/{star_name}_folded_with_residuals.png")
     plt.show()
+    return phsdata
 
 
 def get_rv_weighted_mean(data):

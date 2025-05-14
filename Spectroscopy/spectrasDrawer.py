@@ -117,6 +117,7 @@ def load_template(filename, x_name, y_name):
     return {x_name: x, y_name: y}
 
 def load_templates(template_dir,object_list, x_name, y_name):
+    c = 0
     ret_temps = {}
     template_list = os.listdir(template_dir)
     for element in object_list:
@@ -128,7 +129,9 @@ def load_templates(template_dir,object_list, x_name, y_name):
         if len(chosen_template_fp)>0:
             ret_temps[element] = load_template(chosen_template_fp, x_name, y_name)
         else:
-            print(f"No template found for {element}")
+            ret_temps[element] = None
+            print(f"No template found for {element}. using first MJD sample as template")
+    print(f"Found {c} templates in {template_dir}")
     return ret_temps
 
 def load_all_spectra(files, time_name, x_name, y_name):
@@ -164,12 +167,13 @@ if __name__ == '__main__':
     # Format the date as dd_mm_yy
     formatted_date = current_date.strftime("%d_%m_%y")
     # INTERESTING_WAVELENGTH = [4340,4471,4542,4101,4388,4026,3970,4200]
-    INTERESTING_WAVELENGTH = [4471,4388,4026]
+    INTERESTING_WAVELENGTH = [4340,4101,4471,4026,4388]
     WL_RADIUS = 10
     WAVELENGTH_REGION = [(a-WL_RADIUS,a+WL_RADIUS) for a in INTERESTING_WAVELENGTH]
 
     json_file_key = 'Sample O + 10 early BVs'  # Update to the directory you want to search
     elements = load_elements_list("/Users/roeyovadia/Documents/Data/lists/All_ostars.txt")
+    elements = ["BLOeM_7-069" ]
     fits_suf = FITS_SUF_COMBINED
 
     all_files = find_files_with_strings(elements, DATA_RELEASE_4_PATH, fits_suf)
@@ -177,5 +181,5 @@ if __name__ == '__main__':
     for star in elements:
         a = load_all_spectra(all_files[star], MJD_MID, WAVELENGTH,SCI_NORM)
         # Run the animation
-        animate_data(a, filename=star, interval_scaling=200, outdir=r"/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/spectrasDrawer/HeI_{}".format(formatted_date), WAVELENGTH_REGION=WAVELENGTH_REGION)
+        animate_data(a, filename=star, interval_scaling=200, outdir=r"/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/spectrasDrawer/tomer_{}".format(formatted_date), WAVELENGTH_REGION=WAVELENGTH_REGION)
 
