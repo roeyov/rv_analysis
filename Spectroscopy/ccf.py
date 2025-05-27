@@ -287,7 +287,7 @@ def  cross_cor(data, star_name, temp, lines_to_ranges, seperate_speed=False):
                                     for i in np.arange(len(int_fs))]))
 
     chosen_temp = data[first_mjd] if temp is None else temp
-    if input_df.path_to_meta_data_csv != "":
+    if input_df.path_to_meta_data_csv != "" and temp is not None:
         rot_vel = meta_data[meta_data.ID.str.contains(star_name)].vsini.values[0]
         broadened_template = rotational_broadening(chosen_temp[WAVELENGTH], chosen_temp[SCI_NORM], rot_vel)
         template = interp1d(chosen_temp[WAVELENGTH], broadened_template, bounds_error=False,

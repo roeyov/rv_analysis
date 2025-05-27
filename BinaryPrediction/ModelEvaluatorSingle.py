@@ -16,6 +16,46 @@ from utils.periodagram import ls, pdc, plotls
 from emceeOmLMFITexe import lmfit_on_sample, corner_plot, print_lmfit_result, summarize_result, get_rv_weighted_mean
 
 from enum import Enum
+from scipy.stats import chi2
+
+def calculate_binary_probability(AIC_binary, AIC_single):
+    """
+    Calculate the probability that the binary model is correct based on two AIC values.
+
+    Parameters:
+        AIC_binary (float): AIC of the binary model.
+        AIC_single (float): AIC of the single-star model.
+
+    Returns:
+        Probability (float) of the binary model being correct.
+    """
+    delta_AIC = AIC_single - AIC_binary
+    probability = 1 / (1 + np.exp(-0.0005 * delta_AIC))
+    return probability
+
+def lr_test_prob(chi2_full, chi2_null, k_full, k_null, N):
+    """
+    Return (p_value, prob_full) where:
+      - p_value = P(Δχ² >= observed | null)
+      - prob_full = 1 - p_value
+    Inputs:
+      chi2_full, chi2_null : floats
+         the chi² of the full and null models
+      k_full, k_null : ints
+         number of fitted parameters in full vs null model
+      N : int
+         number of data points
+    """
+    # degrees of freedom
+    nu_null = N - k_null
+    nu_full = N - k_full
+    delta_chi2 = chi2_null - chi2_full
+    df_diff    = (nu_null - nu_full)  # = k_full - k_null
+
+    p_value = chi2.sf(delta_chi2, df_diff)
+    prob_full = 1 - p_value
+    return p_value, prob_full
+
 
 class DecsionFlags(Enum):
     DELTA_RV_BIN   = 0
@@ -143,9 +183,12 @@ def change_search_region_default(args_dict, field_name, init_val, min_val, max_v
 
 
 
-def main_single(path_to_csv,path_to_out = None):
+def main_single(path_to_csv,path_to_out = None, i =-1):
     JSON_PARAM_FILE = '/Users/roeyovadia/Roey/Masters/Reasearch/Scripts/params.json'
     data = pd.read_csv(path_to_csv, sep=' ')
+    # data.drop(data.index[i], inplace=True)
+    # data.reset_index(drop=True, inplace=True)
+
     star_name = get_bloem_object_name(path_to_csv)
     star_out_path = None
     if path_to_out:
@@ -184,6 +227,13 @@ def main_single(path_to_csv,path_to_out = None):
         row = summarize_result(best_result, star_name)
         phs = print_lmfit_result(data, args_dict, star_name, best_result, out_dir=star_out_path)
         row["phs"] = phs
+        p_val, prob_full = lr_test_prob(row['chisqr'],  mini_results.redchi * (len(rvs) - 1), 5, 1, len(rvs))
+        p_aic = calculate_binary_probability(row['aic'], mini_results.aic)
+        p_bic = calculate_binary_probability(row['bic'], mini_results.bic)
+        row['prob_aic'] = p_aic
+        row['prob_bic'] = p_bic
+        row["p_val"] = p_val
+        row["prob_full"] = prob_full
     else:
         row = {
             'star_name': star_name,
@@ -200,11 +250,14 @@ def main_single(path_to_csv,path_to_out = None):
             'gamma_vary':  False,
             'gamma_stderr': None,
             'phs': None,
+            'p_val': None,
+            'prob_full': None,
         }
     row["null_chisqr"] = mini_results.redchi * (len(data[TIME_STAMPS]) - 1)
     row["null_redchi"] = mini_results.redchi
     row["null_gamma"] = mini_results.gamma
-    print("null_chisqr=",row["null_chisqr"],"null_redchi=",row["null_redchi"],"null_gamma=",row["null_gamma"])
+    row["null_aic"] = mini_results.aic
+    row["null_bic"] = mini_results.bic
 
     is_binary_th = binary_rv_threshold(rvs, err_vs, drv_tresh=20, sign_threshold=4)
     is_binary_periodic_ls = ls_fap < 0.001
@@ -218,6 +271,9 @@ def main_single(path_to_csv,path_to_out = None):
     row["ls_fap_dec"] = is_binary_periodic_ls
     row["pdc_fap_dec"] = is_binary_periodic_pdc
     row["bin_flag"] = bin_flag
+    # if best_result:
+    #     corner_plot(args_dict, data, best_result, out_dir)
+
     return  row, bin_flag
 
 
@@ -252,15 +308,22 @@ if __name__ == '__main__':
 
 
     path_to_input = '/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/ostars_sb1_from_coAdded/'
-    # path_to_input = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sb1_ostars_coAdded/BLOeM_1-056_CCF_RVs.csv'
-    path_to_output = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/sb1_ostars_coAdded/'
+    # path_to_input = "/Users/roeyovadia/Downloads/1-041_CCF_RVs.csv"
+    # path_to_input = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sb1_ostars_coAdded/BLOeM_7-069_CCF_RVs.csv'
+    path_to_output = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/bla1/'
     os.makedirs(path_to_output, exist_ok=True)
 
     if os.path.isdir(path_to_input):
         main_multiple(path_to_input, out_dir=path_to_output)
     elif os.path.isfile(path_to_input):
-        print("Decision Flag Is: ",main_single(path_to_input, path_to_output))
-
+        row, val = main_single(path_to_input, path_to_output)
+        print("Decision Flag Is: ",val)
+        df = pd.DataFrame([row])
+        # example: move star_name to front
+        cols = ['star_name'] + [c for c in df.columns if c != 'star_name']
+        df = df[cols]
+        # save to CSV
+        df.to_csv(f"{path_to_output}/lmfit_summary.csv", index=False)
     else:
         print('Please provide a valid path')
         exit(1)

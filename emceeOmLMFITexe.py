@@ -120,96 +120,144 @@ def summarize_result(result, star_name):
     return row
 
 
-def print_lmfit_result(data, args_dict, star_name, result ,out_dir=None):
-    locleg = 'upper left'
-    sys.setrecursionlimit(int(1E6))
-    hjds1 = np.array(data[TIME_STAMPS])
-    v1s = np.array(data[RADIAL_VELS])
-    errv1s = np.abs(data[ERRORS])
-    print(lmfit.fit_report(result))
-    Gamma1_res = result.params[GAMMA].value
-    K1_res = result.params[K1_STR].value
-    Omega_res = result.params[OMEGA].value
-    ecc_res = result.params[ECC].value
-    P_res = result.params[PERIOD].value
-    T0_res = result.params[T].value
 
-    JDsplot = np.arange(min(hjds1) - 0.5 * P_res, max(hjds1) + 0.5 * P_res, .1)
-    phsplot = (JDsplot - T0_res) / P_res - ((JDsplot - T0_res) / P_res).astype(int)
-    Ms = 2 * np.pi * phsplot
-    Es = Kepler(np.pi, Ms, ecc_res)
-    eccfac = np.sqrt((1 + ecc_res) / (1 - ecc_res))
-    nusdata = 2. * np.arctan(eccfac * np.tan(0.5 * Es))
-    rv_curve = v1mod(nusdata, Gamma1_res, K1_res, Omega_res, ecc_res)
-    # compute your model on the same hjds1 grid for residuals:
-    vmod_at_data = np.interp(hjds1, JDsplot, rv_curve)
-    residuals = v1s - vmod_at_data
+def extract_observations(data):
+    hjds = np.array(data[TIME_STAMPS])
+    vels = np.array(data[RADIAL_VELS])
+    errs = np.abs(data[ERRORS])
+    return hjds, vels, errs
 
-    # make a 2×1 figure, share the x-axis
-    fig, (ax_fit, ax_resid) = plt.subplots(2, 1, sharex=True,figsize=(10, 10),
-                                           gridspec_kw={'height_ratios': [3, 1]})
 
-    # --- top panel: data + model ---
-    ax_fit.errorbar(hjds1, v1s, yerr=errv1s, fmt='o', color='black')
-    ax_fit.plot(JDsplot, rv_curve, color='black', label='primary')
-    ax_fit.set_ylabel(r'RV [${\rm km}\,{\rm s}^{-1}$]')
-    ax_fit.set_title(f"orbital fit {star_name}, Period {P_res:.2f} d, ecc {ecc_res:.3f}")
-    ax_fit.legend(loc=locleg)
-
-    # --- bottom panel: residuals ---
-    ax_resid.errorbar(hjds1, residuals, yerr=errv1s, fmt='o', color='gray')
-    ax_resid.axhline(0, color='black', lw=0.8)
-    ax_resid.set_xlabel('MJD')
-    ax_resid.set_ylabel('O–C')
-
-    fig.tight_layout()
+def get_fit_report(result, star_name, out_dir=None):
+    report = lmfit.fit_report(result)
+    print(report)
     if out_dir:
-        fig.savefig(f"{out_dir}/{star_name}_with_residuals.png")
-    plt.show()
+        path = os.path.join(out_dir, f"{star_name}_report.txt")
+        with open(path, 'w') as f:
+            f.write(report)
+        print(f"[{star_name}] Fit report saved to {path}")
 
-    # Create continous phase grid
-    phs = np.linspace(0., 1., num=1000)
-    Ms = 2 * np.pi * phs
-    Es = Kepler(np.pi, Ms, ecc_res)
-    eccfac = np.sqrt((1 + ecc_res) / (1 - ecc_res))
-    nus = 2. * np.arctan(eccfac * np.tan(0.5 * Es))
 
-    # Create data phase grid
-    phsdata = (hjds1 - T0_res) / P_res - ((hjds1 - T0_res) / P_res).astype(int)
-    phsdata[phsdata < 0] = phsdata[phsdata < 0] + 1.
-    rv_curve_2 = v1mod(nus, Gamma1_res, K1_res, Omega_res, ecc_res)
-    # first compute the model at your data phases (either via interpolation or direct call):
-    # assuming phs is your dense grid and rv_curve_2 the model on that grid:
-    vmod_at_data = np.interp(phsdata, phs, rv_curve_2)
-    residuals = v1s - vmod_at_data
-
-    # now build the two‐panel figure
-    fig, (ax_fit, ax_resid) = plt.subplots(
-        2, 1, sharex=True,figsize=(10, 10),
-        gridspec_kw={'height_ratios': [3, 1]}
+def compute_orbital_params(result):
+    params = result.params
+    return (
+        params[GAMMA].value,
+        params[K1_STR].value,
+        params[OMEGA].value,
+        params[ECC].value,
+        params[PERIOD].value,
+        params[T].value
     )
 
-    # --- top: folded RV + model + systemic line ---
-    ax_fit.errorbar(phsdata, v1s, yerr=errv1s, fmt='o', color='red')
-    ax_fit.plot(phs, rv_curve_2, color='red', label=r'Primary')
-    ax_fit.plot([0., 1.], [Gamma1_res, Gamma1_res], color='black', lw=1)
-    ax_fit.set_xlim(0., 1.)
-    ax_fit.legend()
-    ax_fit.set_ylabel(r'RV $[{\rm km}\,{\rm s}^{-1}]$')
-    ax_fit.set_title(f"folded orbital fit {star_name}")
 
-    # --- bottom: residuals ---
-    ax_resid.errorbar(phsdata, residuals, yerr=errv1s, fmt='o', color='gray')
-    ax_resid.axhline(0, color='black', lw=0.8)
-    ax_resid.set_xlabel('Phase')
-    ax_resid.set_ylabel('O–C')
+def compute_rv_curve_time(hjds, P, T0, ecc, Gamma, K, Omega, step=0.1):
+    """
+    Returns time_grid and corresponding RV by calling v1mod on nu from Kepler.
+    """
+    tmin, tmax = hjds.min() - 0.5*P, hjds.max() + 0.5*P
+    time_grid = np.arange(tmin, tmax, step)
+    phases = ((time_grid - T0) / P) % 1
+    M = 2*np.pi*phases
+    E = Kepler(np.pi, M, ecc)
+    nu = 2*np.arctan2(np.sqrt(1+ecc)*np.sin(E/2), np.sqrt(1-ecc)*np.cos(E/2))
+    rv = v1mod(nu, Gamma, K, Omega, ecc)
+    return time_grid, rv
+
+
+def compute_rv_curve_phase(P, T0, ecc, Gamma, K, Omega, n_points=1000):
+    """
+    Returns phase_grid and RV by calling v1mod on nu from Kepler at each dense phase.
+    """
+    phase_grid = np.linspace(0,1,n_points)
+    M = 2*np.pi*phase_grid
+    E = Kepler(np.pi, M, ecc)
+    if np.isnan(E.all()):
+        return phase_grid, np.full(phase_grid.shape, np.nan)
+    nu = 2*np.arctan2(np.sqrt(1+ecc)*np.sin(E/2), np.sqrt(1-ecc)*np.cos(E/2))
+    rv = v1mod(nu, Gamma, K, Omega, ecc)
+    return phase_grid, rv
+
+
+def plot_time_series_with_residuals(hjds, vels, errs, time_grid, rv_model,
+                                    Gamma, K, Omega, ecc, P, star_name,
+                                    out_dir=None, figsize=(10,10)):
+    vmod_data = np.interp(hjds, time_grid, rv_model)
+    residuals = vels - vmod_data
+
+    fig, (ax1, ax1r) = plt.subplots(
+        2, 1, sharex=True, figsize=figsize,
+        gridspec_kw={'height_ratios':[3,1]}
+    )
+    ax1.errorbar(hjds, vels, yerr=errs, fmt='o', color='black')
+    ax1.plot(time_grid, rv_model, color='black', label='Model')
+    ax1.set_ylabel(r'RV [{\\rm km}\\,{\rm s}^{-1}]')
+    ax1.set_title(f"Orbital fit {star_name}: P={P:.2f}d, ecc={ecc:.3f}")
+    ax1.legend(loc='upper left')
+
+    ax1r.errorbar(hjds, residuals, yerr=errs, fmt='o', color='gray')
+    ax1r.axhline(0, color='black', lw=0.8)
+    ax1r.set_xlabel('MJD')
+    ax1r.set_ylabel('O–C')
 
     fig.tight_layout()
     if out_dir:
-        fig.savefig(f"{out_dir}/{star_name}_folded_with_residuals.png")
+        fig.savefig(os.path.join(out_dir, f"{star_name}_time_residuals.png"))
     plt.show()
-    return phsdata
+    return residuals
 
+
+def plot_phase_folded_with_residuals(hjds, vels, errs, P, T0,
+                                     Gamma, K, Omega, ecc,
+                                     star_name, out_dir=None,
+                                     figsize=(10,10)):
+    phs_data = ((hjds - T0) / P) % 1
+    phase_grid, rv_phase = compute_rv_curve_phase(P, T0, ecc, Gamma, K, Omega)
+    vmod_data = np.interp(phs_data, phase_grid, rv_phase)
+    residuals = vels - vmod_data
+
+    fig, (ax2, ax2r) = plt.subplots(
+        2, 1, sharex=True, figsize=figsize,
+        gridspec_kw={'height_ratios':[3,1]}
+    )
+    ax2.errorbar(phs_data, vels, yerr=errs, fmt='o', color='red')
+    ax2.plot(phase_grid, rv_phase, color='red', label='Model')
+    ax2.axhline(Gamma, color='black', linestyle='--')
+    ax2.set_xlim(0,1)
+    ax2.set_ylabel(r'RV [{\\rm km}\\,{\rm s}^{-1}]')
+    ax2.set_title(f"Folded fit {star_name}")
+    ax2.legend()
+
+    ax2r.errorbar(phs_data, residuals, yerr=errs, fmt='o', color='gray')
+    ax2r.axhline(0, color='black', lw=0.8)
+    ax2r.set_xlabel('Phase')
+    ax2r.set_ylabel('O–C')
+
+    fig.tight_layout()
+    if out_dir:
+        fig.savefig(os.path.join(out_dir, f"{star_name}_phase_residuals.png"))
+    plt.show()
+    return phs_data, residuals
+
+
+def print_lmfit_result(data, args_dict, star_name, result, out_dir=None):
+    sys.setrecursionlimit(int(1e6))
+    hjds, vels, errs = extract_observations(data)
+    get_fit_report(result, star_name, out_dir)
+    Gamma, K, Omega, ecc, P, T0 = compute_orbital_params(result)
+
+    time_grid, rv_time = compute_rv_curve_time(hjds, P, T0, ecc, Gamma, K, Omega)
+    plot_time_series_with_residuals(
+        hjds, vels, errs, time_grid, rv_time,
+        Gamma, K, Omega, ecc, P, star_name, out_dir
+    )
+
+    plot_phase_folded_with_residuals(
+        hjds, vels, errs, P, T0,
+        Gamma, K, Omega, ecc,
+        star_name, out_dir
+    )
+
+    return
 
 def get_rv_weighted_mean(data):
     v1s     = np.array(data[RADIAL_VELS])
@@ -217,6 +265,31 @@ def get_rv_weighted_mean(data):
     weights = 1.0 / errv1s ** 2
     gamma0 = np.sum(v1s * weights) / np.sum(weights)
     return gamma0
+
+def compute_AIC_BIC(y_obs, errors,chi_sqr, num_params):
+    """
+    Compute the Akaike Information Criterion (AIC) and Bayesian Information Criterion (BIC).
+
+    Parameters:
+        y_obs (array): Observed data.
+        y_model (array): Model predictions.
+        errors (array): Observational errors (standard deviation).
+        num_params (int): Number of parameters in the model (k).
+
+    Returns:
+        AIC, BIC
+    """
+    n = len(y_obs)
+
+    log_likelihood_term = np.sum(np.log(2 * np.pi * errors**2))
+
+    # Compute AIC
+    AIC = 2 * num_params + chi_sqr + log_likelihood_term
+
+    # Compute BIC
+    BIC = num_params * np.log(n) + chi_sqr + log_likelihood_term
+
+    return AIC, BIC
 
 def lmfit_on_sample(args_dict, output, data, star_name='', null_hyp=False):
     """
@@ -274,11 +347,11 @@ def lmfit_on_sample(args_dict, output, data, star_name='', null_hyp=False):
         chisq    = np.sum(((v1s - gamma0) / errv1s)**2)
         dof      = len(v1s) - 1   # one fitted parameter (gamma)
         redchi   = chisq / dof
-
+        aic,bic = compute_AIC_BIC(v1s, errv1s, chisq, 1)
         # report
         # print(f"[{star_name}] Null hypothesis fit → γ = {gamma0:.5g}, "
         #       f"χ²_red = {redchi:.3f}")
-        return SimpleNamespace(gamma=gamma0, redchi=redchi)
+        return SimpleNamespace(gamma=gamma0, redchi=redchi, aic=aic, bic=bic)
 
     # ---- full orbital fit ----
     lmfit_params_dict = args_dict[LMFIT_PARAMS]
@@ -329,10 +402,12 @@ def Kepler(E, M, ecc):
     conversion_count = 1
     loop_E = E
     while True:
-        if counter > 990:
+        if counter > 10000:
             loop_E = np.random.rand(len(M)) * np.pi
             counter = 0
             print("did not converge {} times".format(conversion_count))
+            if conversion_count > 30:
+                return np.full(loop_E.shape, np.nan)
             conversion_count += 1
         E2 = (M - ecc * (loop_E * np.cos(loop_E) - np.sin(loop_E))) / (1. - ecc * np.cos(loop_E))
         eps = np.abs(E2 - loop_E)
@@ -633,10 +708,10 @@ def main():
         exit(1)
     mini_results = lmfit_on_sample(args_dict, args.output_dir, data)
 
-    # if TRUTHS in data.keys():
-    #     corner_plot(args_dict, data, mini_results, args.output_dir, data[TRUTHS])
-    # else:
-    #     corner_plot(args_dict, data, mini_results, args.output_dir)
+    if TRUTHS in data.keys():
+        corner_plot(args_dict, data, mini_results, args.output_dir, data[TRUTHS])
+    else:
+        corner_plot(args_dict, data, mini_results, args.output_dir)
     exit(0)
 
 
