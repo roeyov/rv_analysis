@@ -6,6 +6,8 @@ import sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 from utils.constants import *
+from tmps.sigmaSimDistribution import sample_method1
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -59,7 +61,6 @@ def nu_func(phi, ecc):
 ######################################
 
 def get_data(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv):
-    sig_rv_arr = np.array([sig_rv] * nrv)
     # Generate random array of observation times between 0 & P
     ts = np.array([ 74.5177001 ,  97.64613847, 103.9829237 , 183.06141608,
            228.11894284, 238.69681915, 258.76892231, 295.83020203,
@@ -82,8 +83,19 @@ def get_data(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv):
         return None, None, None, None
     # Generate true RVs for primary
     rvs_1_true = RV12(nus, gamma, k1, k2, omega, ecc)[0]
-    # Generate errors
-    errs_v1 = np.array([np.random.normal(0, sig) for sig in sig_rv_arr])
+
+    # Generate errors from normal distribution
+    # sig = 3
+    # sig_rv_arr = np.array([sig_rv] * nrv)
+    # errs_v1 = np.array([np.random.normal(0, sig) for sig in sig_rv_arr])
+
+
+    # Generate errors from fitted log normal distribution
+    shape, loc, scale = 0.8702, 0.0, 3.4602
+    sigma_arr, errs_v1_arr = sample_method1(shape=shape, loc=loc, scale=scale,n_objects=1, n_measurements=nrv)
+    sigma = sigma_arr[0]
+    errs_v1 = errs_v1_arr[0]
+    sig_rv_arr = [sigma]*nrv
     # Generate realistic RVs for primary (this is what you should store)
     rvs_1 = rvs_1_true + errs_v1
     return rvs_1, ts, sig_rv_arr, errs_v1
@@ -157,7 +169,7 @@ def out_single(t0, p, ecc, omega, m1, q, gamma, inc, nrv, sig_rv, plot=False):
 
 
 def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_binaries):
-    n_of_samples_in_files = int(1e3)
+    n_of_samples_in_files = int(1e4)
     columns = [T, ECC, OMEGA, K1_STR, K2_STR, GAMMA, PERIOD, M1, Q, INC, RADIAL_VELS, TIME_STAMPS, ERRORS,FEATURES,LABELS]
     for key in args_dict.keys():
         if key == INC:
@@ -240,20 +252,20 @@ def out_multiple_and_dump(args_dict, nrv, sig_rv, n_of_samples, out_dir, are_bin
 
 
     # histogram plots
-    for key in args_dict:
-        # if SAMPLES not in args_dict[key]:
-        # if key != MAX_MIN_DIFF:
-        #     continue
-        try:
-            plt.hist(np.log10(args_dict[key][SAMPLES]), bins=100, alpha=0.5)
-            plt.title("log_" + key + ' '+ str(np.sum(np.array(args_dict[key][SAMPLES])<20)))
-
-            # plt.hist(args_dict[key][SAMPLES], bins=50, alpha=0.5)
-            # plt.title(key)
-
-            plt.show()
-        except ValueError:
-            continue
+    # for key in args_dict:
+    #     # if SAMPLES not in args_dict[key]:
+    #     # if key != MAX_MIN_DIFF:
+    #     #     continue
+    #     try:
+    #         plt.hist(np.log10(args_dict[key][SAMPLES]), bins=100, alpha=0.5)
+    #         plt.title("log_" + key + ' '+ str(np.sum(np.array(args_dict[key][SAMPLES])<20)))
+    #
+    #         # plt.hist(args_dict[key][SAMPLES], bins=50, alpha=0.5)
+    #         # plt.title(key)
+    #
+    #         plt.show()
+    #     except ValueError:
+    #         continue
     if len(data):
         df = pd.DataFrame(data, columns=columns)
         df.to_parquet(out_dir.format(files_counter))
@@ -295,9 +307,9 @@ def main():
 
         out_single(T0, P, e, Omega, m1, q, Gamma, inc, NRV, sig_RV, True)
     else:
-        generate_trues = True
+        generate_trues = False
         T0_RANGE = (0, 1)  # flat times pi
-        LOG_PERIODS_RANGE = (0, 3)  # flat log space
+        LOG_PERIODS_RANGE = (0, 4)  # flat log space
         ECC_RANGE = (0, 0.97)  # flat space
         OMEGA_RANGE = (-np.pi, np.pi)  # flat space
         INC_RANGE = (0, np.pi / 2) if generate_trues else (0, 0)  # sine space
@@ -319,20 +331,20 @@ def main():
                      K1_STR: {},
                      K2_STR: {},
                      }
-        N_OF_SAMPS = int(1e4)
-        dataset_name = "time_analysis"
+        N_OF_SAMPS = int(1e7)
+        dataset_name = "new_sigma"
         # np.random.seed(42)
         if generate_trues:
             timestr = strftime("{}_{}_Trues".format(dataset_name, str(N_OF_SAMPS)))
-            OUTDIR = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\RVDataGen\{}".format(timestr)
+            OUTDIR = r"//Users/roeyovadia/Documents/Data/simulatedData_new_noise/{}/".format(timestr)
             os.makedirs(OUTDIR, exist_ok=True)
-            out_fp_format = OUTDIR + r"\{}.txt"
+            out_fp_format = OUTDIR + r"/{}.parquet"
             out_multiple_and_dump(ARGS_DICT, NRV, sig_RV, N_OF_SAMPS, out_fp_format, 1)
         else:
             timestr = strftime("{}_{}_Falses".format(dataset_name, str(N_OF_SAMPS)))
-            OUTDIR = r"C:\Users\roeyo\Documents\Roey's\Masters\Reasearch\scriptsOut\RVDataGen\{}".format(timestr)
+            OUTDIR = r"/Users/roeyovadia/Documents/Data/simulatedData_new_noise/{}/".format(timestr)
             os.makedirs(OUTDIR, exist_ok=True)
-            out_fp_format = OUTDIR + r"\{}.txt"
+            out_fp_format = OUTDIR + r"/{}.parquet"
             out_multiple_and_dump(ARGS_DICT, NRV, sig_RV, N_OF_SAMPS, out_fp_format, 0)
 
 

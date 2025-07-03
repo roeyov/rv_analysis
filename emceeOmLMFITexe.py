@@ -205,38 +205,53 @@ def plot_time_series_with_residuals(hjds, vels, errs, time_grid, rv_model,
     plt.show()
     return residuals
 
+def calculate_phase_criterias(data, result):
+    hjds, vels, errs = extract_observations(data)
+    Gamma, K, Omega, ecc, P, T0 = compute_orbital_params(result)
+    phs_data, phase_grid, rv_phase, residuals = plot_phase_folded_with_residuals(
+        hjds, vels, errs, P, T0,
+        Gamma, K, Omega, ecc,
+        '',plot=False
+    )
+    phs_data.sort()
+    max_phase_gap = np.max((phs_data - np.roll(phs_data, 1))%1)
+    top_max_rv_gap, bottom_max_rv_gap = (np.max(rv_phase) - np.max(vels))/(np.max(rv_phase)-Gamma), (np.min(rv_phase) - np.min(vels))/(Gamma - np.min(rv_phase))
+
+    return np.round(max_phase_gap,2), np.round(top_max_rv_gap,2), np.round(bottom_max_rv_gap,2)
+
+
 
 def plot_phase_folded_with_residuals(hjds, vels, errs, P, T0,
                                      Gamma, K, Omega, ecc,
-                                     star_name, out_dir=None,
+                                     star_name, out_dir=None,plot=True,
                                      figsize=(10,10)):
     phs_data = ((hjds - T0) / P) % 1
     phase_grid, rv_phase = compute_rv_curve_phase(P, T0, ecc, Gamma, K, Omega)
     vmod_data = np.interp(phs_data, phase_grid, rv_phase)
     residuals = vels - vmod_data
+    if plot:
+        fig, (ax2, ax2r) = plt.subplots(
+            2, 1, sharex=True, figsize=figsize,
+            gridspec_kw={'height_ratios':[3,1]}
+        )
+        ax2.errorbar(phs_data, vels, yerr=errs, fmt='o', color='red')
+        ax2.plot(phase_grid, rv_phase, color='red', label='Model')
+        ax2.axhline(Gamma, color='black', linestyle='--')
+        ax2.set_xlim(0,1)
+        ax2.set_ylabel(r'RV [{\\rm km}\\,{\rm s}^{-1}]')
+        ax2.set_title(f"Folded fit {star_name}")
+        ax2.legend()
 
-    fig, (ax2, ax2r) = plt.subplots(
-        2, 1, sharex=True, figsize=figsize,
-        gridspec_kw={'height_ratios':[3,1]}
-    )
-    ax2.errorbar(phs_data, vels, yerr=errs, fmt='o', color='red')
-    ax2.plot(phase_grid, rv_phase, color='red', label='Model')
-    ax2.axhline(Gamma, color='black', linestyle='--')
-    ax2.set_xlim(0,1)
-    ax2.set_ylabel(r'RV [{\\rm km}\\,{\rm s}^{-1}]')
-    ax2.set_title(f"Folded fit {star_name}")
-    ax2.legend()
+        ax2r.errorbar(phs_data, residuals, yerr=errs, fmt='o', color='gray')
+        ax2r.axhline(0, color='black', lw=0.8)
+        ax2r.set_xlabel('Phase')
+        ax2r.set_ylabel('O–C')
 
-    ax2r.errorbar(phs_data, residuals, yerr=errs, fmt='o', color='gray')
-    ax2r.axhline(0, color='black', lw=0.8)
-    ax2r.set_xlabel('Phase')
-    ax2r.set_ylabel('O–C')
-
-    fig.tight_layout()
-    if out_dir:
-        fig.savefig(os.path.join(out_dir, f"{star_name}_phase_residuals.png"))
-    plt.show()
-    return phs_data, residuals
+        fig.tight_layout()
+        if out_dir:
+            fig.savefig(os.path.join(out_dir, f"{star_name}_phase_residuals.png"))
+        plt.show()
+    return phs_data, phase_grid, rv_phase, residuals
 
 
 def print_lmfit_result(data, args_dict, star_name, result, out_dir=None):
@@ -251,13 +266,13 @@ def print_lmfit_result(data, args_dict, star_name, result, out_dir=None):
         Gamma, K, Omega, ecc, P, star_name, out_dir
     )
 
-    plot_phase_folded_with_residuals(
+    phs_data, phase_grid, rv_phase, residuals = plot_phase_folded_with_residuals(
         hjds, vels, errs, P, T0,
         Gamma, K, Omega, ecc,
         star_name, out_dir
     )
 
-    return
+    return phs_data
 
 def get_rv_weighted_mean(data):
     v1s     = np.array(data[RADIAL_VELS])
@@ -576,17 +591,43 @@ def corner_plot(args_dict, data, mini_results,output, truths=None):
         - If `truths` is provided, it will be used to indicate the true parameter values on the corner plot.
     """
     corner_params = args_dict[CORNER_PARAMS]
-    mini_results.params.add(LN_SIGMA, value=np.log(corner_params[LN_SIGMA][INIT_VAL]),
+    corner_params_obj = mini_results.params.copy()
+
+    corner_params_obj.add(LN_SIGMA, value=np.log(corner_params[LN_SIGMA][INIT_VAL]),
                             min=np.log(corner_params[LN_SIGMA][MIN_VAL]),
                             max=np.log(corner_params[LN_SIGMA][MAX_VAL]))
-    res = lmfit.minimize(chisqr,
-                         kws = data,
-                         method=corner_params[CONRER_METHOD],
-                         nan_policy=corner_params[NAN_POLICY],
-                         burn=corner_params[BURN],
-                         steps=corner_params[STEPS],
-                         thin=corner_params[THIN],
-                         params=mini_results.params, is_weighted=False, progress=True)
+
+    # Set the specific parameter's vary to True
+    corner_params_obj[PERIOD].set(vary=True)
+    corner_params_obj[PERIOD].stderr = corner_params_obj[PERIOD].value * 0.05
+    # for name, p in corner_params_obj.items():
+    #     if not p.vary:
+    #         p.set(vary=True)
+    #     # Expand bounds around best value using stderr (3σ as an example)
+    #     if p.stderr is not None and p.stderr > 0:
+    #         p_min = p.value - 3 * p.stderr
+    #         p_max = p.value + 3 * p.stderr
+    #         p.set(min=p_min, max=p_max)
+    #     elif name != ECC:
+    #         # If no stderr is available, provide a fallback region
+    #         p.set(min=p.value *0.95, max=p.value *1.05)
+    # for name, p in corner_params_obj.items():
+    #     print(f"{name}: value={p.value:.4f}, stderr={p.stderr}, bounds=({p.min}, {p.max})")
+
+    # Then use this updated Parameters object
+    res = lmfit.minimize(
+        chisqr,
+        kws=data,
+        method=corner_params[CONRER_METHOD],
+        nan_policy=corner_params[NAN_POLICY],
+        burn=corner_params[BURN],
+        steps=corner_params[STEPS],
+        thin=corner_params[THIN],
+        params=corner_params_obj,
+        is_weighted=True,
+        progress=True
+    )
+
 
     dump_minimization_report(res, output, "corner")
 
@@ -599,6 +640,29 @@ def corner_plot(args_dict, data, mini_results,output, truths=None):
                   0]
 
     figure = corner.corner(res.flatchain, truths=prediction, truth_color='red', labels=res.var_names)
+    best_fit_params = res.params.copy()
+    best_fit_list = []
+    # Get the flat MCMC chain
+    chain = res.flatchain  # shape: (n_samples, n_parameters)
+    var_names = res.var_names
+
+    # Loop through parameters and update with median and stderr
+    for name in var_names:
+        samples = chain[name]  # samples for this parameter
+        median = np.median(samples)
+        stderr = np.std(samples, ddof=1)
+        best_fit_params[name].set(value=median, stderr=stderr)
+        best_fit_list.append(best_fit_params[name].value)
+    # Add the second set of truths manually
+    num_of_params = len(res.var_names)
+    axes = np.array(figure.axes).reshape((num_of_params, num_of_params))
+    for i in range(num_of_params):
+        for j in range(i + 1):
+            ax = axes[i, j]
+            ax.axvline(best_fit_list[j], color='blue', linestyle='--')
+            if i != j:
+                ax.axhline(best_fit_list[i], color='blue', linestyle='--')
+                ax.plot(best_fit_list[j], best_fit_list[i], 'bo')
 
     # Add the second set of truths manually
     if truths:

@@ -128,6 +128,7 @@ def load_templates(template_dir,object_list, x_name, y_name):
                 break
         if len(chosen_template_fp)>0:
             ret_temps[element] = load_template(chosen_template_fp, x_name, y_name)
+            c += 1
         else:
             ret_temps[element] = None
             print(f"No template found for {element}. using first MJD sample as template")

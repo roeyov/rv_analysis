@@ -68,3 +68,5 @@ NN_DECISION_PRE = "nnDecisionPreSigmoid"
 
 LS_FREQS = "lombScargleFreqs"
 LS_POWERS = "lombScarglePowers"
+
+IS_TRAIN = "is_train"

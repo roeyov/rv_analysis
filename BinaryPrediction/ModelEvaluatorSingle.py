@@ -13,10 +13,17 @@ from h5py.h5f import flush
 from BinaryPrediction.Models import significance
 from utils.constants import *
 from utils.periodagram import ls, pdc, plotls
-from emceeOmLMFITexe import lmfit_on_sample, corner_plot, print_lmfit_result, summarize_result, get_rv_weighted_mean
+from emceeOmLMFITexe import (lmfit_on_sample,
+                             corner_plot,
+                             print_lmfit_result,
+                             summarize_result,
+                             get_rv_weighted_mean,
+                             calculate_phase_criterias)
 
 from enum import Enum
 from scipy.stats import chi2
+from lmfit.minimizer import AbortFitException
+
 
 def calculate_binary_probability(AIC_binary, AIC_single):
     """
@@ -30,7 +37,7 @@ def calculate_binary_probability(AIC_binary, AIC_single):
         Probability (float) of the binary model being correct.
     """
     delta_AIC = AIC_single - AIC_binary
-    probability = 1 / (1 + np.exp(-0.0005 * delta_AIC))
+    probability = 1 / (1 + np.exp(-0.5 * delta_AIC))
     return probability
 
 def lr_test_prob(chi2_full, chi2_null, k_full, k_null, N):
@@ -83,7 +90,7 @@ def find_periods(rvs, mjds, err_vs, star_name,out_dir=None):
     else:
         period =  fap = fal = np.nan
 
-    best_period1, fap1, freq, pdc_power_reg = pdc(mjds  , rvs, data_err=err_vs, pmin=pmin, pmax=pmax)
+    best_period1, fap1, fap_vec, freq, pdc_power_reg = pdc(mjds  , rvs, data_err=err_vs, pmin=pmin, pmax=pmax)
     pdc_sig_periods = significant_periods(1/freq,pdc_power_reg)
 
     if best_period1 > pmin and best_period1 < pmax:
@@ -94,7 +101,7 @@ def find_periods(rvs, mjds, err_vs, star_name,out_dir=None):
     else:
         best_period1 =  fap1 = np.nan
 
-    final_list = [i for i in  ls_sig_periods + pdc_sig_periods if (i!= pmin and i!= pmax)]
+    final_list = [i for i in  ls_sig_periods + pdc_sig_periods if (round(i, 2) != round(pmin, 2) and round(i, 2) != round(pmax, 2))]
     return period, fap, fal, best_period1, fap1, final_list
 
 def get_bloem_object_name(path_to_csv):
@@ -212,8 +219,15 @@ def main_single(path_to_csv,path_to_out = None, i =-1):
             break
         # if chosen_period < 100:
         #     continue
-        change_search_region_default(args_dict, PERIOD, chosen_period, chosen_period*0.95, chosen_period*1.05, False)
-        mini_results = lmfit_on_sample(args_dict, out_dir, data, star_name)
+
+        change_search_region_default(args_dict, PERIOD, chosen_period, chosen_period*0.995, chosen_period*1.005, False)
+        try:
+            mini_results = lmfit_on_sample(args_dict, out_dir, data, star_name)
+        except AbortFitException:
+            continue
+        # if False:
+            # print_lmfit_result(data, args_dict, star_name, mini_results, out_dir=star_out_path)
+        # print(calculate_phase_criterias(data, mini_results))
         if abs(mini_results.redchi -1) < abs(cur_red_chi-1):
             cur_red_chi = mini_results.redchi
             best_period = chosen_period
@@ -307,10 +321,10 @@ if __name__ == '__main__':
 
 
 
-    path_to_input = '/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/ostars_sb1_from_coAdded/'
+    path_to_input = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/ostars_sb1_new_list_from_coadded/BLOeM_2-024_CCF_RVs.csv"
+    # path_to_input = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/ostars_sb1_new_list_from_coadded/"
     # path_to_input = "/Users/roeyovadia/Downloads/1-041_CCF_RVs.csv"
-    # path_to_input = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sb1_ostars_coAdded/BLOeM_7-069_CCF_RVs.csv'
-    path_to_output = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/bla1/'
+    path_to_output = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/ostars_sb1_new_list_from_coadded1/'
     os.makedirs(path_to_output, exist_ok=True)
 
     if os.path.isdir(path_to_input):

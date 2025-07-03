@@ -34,7 +34,7 @@ def process_file(input_path, output_path, model, par_file):
     df[unique_cols].to_parquet(os.path.join(output_path, par_file))
 
 
-def calc_model(input_path, output_path, model, max_workers=10):
+def calc_model(input_path, output_path, model, max_workers=50):
     files = os.listdir(input_path)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

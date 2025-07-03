@@ -18,6 +18,7 @@ from constants import *
 from spectrasDrawer import find_files_with_strings, load_elements_list, load_all_spectra
 from BinaryPrediction.ModelEvaluatorSingle import get_bloem_object_name, load_final_data_from_ccf_out
 
+DEFAULT_DURATION = 150
 
 def read_spectrum(fits_path):
     """
@@ -76,7 +77,7 @@ def make_spectra_orbit_gif(
     rv_csv_path,
     orbit_results,
     output_path,
-    duration=0.5
+    duration=DEFAULT_DURATION
 ):
     """
     Generate an animated GIF showing spectra and phase-folded RV model.
@@ -118,7 +119,7 @@ def make_spectra_orbit_gif(
     writer = imageio.get_writer(output_path, mode='I', duration=duration)
     for mjd, phase, rv_obs in zip(mjd_sorted, phis_sorted, rvs_sorted):
         # find spectrum
-        matches = [f for f in spec_files if f"{mjd:.3f}" in str(f)]
+        matches = [f for f in spec_files if f"{mjd}" in str(f)]
         if not matches:
             continue
         spec_path = matches[0]
@@ -129,7 +130,7 @@ def make_spectra_orbit_gif(
             object_name, mjd, phase,
             phase_grid, rv_curve,
             phis_sorted, rvs_sorted,
-            (K, e, omega, gamma), flux_ylim=(0.7,1.1),wl_delta=10
+            (K, e, omega, gamma), flux_ylim=(0.6,1.1),wl_delta=10
         )
         writer.append_data(frame)
     writer.close()
@@ -138,11 +139,11 @@ def make_spectra_orbit_gif(
 
 
 # Example usage
-ccf_out_dir = "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/ostars_sb1_from_coAdded/"
-lmfit_res = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/sb1_ostars_coAdded/lmfit_summary.csv"
+ccf_out_dir = "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/ostars_sb1_new_list_from_coadded/"
+lmfit_res = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/ostars_sb1_new_list_from_coadded1/lmfit_summary.csv"
 lmfit_file = pd.read_csv(lmfit_res)
 elements = load_elements_list("/Users/roeyovadia/Documents/Data/lists/ostars_sb1.txt")
-
+elements = ["2-024"]
 all_files = find_files_with_strings(elements, DATA_RELEASE_4_PATH, FITS_SUF_COMBINED)
 for star in elements:
     star_split = star.split("_")
@@ -156,5 +157,5 @@ for star in elements:
     orbit_df = lmfit_file[lmfit_file['star_name'] == star_number]
     make_spectra_orbit_gif(
         spec_dict, star, rv_csv, orbit_df,
-        f'/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/orbitalGifs/{star}_spectra.gif', duration=10
+        f'/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/orbitalGifs/{star}_spectra.gif'
     )

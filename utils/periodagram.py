@@ -26,10 +26,11 @@ pmax = 2000.
 def pdc(time, data, data_err=[], pmin=1., pmax=1000):
     freq = np.arange(1/pmax, 1/pmin, 0.0001)
     A, a, pdc_power_reg = calc_pdc(freq, time, data, data_err)
-    fap1 = chi2.sf(np.max(pdc_power_reg) * len(time) + 1, 1) ## todo what???
+    fap1 = chi2.sf(np.max(pdc_power_reg) * len(time) + 1, 1)
+    fap_vec = chi2.sf(pdc_power_reg * len(time) + 1, 1)## todo what???
     max_freq1 = freq[np.argmax(pdc_power_reg)]
     best_period1 = 1/max_freq1
-    return best_period1, fap1, freq, pdc_power_reg
+    return best_period1, fap1, fap_vec, freq, pdc_power_reg
 
 def ls(time, data, data_err=[], probabilities = [0.5, 0.01, 0.001], pmin=1., pmax=1000, norm='model',
        ls_method='fast', fa_method = 'baluev', samples_per_peak=50, nterms=1, center_data = True):
@@ -135,7 +136,7 @@ if __name__ == '__main__':
     period, fap, fal, freq, pow = ls(hjds1, v1s,data_err=ervv1s, pmin=1, pmax=1000)
     plotls(freq, pow, fal, pmin=pmin, pmax=pmax)
 
-    best_period1, fap1, freq, pdc_power_reg = pdc(hjds1, v1s, data_err=ervv1s, pmin=1., pmax=1000)
+    best_period1, fap1, fap_vec, freq, pdc_power_reg = pdc(hjds1, v1s, data_err=ervv1s, pmin=1., pmax=1000)
     plotls(freq, pdc_power_reg, fal=[] , pmin=pmin, pmax=pmax)
     # probs = np.arange(-1, 1, 0.0001)
     # fap1 = chi2.sf(probs * 25 , 1)  # Survival function of chi-square distribution

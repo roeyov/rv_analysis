@@ -11,14 +11,14 @@ columns_to_select = [PERIOD, RADIAL_VELS, TIME_STAMPS, ERRORS]
 
 
 def lomb_scargle(row):
-    pmin = 2.0
-    pmax = 1000.0
+    pmin = 1.0
+    pmax = 10000.0
     best_period1, fap1, fal1, frequency1, power1 = ls(row[TIME_STAMPS], row[RADIAL_VELS], row[ERRORS],
                                                       probabilities=[0.5, 0.01, 0.001], pmin=pmin, pmax=pmax,
                                                       norm="model", ls_method="fast", fa_method="baluev",
                                                       samples_per_peak=1000)
     # plotls(frequency1, power1, fal1, pmin=1.0, pmax=10000)
-    pdc_best_period, pdc_fap, pdc_freq, pdc_power_reg = pdc(row[TIME_STAMPS], row[RADIAL_VELS], data_err=row[ERRORS],
+    pdc_best_period, pdc_fap,pdc_fap_vec, pdc_freq, pdc_power_reg = pdc(row[TIME_STAMPS], row[RADIAL_VELS], data_err=row[ERRORS],
                                                             pmin=pmin, pmax=pmax)
     # print("1 ")
     return best_period1, fap1, fal1, np.max(power1), pdc_best_period, pdc_fap, np.max(pdc_power_reg)
