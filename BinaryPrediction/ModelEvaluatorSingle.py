@@ -114,7 +114,7 @@ def get_bloem_object_name(path_to_csv):
 
 
 def significant_periods(periods, powers,
-                        max_periods=5,
+                        max_periods=3,
                         min_separation=1.2):
     """
     Identify up to `max_periods` significant periods from a power spectrum,
@@ -225,8 +225,9 @@ def main_single(path_to_csv,path_to_out = None, i =-1):
             mini_results = lmfit_on_sample(args_dict, out_dir, data, star_name)
         except AbortFitException:
             continue
-        # if False:
-            # print_lmfit_result(data, args_dict, star_name, mini_results, out_dir=star_out_path)
+        if True:
+            # Toogle bool if you want to show all possible periods solution
+            print_lmfit_result(data, args_dict, star_name, mini_results)
         # print(calculate_phase_criterias(data, mini_results))
         if abs(mini_results.redchi -1) < abs(cur_red_chi-1):
             cur_red_chi = mini_results.redchi
@@ -291,12 +292,19 @@ def main_single(path_to_csv,path_to_out = None, i =-1):
     return  row, bin_flag
 
 
-def main_multiple(path_to_ccf_out_dir, out_dir=None):
+def main_multiple(path_to_ccf_out_dir, out_dir=None, obj_list=None):
     all_rows = []
     binarity_counter =[0,0,0,0,0,0,0,0]
     decision_results = []
     list_of_csvs = glob.glob(os.path.join(path_to_ccf_out_dir, '*_CCF_RVs.csv'))
-    for csv in list_of_csvs:
+    if obj_list:
+        filtered_list_of_csvs = []
+        for i in obj_list:
+            for j in list_of_csvs:
+                if i in j:
+                    filtered_list_of_csvs.append(j)
+        list_of_csvs = filtered_list_of_csvs
+    for csv in sorted(list_of_csvs):
         print(csv)
 
         path_to_csv = os.path.join(path_to_ccf_out_dir, csv)
@@ -321,14 +329,16 @@ if __name__ == '__main__':
 
 
 
-    path_to_input = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/ostars_sb1_new_list_from_coadded/BLOeM_2-024_CCF_RVs.csv"
+    path_to_input = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/1-009/"
     # path_to_input = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/ostars_sb1_new_list_from_coadded/"
     # path_to_input = "/Users/roeyovadia/Downloads/1-041_CCF_RVs.csv"
-    path_to_output = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/ostars_sb1_new_list_from_coadded1/'
+    path_to_output = '/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/OrbitalFitting/1-009/'
     os.makedirs(path_to_output, exist_ok=True)
-
+    # object_list = ['2-007', '3-060', '3-078', '3-081', '4-040', '4-074', '2-098', '5-048', '5-090', '5-099', '8-024', '8-028',
+    #  '1-068', '2-086', '2-087', '5-042', '6-098', '8-031', '8-092']
+    object_list = None
     if os.path.isdir(path_to_input):
-        main_multiple(path_to_input, out_dir=path_to_output)
+        main_multiple(path_to_input, out_dir=path_to_output, obj_list=object_list)
     elif os.path.isfile(path_to_input):
         row, val = main_single(path_to_input, path_to_output)
         print("Decision Flag Is: ",val)

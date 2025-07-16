@@ -12,7 +12,7 @@ columns_to_select = [PERIOD, RADIAL_VELS, TIME_STAMPS, ERRORS]
 
 def lomb_scargle(row):
     pmin = 1.0
-    pmax = 10000.0
+    pmax = 1000.0
     best_period1, fap1, fal1, frequency1, power1 = ls(row[TIME_STAMPS], row[RADIAL_VELS], row[ERRORS],
                                                       probabilities=[0.5, 0.01, 0.001], pmin=pmin, pmax=pmax,
                                                       norm="model", ls_method="fast", fa_method="baluev",

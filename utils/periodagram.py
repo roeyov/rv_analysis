@@ -101,7 +101,7 @@ def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 50
     ax.yaxis.set_label_coords(-0.09, 0.5)
     ax.set(xlim=(0.3, 2), ylim=(-0.03*power.max(), power.max()+0.1*power.max()),
         xlabel='Period (days)',
-        ylabel='PDC Power')
+        ylabel='Power')
     fig.suptitle("Primary best Period : {0:.3f} days".format(1/frequency[np.argmax(power)]))
     plt.xscale('log')
     tickLabels = map(str, bins)

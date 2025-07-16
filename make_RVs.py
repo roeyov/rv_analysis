@@ -6,7 +6,7 @@ import sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 from utils.constants import *
-from tmps.sigmaSimDistribution import sample_method1
+from tmps.sigmaSimDistribution import sample_method1, sample_method2
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -62,15 +62,15 @@ def nu_func(phi, ecc):
 
 def get_data(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv):
     # Generate random array of observation times between 0 & P
-    ts = np.array([ 74.5177001 ,  97.64613847, 103.9829237 , 183.06141608,
-           228.11894284, 238.69681915, 258.76892231, 295.83020203,
-           338.11024624, 356.48782477, 409.01431527, 432.39915669,
-           450.18902947, 453.56448127, 467.40229203, 477.5505655 ,
-           490.73553866, 514.63869076, 521.51148672, 603.3569005 ,
-           644.44251155, 649.57725408, 660.60566377, 663.63165303,
-           683.56149292])
+    # ts = np.array([ 74.5177001 ,  97.64613847, 103.9829237 , 183.06141608,
+    #        228.11894284, 238.69681915, 258.76892231, 295.83020203,
+    #        338.11024624, 356.48782477, 409.01431527, 432.39915669,
+    #        450.18902947, 453.56448127, 467.40229203, 477.5505655 ,
+    #        490.73553866, 514.63869076, 521.51148672, 603.3569005 ,
+    #        644.44251155, 649.57725408, 660.60566377, 663.63165303,
+    #        683.56149292])
 
-    # ts = np.sort(uniform_random_sample((0, 1), nrv)) * NUM_OF_DAYS
+    ts = np.sort(uniform_random_sample((0, 1), nrv)) * NUM_OF_DAYS
     # Generate corresponding phases
     phases = (ts - t0) / p - ((ts - t0) / p).astype(int)
     # Generate mean anomalies
@@ -92,10 +92,10 @@ def get_data(t0, p, ecc, omega, k1, k2, gamma, nrv, sig_rv):
 
     # Generate errors from fitted log normal distribution
     shape, loc, scale = 0.8702, 0.0, 3.4602
-    sigma_arr, errs_v1_arr = sample_method1(shape=shape, loc=loc, scale=scale,n_objects=1, n_measurements=nrv)
+    sigma_arr, errs_v1_arr = sample_method2(shape=shape, loc=loc, scale=scale,n_objects=1, n_measurements=nrv)
     sigma = sigma_arr[0]
     errs_v1 = errs_v1_arr[0]
-    sig_rv_arr = [sigma]*nrv
+    sig_rv_arr = sigma
     # Generate realistic RVs for primary (this is what you should store)
     rvs_1 = rvs_1_true + errs_v1
     return rvs_1, ts, sig_rv_arr, errs_v1
@@ -331,20 +331,20 @@ def main():
                      K1_STR: {},
                      K2_STR: {},
                      }
-        N_OF_SAMPS = int(1e7)
+        N_OF_SAMPS = int(1e6)
         dataset_name = "new_sigma"
         # np.random.seed(42)
         if generate_trues:
-            timestr = strftime("{}_{}_Trues".format(dataset_name, str(N_OF_SAMPS)))
+            timestr = strftime("{}_{}".format(dataset_name, str(N_OF_SAMPS)))
             OUTDIR = r"//Users/roeyovadia/Documents/Data/simulatedData_new_noise/{}/".format(timestr)
             os.makedirs(OUTDIR, exist_ok=True)
-            out_fp_format = OUTDIR + r"/{}.parquet"
+            out_fp_format = OUTDIR + r"/true_{}.parquet"
             out_multiple_and_dump(ARGS_DICT, NRV, sig_RV, N_OF_SAMPS, out_fp_format, 1)
         else:
-            timestr = strftime("{}_{}_Falses".format(dataset_name, str(N_OF_SAMPS)))
+            timestr = strftime("{}_{}".format(dataset_name, str(N_OF_SAMPS)))
             OUTDIR = r"/Users/roeyovadia/Documents/Data/simulatedData_new_noise/{}/".format(timestr)
             os.makedirs(OUTDIR, exist_ok=True)
-            out_fp_format = OUTDIR + r"/{}.parquet"
+            out_fp_format = OUTDIR + r"/false_{}.parquet"
             out_multiple_and_dump(ARGS_DICT, NRV, sig_RV, N_OF_SAMPS, out_fp_format, 0)
 
 

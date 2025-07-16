@@ -238,7 +238,7 @@ def plot_phase_folded_with_residuals(hjds, vels, errs, P, T0,
         ax2.plot(phase_grid, rv_phase, color='red', label='Model')
         ax2.axhline(Gamma, color='black', linestyle='--')
         ax2.set_xlim(0,1)
-        ax2.set_ylabel(r'RV [{\\rm km}\\,{\rm s}^{-1}]')
+        ax2.set_ylabel('RV [km s$^{-1}$]')
         ax2.set_title(f"Folded fit {star_name}")
         ax2.legend()
 
