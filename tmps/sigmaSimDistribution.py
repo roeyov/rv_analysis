@@ -17,7 +17,7 @@ def sample_method1(shape, loc, scale, n_objects=139, n_measurements=25, random_s
     """
     rng = np.random.default_rng(random_state)
     sigmas = lognorm.rvs(shape, loc=loc, scale=scale, size=n_objects, random_state=rng)
-    return sigmas, rng.normal(loc=0, scale=sigmas[:, None],
+    return [[sigma] * n_measurements for sigma in sigmas], rng.normal(loc=0, scale=sigmas[:, None],
                       size=(n_objects, n_measurements))
 
 def sample_method2(shape, loc, scale, n_objects=139, n_measurements=25, random_state=None):
@@ -31,12 +31,12 @@ def sample_method2(shape, loc, scale, n_objects=139, n_measurements=25, random_s
     total = n_objects * n_measurements
     sigmas = lognorm.rvs(shape, loc=loc, scale=scale, size=total, random_state=rng)
     noise  = rng.normal(loc=0, scale=sigmas)
-    return noise.reshape(n_objects, n_measurements)
+    return sigmas.reshape(n_objects, n_measurements), noise.reshape(n_objects, n_measurements)
 
 def main():
     # ── 3) Generate the samples ──────────────────────────────────────────
-    N_OBJECTS = 139
-    N_MEASUREMENTS = int(2500000)
+    N_OBJECTS = 1
+    N_MEASUREMENTS = int(25)
     shape, loc, scale = 0.8702, 0.0, 3.4602
 
     _,samp1 = sample_method1(shape, loc, scale, random_state=42,n_objects=N_OBJECTS, n_measurements=N_MEASUREMENTS)
@@ -48,7 +48,7 @@ def main():
 
     bins = np.linspace(min(data1.min(), data2.min()),
                        max(data1.max(), data2.max()),
-                       1000)
+                       100)
 
     plt.figure(figsize=(8, 5))
     plt.hist(data1, bins=bins, alpha=0.5,
