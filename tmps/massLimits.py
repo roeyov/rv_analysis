@@ -4,7 +4,7 @@ import re
 import os
 from pathlib import Path
 
-from Spectroscopy.constants import SNR_PPL
+from utils.constants import SNR_PPL
 
 # calculates the min mass of the companion from the measured P, e, K1 and the mass of the star from the mass_bloem.csv file
 mass_file = '/Users/roeyovadia/Documents/Data/mass_bloem.csv'

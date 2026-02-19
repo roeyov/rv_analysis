@@ -2,13 +2,14 @@
 import os
 import sys
 
-from BinaryPrediction.roche_lobe import compute_min_period_row
+from utils.roche_lobe import compute_min_period_row
 
 # Add the Scripts directory to sys.path
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 from utils.constants import *
 from tmps.sigmaSimDistribution import sample_method1, sample_method2
+from orbital.kepler import kepler_iterative, true_anomaly_from_E
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -42,18 +43,11 @@ failed_exec_dict = {
 ######################################
 
 def Kepler(E, M, ecc):
-    counter = 0
-    loop_E = E
-    while True:
-        if counter > 990:
-            return None
-        E2 = (M - ecc * (loop_E * np.cos(loop_E) - np.sin(loop_E))) / (1. - ecc * np.cos(loop_E))
-        eps = np.abs(E2 - loop_E)
-        if np.all(eps < 1E-10):
-            return E2
-        else:
-            loop_E = E2
-            counter += 1
+    """Wrapper around canonical kepler_iterative; returns None on non-convergence."""
+    result = kepler_iterative(M, ecc, tol=1e-10, max_resets=0, max_iter_per_reset=990)
+    if np.any(np.isnan(result)):
+        return None
+    return result
 
 
 # Returns RVs for primary and secondary as function of nu (true anomaly) and orbital parameters
@@ -65,12 +59,11 @@ def RV12(nu, gamma, k1, k2, omega, ecc):
 
 # Returns true anomaly from phases
 def nu_func(phi, ecc):
-    e_fac = np.sqrt((1 + ecc) / (1 - ecc))
     M = 2 * np.pi * phi
     E = Kepler(1., M, ecc)
     if E is None:
         return E
-    return 2. * np.arctan(e_fac * np.tan(0.5 * E))
+    return true_anomaly_from_E(E, ecc)
 
 
 ######################################

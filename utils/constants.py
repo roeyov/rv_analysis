@@ -86,3 +86,6 @@ LS_FREQS = "lombScargleFreqs"
 LS_POWERS = "lombScarglePowers"
 
 IS_TRAIN = "is_train"
+
+# Spectroscopy column name (kept here so pipeline/ can avoid importing from Spectroscopy/)
+SNR_PPL = "SNR_PPL"

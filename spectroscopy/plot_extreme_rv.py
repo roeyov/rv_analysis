@@ -5,9 +5,9 @@ import glob
 import os
 import matplotlib
 matplotlib.use('TkAgg')
-from constants import *
-from spectrasDrawer import find_files_with_strings, load_elements_list, load_all_spectra
-from BinaryPrediction.ModelEvaluatorSingle import get_bloem_object_name, load_final_data_from_ccf_out
+from spectroscopy.constants import *
+from spectroscopy.spectra_drawer import find_files_with_strings, load_elements_list, load_all_spectra
+from pipeline.data_loading import get_bloem_object_name, load_final_data_from_ccf_out
 
 
 def plot_spectra(max_spectra, max_wl, min_spectra, min_wl, wav_min=None, wav_max=None, star_name=''):

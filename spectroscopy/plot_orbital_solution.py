@@ -9,15 +9,12 @@ import matplotlib.pyplot as plt
 from astropy.io import fits
 import imageio.v2 as imageio
 
-# import modular functions from your RV utilities
-from emceeOmLMFITexe import (
-    extract_observations,
-    compute_rv_curve_phase,
-)
+from orbital.fitting import extract_observations
+from orbital.plotting import compute_rv_curve_phase
 
-from constants import *
-from spectrasDrawer import find_files_with_strings, load_elements_list, load_all_spectra
-from BinaryPrediction.ModelEvaluatorSingle import get_bloem_object_name, load_final_data_from_ccf_out
+from spectroscopy.constants import *
+from spectroscopy.spectra_drawer import find_files_with_strings, load_elements_list, load_all_spectra
+from pipeline.data_loading import get_bloem_object_name, load_final_data_from_ccf_out
 
 DEFAULT_DURATION = 150
 

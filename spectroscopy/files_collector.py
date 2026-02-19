@@ -1,6 +1,6 @@
 import os
 import json
-from constants import *
+from spectroscopy.constants import *
 
 
 def load_elements_list(file_path):

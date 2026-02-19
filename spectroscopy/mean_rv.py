@@ -16,7 +16,7 @@ Usage:
 
 import pandas as pd
 import numpy as np
-from constants import *
+from spectroscopy.constants import *
 
 def dict_to_df(data_dict):
     """

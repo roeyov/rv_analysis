@@ -1,10 +1,10 @@
 import os
 from datetime import datetime
 
-from FilesCollector import find_files_with_strings, load_json_elements, load_elements_list
+from spectroscopy.files_collector import find_files_with_strings, load_json_elements, load_elements_list
 import numpy as np
 from pandas import read_csv
-from constants import *
+from spectroscopy.constants import *
 from astropy.io import fits
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation

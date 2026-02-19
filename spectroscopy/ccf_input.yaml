@@ -51,18 +51,18 @@ list_of_objects: ["BLOeM_8-020"]
 str_identifier: "Combined.fits"
 
 # Path to save the output files
-path_to_output: "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded/"
-#path_to_output: "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/dr5_neb_div_from_temp/"
+path_to_output: "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/clasue_check_from_coadded/"
+# path_to_output: "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/claude_check/"
 #path_to_output: ''
 
 # Path to the template files for cross-correlation
-template_path: "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/dr5_neb_div_from_temp/"
-#template_path: "/Users/roeyovadia/Documents/Data/BLOeM_Data/Crowther_templates/per_star_templates"
+template_path: "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/claude_check/"
+# template_path: "/Users/roeyovadia/Documents/Data/BLOeM_Data/Crowther_templates/per_star_templates"
 #template_path: ""
 
 #path_to_meta_data_csv: "Users/roeyovadia/Documents/Data/results_bloem_24nov24.csv"
 #columns_to_load: ["ID", "vsini", "vsini_er_plus", "vsini_er_minus"]
 path_to_meta_data_csv: ""
-#path_to_meta_data_csv: "/Users/roeyovadia/Documents/master_table_vsini_v1.csv"
+# path_to_meta_data_csv: "/Users/roeyovadia/Documents/master_table_vsini_v1.csv"
 columns_to_load: ["ID", "vsini", "evsini"]
 
