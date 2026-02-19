@@ -16,7 +16,7 @@ Usage:
 
 import pandas as pd
 import numpy as np
-
+from constants import *
 
 def dict_to_df(data_dict):
     """
@@ -90,9 +90,13 @@ def calculate_weighted_rv_with_flags(df):
     for _, row in df.iterrows():
         row_flags = {}  # Will hold the flag for each measurement in this row.
         candidates = []  # List of candidates: tuples of (i, rv, rvsig)
+        epoch_snr = row.get(S2N)
 
         # Step 1: Process each measurement and flag based on EW.
         for i in measurement_indices:
+            if epoch_snr < 5:
+                row_flags[i] = 4
+                continue
             rv_val = row.get(f"{i} RV")
             rvsig_val = row.get(f"{i} RVsig")
             ew_val = row.get(f"{i} EW")
@@ -105,8 +109,8 @@ def calculate_weighted_rv_with_flags(df):
 
             # Check if the equivalent width is "consistent with zero":
             # If the interval [EW - EWsig, EW + EWsig] contains zero, drop it.
-            if (ew_val - ewsig_val) <= 0 <= (ew_val + 2*ewsig_val):
-                row_flags[i] = 2
+            if (ew_val - 4*ewsig_val) <= 0:
+                row_flags[i] = 3
                 continue
 
             # Otherwise, mark as tentatively valid (flag 0) and add to candidate list.
@@ -122,8 +126,6 @@ def calculate_weighted_rv_with_flags(df):
             # Step 2: First iteration weighted mean using candidate measurements.
             weights = [1 / (rvsig ** 2) for (_, rv, rvsig) in candidates]
             weighted_mean = sum(rv * w for (_, rv, rvsig), w in zip(candidates, weights)) / sum(weights)
-            median = np.median([rv for (_, rv, _), w in zip(candidates, weights)])
-            weighted_error = np.sqrt(1 / sum(weights))
 
             # Step 3: Sigma clipping: flag measurements deviating more than 3 sigma.
             candidates_clipped = []
@@ -143,23 +145,14 @@ def calculate_weighted_rv_with_flags(df):
                 final_mean = sum(rv * w for (_, rv, rvsig), w in zip(candidates_clipped, final_weights)) / sum(
                     final_weights)
                 # Calculate the weighted mean
-                average = final_mean
                 # Calculate the weighted variance
-                values =  np.array([rv for (_, rv, _) in candidates_clipped])
-                variance = np.average((values - average) ** 2, weights=final_weights)
                 # Return the square root of the variance
-                final_error = np.sqrt(variance)
-                # final_error = np.sqrt(1 / sum(final_weights))
+                final_error = np.sqrt(1/sum(final_weights))
 
                 final_median = np.median([rv for (_, rv, _), w in zip(candidates_clipped, final_weights)])
             rv_mean_list.append(final_mean)
             rv_meansig_list.append(final_error)
             rv_median_list.append(final_median)
-
-
-            # rv_mean_list.append(weighted_mean)
-            # rv_meansig_list.append(weighted_error)
-            # rv_median_list.append(median)
 
         # Append the computed flags for this row into the flags_dict.
         for i in measurement_indices:

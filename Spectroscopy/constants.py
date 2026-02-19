@@ -2,7 +2,7 @@
 
 OSTARS_IDS_JSON = r"/Users/roeyovadia/Documents/Data/BLOeM Project Overview.json"  # Update to your JSON file path
 DATA_RELEASE_3_PATH = r"/Users/roeyovadia/Documents/Data/BLOeM_DR3.0"
-DATA_RELEASE_4_PATH = r"/Users/roeyovadia/Documents/Data/BLOeM_DR4.0_Combined" # Update to the directory you want to search
+DATA_RELEASE_4_PATH = r"/Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR4.0_Combined" # Update to the directory you want to search
 TEMPLATE_PATH = r"/Users/roeyovadia/Documents/Data/templateAttempt" # Update to the directory you want to search
 
 FITS_SUF_A = 'a.fits'
@@ -12,6 +12,7 @@ FITS_SUF_B_RECT = 'b_rect.fits'
 FITS_SUF_COADDED = 'Coadded.fits'
 FITS_SUF_COMBINED = 'Combined.fits'
 
+S2N = "SNR"
 
 
 

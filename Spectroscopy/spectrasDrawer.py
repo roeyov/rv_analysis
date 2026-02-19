@@ -16,92 +16,123 @@ def draw_spectra(data, header_name):
     plt.title(header_name)
     plt.show()
 
-def animate_data(data, filename="animation", interval_scaling=100, outdir='', WAVELENGTH_REGION=None):
+def animate_data(
+    data,
+    filename="animation",
+    outdir="",
+    WAVELENGTH_REGION=None,
+    interval_ms=800,   # time between frames in the interactive animation (ms)
+    fps=1,             # frames per second in the saved GIF (lower = slower)
+    ylim=(0.55, 1.1),
+):
     """
-    Animates a sequence of plots based on the given data structure.
-    The time between frames is proportional to the time differences between samples.
+    Uniform-timing animation (all frames same spacing).
 
-    Parameters:
-        data (dict): A dictionary where keys are time points and values are
-                     dictionaries with keys 'X' and 'Y' representing data for each time.
-        filename (str): The base filename for the output animation file.
-        interval_scaling (float): A scaling factor for frame durations.
-        outdir (str): Output directory for saving the animation.
-        WAVELENGTH_REGION (list of tuples): A list of (start, end) wavelength ranges
-                                            to create subplots for each region.
+    - Interactive playback speed is controlled by `interval_ms`.
+    - Saved GIF speed is controlled by `fps` (writer uses constant fps).
+
+    The animation shows:
+    - Top title: object name, mid-exposure time, and (if available) epoch & S/N.
+    - Axes labels: wavelength and normalized flux with units.
     """
+
+    if not data:
+        return
 
     if WAVELENGTH_REGION is None:
-        # Default to a single region if not provided
-        WAVELENGTH_REGION = [(min(data[next(iter(data))][WAVELENGTH]),
-                               max(data[next(iter(data))][WAVELENGTH]))]
+        first = data[next(iter(data))]
+        WAVELENGTH_REGION = [
+            (float(np.min(first[WAVELENGTH])), float(np.max(first[WAVELENGTH])))
+        ]
 
-    # Sort data by time to ensure the animation plays in the correct order
+    # Sort data by time to ensure consistent ordering
     sorted_times = sorted(data.keys())
-    intervals = [
-        interval_scaling * (sorted_times[i + 1] - sorted_times[i])
-        for i in range(len(sorted_times) - 1)
-    ]
-    if intervals:
-        intervals.append(intervals[-1])  # Repeat the last interval for the final frame
-    else:
-        # In case there is only one time point, set a default interval
-        intervals = [interval_scaling]
-
-    # Extract data series in time order
     data_series = [data[t] for t in sorted_times]
 
-    # Create one subplot per wavelength region
     n_regions = len(WAVELENGTH_REGION)
-    fig, axes = plt.subplots(n_regions, 1, figsize=(6, 4*n_regions), squeeze=False)
-    axes = axes.flatten()  # Flatten to a list for easy iteration
+    fig, axes = plt.subplots(
+        n_regions, 1, figsize=(8, 6 * n_regions), squeeze=False
+    )
+    axes = axes.flatten()
+
+    # --- helper for setting axes style ---
+    def style_axis(ax, start_wv, end_wv):
+        ax.set_xlim(start_wv, end_wv)
+        ax.set_ylim(*ylim)
+        ax.set_xlabel("Wavelength [Å]", fontsize=14)
+        ax.set_ylabel("Normalized flux", fontsize=14)
+        ax.tick_params(axis="both", labelsize=12)
 
     def init():
-        # Initialize all subplots
         for ax, (start_wv, end_wv) in zip(axes, WAVELENGTH_REGION):
             ax.clear()
-            ax.set_xlim(start_wv, end_wv)
-            ax.set_ylim(0.4, 1.1)
-            ax.set_xlabel("Wavelength")
-            ax.set_ylabel("Normalized Intensity")
+            style_axis(ax, start_wv, end_wv)
+        # A generic title; will be updated per frame
+        fig.suptitle(filename, fontsize=18)
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
         return []
 
     def update(frame):
-        # Update each subplot for the given frame
         current_data = data_series[frame]
         wv = current_data[WAVELENGTH]
         sci = current_data[SCI_NORM]
-        fig.suptitle(f"{filename} - Time: {sorted_times[frame]:.1f}")
+
+        time_val = sorted_times[frame]
+
+        # Optional extra info if present in the dict:
+        snr   = current_data.get(SNR_PPL, None)
+        epoch = current_data.get(EPOCH_ID, None)
+
+        extra_bits = []
+        if epoch is not None:
+            extra_bits.append(f"epoch {epoch}")
+        if snr is not None:
+            try:
+                extra_bits.append(f"S/N ≈ {snr:.0f}")
+            except Exception:
+                pass
+
+        extra_str = ""
+        if extra_bits:
+            extra_str = " (" + ", ".join(extra_bits) + ")"
+
+        fig.suptitle(
+            f"{filename} — MJD = {time_val:.5f}{extra_str}",
+            fontsize=18
+        )
+
         for ax, (start_wv, end_wv) in zip(axes, WAVELENGTH_REGION):
             ax.clear()
-            # ax.set_title(f"Time: {sorted_times[frame]}")
-            ax.set_xlim(start_wv, end_wv)
-            ax.set_ylim(0.4, 1.1)
-            # Filter data points within the region if needed
+            style_axis(ax, start_wv, end_wv)
             mask = (wv >= start_wv) & (wv <= end_wv)
-            ax.plot(wv[mask], sci[mask], '-')
+            ax.plot(wv[mask], sci[mask], "-", linewidth=1.5)
 
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
         return []
 
-    # Create the animation
     ani = FuncAnimation(
-        fig, update, frames=len(data_series), init_func=init, blit=False
+        fig,
+        update,
+        frames=len(data_series),
+        init_func=init,
+        blit=False,
+        interval=interval_ms,
+        repeat=True
     )
 
-    # Dynamically set the interval between frames
-    def dynamic_interval():
-        for i in range(len(data_series)):
-            ani.event_source.interval = intervals[i] if i < len(intervals) else interval_scaling
-            yield i
-    ani.frame_seq = dynamic_interval()
-
-    # Save the animation
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-        save_path = f"{os.path.join(outdir, filename)}.gif"
-        ani.save(save_path, writer='ffmpeg', fps=8)  # Adjust fps as needed
+        save_path = os.path.join(outdir, f"{filename}.gif")
+
+        from matplotlib.animation import PillowWriter
+        # lower fps => slower animation in the GIF
+        ani.save(save_path, writer=PillowWriter(fps=fps))
         print(f"Animation saved as {save_path}")
+
     plt.close(fig)
+
+
+
 
 
 def draw_single_spectra(w,p,t):
@@ -109,9 +140,9 @@ def draw_single_spectra(w,p,t):
 
 def load_template(filename, x_name, y_name):
     try:
-        data = np.loadtxt(filename, delimiter=' ')
+        data = np.loadtxt(filename, delimiter=',')
     except ValueError:
-        data = np.loadtxt(filename, skiprows=1, delimiter=' ')
+        data = np.loadtxt(filename, skiprows=1, delimiter=',')
     x = data[:, 0]
     y = data[:, 1]
     return {x_name: x, y_name: y}
@@ -135,6 +166,35 @@ def load_templates(template_dir,object_list, x_name, y_name):
     print(f"Found {c} templates in {template_dir}")
     return ret_temps
 
+def get_epoch_id(fp):
+    return int(fp.split("_")[-2])
+
+def get_key_from_header(fits_path, key):
+    """Return header value for *key* from the first HDU that contains it.
+    Casts to float when possible; returns None if not found or not numeric.
+    """
+    try:
+        with fits.open(fits_path) as hdul:
+            for hdu in hdul:
+                hdr = getattr(hdu, "header", None)
+                if hdr is None:
+                    continue
+                if key in hdr:
+                    val = hdr[key]
+                    # Try to coerce to float
+                    try:
+                        fval = float(val)
+                        # Guard against NaN or inf
+                        if np.isfinite(fval):
+                            return fval
+                        return None
+                    except Exception:
+                        return None
+    except Exception as e:
+        # Could be a corrupted FITS, unreadable file, etc.
+        return None
+    return None
+
 def load_all_spectra(files, time_name, x_name, y_name):
 
     if isinstance(files, str):
@@ -147,7 +207,7 @@ def load_all_spectra(files, time_name, x_name, y_name):
                 x = hdul[1].data[x_name]
                 y = hdul[1].data[y_name]
                 time = hdul[0].header[time_name]
-                ret_spectra[time] = {x_name: x , y_name: y}
+                ret_spectra[time] = {x_name: x , y_name: y, SNR_PPL: get_key_from_header(fp, SNR_PPL), EPOCH_ID: get_epoch_id(fp) }
         else:
             parent_dir = os.path.dirname(fp)
             df = read_csv(os.path.join(parent_dir,'ObsDat.txt'), delimiter=' ')
@@ -168,13 +228,13 @@ if __name__ == '__main__':
     # Format the date as dd_mm_yy
     formatted_date = current_date.strftime("%d_%m_%y")
     # INTERESTING_WAVELENGTH = [4340,4471,4542,4101,4388,4026,3970,4200]
-    INTERESTING_WAVELENGTH = [4340,4101,4471,4026,4388]
+    INTERESTING_WAVELENGTH = [4471]
     WL_RADIUS = 10
     WAVELENGTH_REGION = [(a-WL_RADIUS,a+WL_RADIUS) for a in INTERESTING_WAVELENGTH]
 
     json_file_key = 'Sample O + 10 early BVs'  # Update to the directory you want to search
-    elements = load_elements_list("/Users/roeyovadia/Documents/Data/lists/All_ostars.txt")
-    elements = ["BLOeM_7-069" ]
+    elements = load_elements_list("/Users/roeyovadia/Documents/Data/BLOeM_Data/lists/All_ostars.txt.rtf")
+    elements = ["BLOeM_2-024","BLOeM_1-078", "BLOeM_2-085"]
     fits_suf = FITS_SUF_COMBINED
 
     all_files = find_files_with_strings(elements, DATA_RELEASE_4_PATH, fits_suf)
@@ -182,5 +242,14 @@ if __name__ == '__main__':
     for star in elements:
         a = load_all_spectra(all_files[star], MJD_MID, WAVELENGTH,SCI_NORM)
         # Run the animation
-        animate_data(a, filename=star, interval_scaling=200, outdir=r"/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/spectrasDrawer/tomer_{}".format(formatted_date), WAVELENGTH_REGION=WAVELENGTH_REGION)
+        animate_data(
+            a,
+            filename=star,
+            interval_ms=1200,  # 1.2 seconds per frame (interactive)
+            fps=5,  # 1 frame per second in the GIF
+            outdir=r"/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/spectrasDrawer/seminar_{}".format(formatted_date),
+            WAVELENGTH_REGION=WAVELENGTH_REGION
+        )
+
+
 

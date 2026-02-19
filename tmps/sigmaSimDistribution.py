@@ -12,12 +12,12 @@ def sample_method1(shape, loc, scale, n_objects=139, n_measurements=25, random_s
     """
     Method 1:
       - for each object i, draw σ_i ~ LogNormal(shape,loc,scale)
-      - then draw 25 errors ~ Normal(0, σ_i)
+      - then draw 25 errors ~ Normal(σ_i, 1)
     Returns an (n_objects × n_measurements) array of RV shifts.
     """
     rng = np.random.default_rng(random_state)
     sigmas = lognorm.rvs(shape, loc=loc, scale=scale, size=n_objects, random_state=rng)
-    return [[sigma] * n_measurements for sigma in sigmas], rng.normal(loc=0, scale=sigmas[:, None],
+    return [[sigma] * n_measurements for sigma in sigmas], rng.normal(loc=sigmas[:, None], scale=1,
                       size=(n_objects, n_measurements))
 
 def sample_method2(shape, loc, scale, n_objects=139, n_measurements=25, random_state=None):

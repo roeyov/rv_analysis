@@ -3,8 +3,9 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import numpy as np
 # Directory containing your space-separated CSVs
-DIR = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/ostars_sb1_new_list_from_coadded"
+DIR = "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded"
 # Find all files ending with CCF_RVs.csv
 pattern = os.path.join(DIR, "*CCF_RVs.csv")
 files = glob.glob(pattern)
@@ -12,18 +13,20 @@ files = glob.glob(pattern)
 mean_rvsig_list = []
 for filepath in files:
     try:
-        df = pd.read_csv(filepath, sep=' ')
+        df = pd.read_csv(filepath, sep=',')
     except Exception as e:
         print(f"Could not read {filepath}: {e}")
         continue
     if "Mean RVsig" in df.columns:
         mean_rvsig_list.append(df["Mean RVsig"].dropna())
+        # mean_rvsig_list.append(df["Mean RVsig"].dropna().std())
     else:
         print(f"'Mean RVsig' column not found in {os.path.basename(filepath)}")
 # Concatenate into one Series
 if not mean_rvsig_list:
     raise RuntimeError("No 'Mean RVsig' data was found in any file.")
 all_mean_rvsig = pd.concat(mean_rvsig_list)
+# all_mean_rvsig = pd.Series(mean_rvsig_list)
 # Compute statistics
 mean_val   = all_mean_rvsig.mean()
 median_val = all_mean_rvsig.median()
@@ -112,3 +115,27 @@ plt.tight_layout()
 # (Re–add your mean/median lines, annotations, etc., as before)
 plt.legend()
 plt.show()
+
+stats = []
+
+for filepath in files:
+    df = pd.read_csv(filepath, sep=',')
+    if "Mean RVsig" in df.columns:
+        sigs = df["Mean RVsig"].dropna()
+        if len(sigs) > 1:
+            # Calculate mean and std of the noise WITHIN this one system
+            system_mu = sigs.mean()
+            system_std = sigs.std()
+            # CV = (Standard Deviation / Mean)
+            cv = system_std / system_mu if system_mu != 0 else 0
+
+            stats.append({
+                'file': os.path.basename(filepath),
+                'mu': system_mu,
+                'cv': cv
+            })
+
+stats_df = pd.DataFrame(stats)
+
+print(f"Average variation (CV) within systems: {stats_df['cv'].mean():.2%}")
+print(f"Max variation (CV) in a system: {stats_df['cv'].max():.2%}")
