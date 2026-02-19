@@ -62,14 +62,32 @@ from spectroscopy.coaddition import create_coadded_spectra
 from spectroscopy.plotting import plot_rv_vs_mjd
 from spectroscopy.ccf_main import main as ccf_main
 
-from roche_lobe import compute_min_period_row
+from utils.roche_lobe import compute_min_period_row
 from utils.constants import SNR_PPL
+
+from simulations.common import (
+    BLOEM_MJD_ARRAYS, simulate_system_refined, simulate_system,
+    sample_gamma, RV12, nu_func, get_rv_amplitudes,
+    uniform_random_sample, sine_inclination_sample,
+    ostar_radius_series_from_mass,
+)
+from simulations.create_binary_simulations import generate_binary_rv_at_mjds
+from simulations.make_rvs import out_multiple_and_dump
 
 # Verify YAML config loads correctly
 cfg = load_args()
 assert 'pipeline_io' in cfg, 'pipeline_io missing from YAML'
 assert 'mcmc_params' in cfg, 'mcmc_params missing from YAML'
 assert 'rv_input_dir' in cfg['mcmc_params'], 'MCMC I/O missing from YAML'
+
+# Quick simulation sanity check
+import numpy as _np
+_mjds = BLOEM_MJD_ARRAYS[0]
+_orb = {'t0': 0.0, 'period': 30.0, 'ecc': 0.3, 'omega': 1.0,
+        'k1': 15.0, 'k2': 7.0, 'gamma': 168.0}
+_rvs, _sigs = generate_binary_rv_at_mjds(_mjds, _orb)
+assert _rvs is not None, 'Binary sim returned None'
+assert len(_rvs) == len(_mjds), 'Binary sim length mismatch'
 
 print('All imports OK')
 print(f'Default config: {PARAM_FILE}')
