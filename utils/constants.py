@@ -87,5 +87,5 @@ LS_POWERS = "lombScarglePowers"
 
 IS_TRAIN = "is_train"
 
-# Spectroscopy column name (kept here so pipeline/ can avoid importing from Spectroscopy/)
+# Spectroscopy column name (kept here so pipeline/ can avoid importing from spectroscopy/)
 SNR_PPL = "SNR_PPL"

@@ -1,0 +1,14 @@
+numpy
+pandas
+scipy
+matplotlib
+plotly
+astropy
+lmfit
+emcee
+corner
+tqdm
+PyYAML
+numba
+google-cloud-storage
+google-cloud-batch

@@ -1,0 +1,7 @@
+.git
+.claude
+__pycache__
+*.pyc
+tmps/
+*.egg-info
+.DS_Store

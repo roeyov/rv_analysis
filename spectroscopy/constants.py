@@ -1,5 +1,5 @@
 """
-Spectroscopy.constants — Column names and paths for the CCF / spectroscopy pipeline.
+spectroscopy.constants — Column names and paths for the CCF / spectroscopy pipeline.
 
 Only constants that are actually referenced in the codebase are kept here.
 ESO FITS header keywords (~530 lines) were removed — they were never used in code.
