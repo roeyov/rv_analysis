@@ -6,6 +6,8 @@ bounds, assembling candidate period tables, and running the full period-search
 pipeline (find_periods).
 """
 
+import json
+import os
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
@@ -16,8 +18,9 @@ from utils.constants import (
     PERI_RANDOM_STATE, N_SIG_PERIODS, MIN_SEP, WINDOW_ITERATIONS,
 )
 from period_search.periodogram import ls, pdc_opt, plot_periodogram_plotly
-from period_search.permutation import ls_permutation_max_powers_mp
+from period_search.permutation import ls_permutation_max_powers_mp, pdc_permutation_max_powers
 from PDC.pdc_func import pdc_window
+from utils.periodogramFAPAnalysis import analyze_permutation_convergence
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +276,7 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
 
     # --- Collect results into a DataFrame ---
     n_iter = peri_params[WINDOW_ITERATIONS]
+    # n_iter = 100_000  # hardcoded for FAP convergence investigation
 
     ls_iterations = ls_permutation_max_powers_mp(
         rvs=rvs,
@@ -288,18 +292,44 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
         random_state=peri_params[PERI_RANDOM_STATE],
         show_progress=True,
     )
-    # pdc_iterations = pdc_permutation_max_powers(
-    #     rvs=rvs,
-    #     mjds=mjds,
-    #     err_vs=err_vs,
-    #     n_iter=n_iter,
-    #     pmin=pmin,
-    #     pmax=pmax,
-    #     probabilities=(0.5, 0.01, 0.001),  # Standard PDC thresholds
-    #     random_state=peri_params[PERI_RANDOM_STATE],
-    #     show_progress=True
+    pdc_iterations = pdc_permutation_max_powers(
+        rvs=rvs,
+        mjds=mjds,
+        err_vs=err_vs,
+        n_iter=n_iter,
+        pmin=pmin,
+        pmax=pmax,
+        probabilities=(0.5, 0.01, 0.001),
+        random_state=peri_params[PERI_RANDOM_STATE],
+        show_progress=True,
+    )
+    # # --- FAP convergence analysis ---
+    # ls_convergence = analyze_permutation_convergence(
+    #     Z=np.array(ls_iterations),
+    #     Z_obs=max(pow),
+    #     out_dir=out_dir,
+    #     tag="LS",
+    #     star_name=star_name,
     # )
-    pdc_iterations = []
+    # pdc_convergence = analyze_permutation_convergence(
+    #     Z=np.array(pdc_iterations),
+    #     Z_obs=max(pdc_power_reg),
+    #     out_dir=out_dir,
+    #     tag="PDC",
+    #     star_name=star_name,
+    # )
+    # print(f"\n{'='*60}")
+    # print(f"FAP convergence summary for {star_name}")
+    # print(f"{'='*60}")
+    # print(f"LS  convergence: {ls_convergence}")
+    # print(f"PDC convergence: {pdc_convergence}")
+    # print(f"{'='*60}\n")
+
+    # if out_dir:
+    #     summary_path = os.path.join(out_dir, f"{star_name}_fap_convergence_summary.json")
+    #     with open(summary_path, "w") as f:
+    #         json.dump({"LS": ls_convergence, "PDC": pdc_convergence}, f, indent=2, default=str)
+
     results = []
     periodogram_res = {
         "LS":{

@@ -96,8 +96,11 @@ mcmc_params:
   filter_expression: >-
     ~candidate_method.str.contains('MANUAL')
     & ~candidate_method.str.contains('null')
-    & candidate_method.str.contains('jitter')
     & (prob_bicc > 0.5)
     & (mass_flag_peri == 0)
-  field_to_check: "bic"
+    & ((candidate_method.str.contains('LS')
+    & (LS_iter_fap < 0.1))
+    | (candidate_method.str.contains('PDC')
+    & (PDC_iter_fap < 0.1)))
+  field_to_check: "bicc"
   take_min: true

@@ -11,15 +11,15 @@ random_seed: 562
 manual_candidate_periods: [30]
 
 # ---- Stage 2: pipeline I/O paths ----
-rv_input_dir:    &rv_input_dir    "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/clasue_check_from_coadded/"
-lmfit_output_dir: &lmfit_output_dir "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/clasue_check_from_coadded/first/"
-mcmc_output_dir: &mcmc_output_dir  "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/clasue_check_from_coadded/first/mcmc_out/"
+rv_input_dir:    &rv_input_dir    "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sim_from_cloud/"
+lmfit_output_dir: &lmfit_output_dir "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sim_from_cloud/first/"
+mcmc_output_dir: &mcmc_output_dir  "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/sim_from_cloud/first/mcmc_out/"
 
 pipeline_io:
   rv_input_dir: *rv_input_dir
   output_dir: *lmfit_output_dir
-  object_list: []          # empty list = process all stars
-  mass_file: ""            # path to mass_bloem.csv, empty = skip
+  object_list: ['000000']          # empty list = process all stars
+  mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"            # path to mass_bloem.csv, empty = skip
   use_fwhm: true
 
 # ---- Periodogram settings ----
@@ -100,5 +100,5 @@ mcmc_params:
     & candidate_method.str.contains('jitter')
     & (prob_bicc > 0.5)
     & (mass_flag_peri == 0)
-  field_to_check: "bic"
+  field_to_check: "bicc"
   take_min: true

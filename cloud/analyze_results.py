@@ -27,7 +27,14 @@ import numpy as np
 import pandas as pd
 import yaml
 
+import glob as globmod
+
 from mcmc.selector_app import get_best_row
+from orbital.plotting import (
+    compute_rv_curve_time,
+    plot_time_series_with_residuals_plotly,
+    plot_phase_folded_with_residuals_plotly,
+)
 
 
 LOCAL_OUTPUT = "/tmp/cloud_results"
@@ -44,24 +51,160 @@ def load_results(run_dir):
     return pd.read_csv(joined_path)
 
 
-def get_best_detections(df, filter_expr, field_to_check, take_min):
-    """Select the best detection row per simulation using YAML-defined criteria.
+def _apply_filter(group, filter_expr, field_to_check):
+    """Apply the same filter chain as ``get_best_row`` but return the
+    surviving DataFrame (without the final min/max pick).
 
-    Uses the same get_best_row logic as mcmc/selector_app.py:
-      1. Apply filter_expression (pandas query)
-      2. If field_to_check == 'bic', require bic < null_bic
-      3. Pick row with min/max of field_to_check
+    Returns *None* if no rows survive.
+    """
+    fdf = group.copy()
+
+    # Null-hyp reference
+    null_field = None
+    if field_to_check in fdf.columns and "candidate_method" in fdf.columns:
+        null_mask = fdf["candidate_method"].str.contains("null_hyp_jitter", na=False)
+        if null_mask.any():
+            null_field = fdf.loc[null_mask, field_to_check].iloc[0]
+
+    # User filter expression
+    if filter_expr is not None and filter_expr.strip():
+        try:
+            clean_expr = " ".join(filter_expr.splitlines())
+            fdf = fdf.query(clean_expr, engine="python")
+        except Exception:
+            return None
+
+    if fdf.empty:
+        return None
+
+    # Field-based extra filtering
+    if field_to_check not in fdf.columns:
+        return None
+    if field_to_check == "bic" and null_field is not None:
+        fdf = fdf[fdf[field_to_check] < null_field]
+    fdf = fdf[fdf[field_to_check].notna()]
+
+    return fdf if not fdf.empty else None
+
+
+def get_best_detections_standard(df, filter_expr, field_to_check, take_min):
+    """Select the best detection row per simulation using **only** the
+    filter expression + field optimisation (no distance preference).
+
+    This is the baseline selection strategy.
     """
     best_rows = []
     for sim_id, group in df.groupby("sim_id"):
-        row = get_best_row(group, filter_expr, field_to_check, take_min)
-        if row is not None:
-            best_rows.append(row)
+        best = get_best_row(group, filter_expr, field_to_check, take_min)
+        if best is None:
+            continue
+        best_rows.append(best)
+    if not best_rows:
+        return pd.DataFrame()
+    return pd.DataFrame(best_rows).reset_index(drop=True)
+
+
+def get_best_detections(df, filter_expr, field_to_check, take_min):
+    """Select the best detection row per simulation.
+
+    For each sim_id the selection rule is:
+
+    1. Apply *filter_expr* + field logic (same as ``get_best_row``).
+    2. Among the rows that survive the filter, check whether the
+       ``closest_to_truth`` row (lowest ``truth_distance``) is present.
+       If so, prefer it over the min/max-field row — this way the oracle
+       closest-to-truth solution is chosen whenever the filter would have
+       accepted it anyway.
+    3. Otherwise fall back to the standard min/max-field pick.
+    """
+    best_rows = []
+    for sim_id, group in df.groupby("sim_id"):
+        # Standard filter-based pick
+        best = get_best_row(group, filter_expr, field_to_check, take_min)
+        if best is None:
+            continue
+
+        # Check if the closest-to-truth row also passes the filter.
+        # We replicate the filter logic on the group to get the surviving
+        # index set, then check membership.
+        closest_mask = group["closest_to_truth"]
+        if closest_mask.any():
+            closest_idx = closest_mask.idxmax()  # index of the True row
+            # Build the same filtered subset that get_best_row produces
+            filtered = _apply_filter(group, filter_expr, field_to_check)
+            if filtered is not None and closest_idx in filtered.index:
+                best = group.loc[closest_idx]
+
+        best_rows.append(best)
 
     if not best_rows:
         return pd.DataFrame()
 
     return pd.DataFrame(best_rows).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Truth-distance scoring & chosen/closest marking
+# ---------------------------------------------------------------------------
+
+def _truth_distance_score(row):
+    """Combined period + eccentricity distance to identify the closest solution.
+
+    Score = |ΔP/P| + |Δe|
+
+    Returns ``np.inf`` when Period truth is missing / zero (unusable row).
+    """
+    P_true, P_fit = row.get("Period"), row.get("Period_value")
+    if not (pd.notna(P_true) and pd.notna(P_fit) and P_true > 0):
+        return np.inf
+
+    score = abs((P_fit - P_true) / P_true)
+
+    e_true, e_fit = row.get("Eccentricity"), row.get("Eccentricity_value")
+    if pd.notna(e_true) and pd.notna(e_fit):
+        score += abs(e_fit - e_true)
+
+    return score
+
+
+def mark_chosen_and_closest(df, filter_expr, field_to_check, take_min):
+    """Add boolean marker columns identifying the 'best' row per simulation.
+
+    Columns added to *df* (in-place):
+
+    chosen_filter
+        True for the row selected by the YAML filter expression + BIC logic
+        (same criteria used by ``get_best_detections``).
+    closest_to_truth
+        True for the row with the lowest weighted truth-distance score
+        among non-null-hypothesis candidates.
+    truth_distance
+        The composite score itself (lower = closer to truth).
+    """
+    df["chosen_filter"] = False
+    df["closest_to_truth"] = False
+    df["truth_distance"] = np.nan
+
+    # Compute truth distance for every non-null-hypothesis row
+    non_null = ~df["candidate_method"].str.contains("null_hyp", na=False)
+    if non_null.any():
+        df.loc[non_null, "truth_distance"] = df.loc[non_null].apply(
+            _truth_distance_score, axis=1
+        )
+
+    for sim_id, group in df.groupby("sim_id"):
+        # 1. Chosen by filter expression + field optimisation
+        best = get_best_row(group, filter_expr, field_to_check, take_min)
+        if best is not None:
+            df.loc[best.name, "chosen_filter"] = True
+
+        # 2. Closest to injected truth (excluding null-hypothesis rows)
+        cands = group[~group["candidate_method"].str.contains("null_hyp", na=False)]
+        valid_dist = cands["truth_distance"].dropna()
+        if not valid_dist.empty:
+            df.loc[valid_dist.idxmin(), "closest_to_truth"] = True
+
+    return df
 
 
 def plot_parameter_recovery(det, truth_col, fit_col, label, logscale, ax):
@@ -236,6 +379,138 @@ def plot_detection_density(truth_df, det_sim_ids, xcol, ycol, xlabel, ylabel,
     ax.set_ylabel(ylabel)
 
 
+# ---------------------------------------------------------------------------
+# Orbital-fit plots (phase-folded + time-series) from CSV columns
+# ---------------------------------------------------------------------------
+
+def _parse_sim_ids(csv_string):
+    """Parse a comma-separated string of sim IDs into a set of ints.
+
+    Examples: ``"0042"`` → {42},  ``"0000,0001,0002"`` → {0, 1, 2}
+    """
+    if csv_string is None:
+        return None
+    return {int(tok.strip()) for tok in csv_string.split(",") if tok.strip()}
+
+
+def _find_rv_csv(run_dir, sim_id):
+    """Locate the simulated RV CSV for a given sim_id inside the run directory."""
+    sim_tag = f"SIMuLaTioN_{int(sim_id):06d}"
+    # Standard cloud layout: output/SIMuLaTioN_NNNNNN/SIMuLaTioN_NNNNNN_CCF_RVs.csv
+    pattern = os.path.join(run_dir, "**", f"{sim_tag}_CCF_RVs.csv")
+    hits = globmod.glob(pattern, recursive=True)
+    return hits[0] if hits else None
+
+
+def _plot_one_solution(hjds, vels, errs, P, T0, Gamma, K, Omega, ecc,
+                       star_name, solution_id, jitter, out_dir):
+    """Plot time-series + phase-folded for a single set of orbital parameters."""
+    time_grid, rv_model = compute_rv_curve_time(hjds, P, T0, ecc, Gamma, K, Omega)
+    plot_time_series_with_residuals_plotly(
+        hjds, vels, errs, time_grid, rv_model,
+        Gamma, K, Omega, ecc, P,
+        star_name, solution_id=solution_id, jitter=jitter,
+        out_dir=out_dir,
+    )
+    plot_phase_folded_with_residuals_plotly(
+        hjds, vels, errs, P, T0,
+        Gamma, K, Omega, ecc,
+        star_name, solution_id=solution_id, jitter=jitter,
+        out_dir=out_dir,
+    )
+
+
+def plot_orbital_fits(df, run_dir, out_dir, sim_id_filter=None):
+    """Generate phase-folded and time-series Plotly plots for every candidate
+    solution of the selected simulations, plus a separate plot from the
+    injected truth parameters.
+
+    Output is organised into per-star subdirectories::
+
+        out_dir/{star_name}/
+            {star}_sid-0_time_residuals.html
+            {star}_sid-0_phase_residuals.html
+            ...
+            {star}_sid-truth_time_residuals.html   ← truth
+            {star}_sid-truth_phase_residuals.html
+
+    Parameters
+    ----------
+    df : DataFrame
+        Full results_with_truth table (all rows, all candidate solutions).
+    run_dir : str
+        Root of the downloaded run directory (used to locate RV CSVs).
+    out_dir : str
+        Base directory for per-star plot subdirectories.
+    sim_id_filter : set or None
+        If given, only plot simulations whose sim_id is in this set.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    n_stars = 0
+
+    for sim_id, group in df.groupby("sim_id"):
+        sim_id = int(sim_id)
+        if sim_id_filter is not None and sim_id not in sim_id_filter:
+            continue
+
+        # --- Locate the raw RV CSV ---
+        csv_path = _find_rv_csv(run_dir, sim_id)
+        if csv_path is None:
+            print(f"  [sim {sim_id}] RV CSV not found, skipping.")
+            continue
+
+        rv_data = pd.read_csv(csv_path)
+        hjds = rv_data["MJD"].values
+        vels = rv_data["Mean RV"].values
+        errs = np.abs(rv_data["Mean RVsig"].values)
+
+        # Determine star name and create per-star output dir
+        star_name = str(group["star_name"].iloc[0]) if "star_name" in group.columns else f"SIM_{sim_id:06d}"
+        star_dir = os.path.join(out_dir, star_name)
+        os.makedirs(star_dir, exist_ok=True)
+
+        # --- Plot every non-null candidate solution ---
+        candidates = group[~group["candidate_method"].str.contains("null_hyp", na=False)]
+        n_sol = 0
+        for _, row in candidates.iterrows():
+            P     = row.get("Period_value")
+            T0    = row.get("T0_value", row.get("T_value"))
+            Gamma = row.get("GAMMA_value")
+            K     = row.get("K1_value")
+            Omega = row.get("OMEGA_rad_value")
+            ecc   = row.get("Eccentricity_value")
+
+            if any(pd.isna(v) for v in (P, T0, Gamma, K, Omega, ecc)):
+                continue
+
+            ln_sj = row.get("ln_sigmaJ_value", np.nan)
+            jitter = float(np.exp(ln_sj)) if pd.notna(ln_sj) else 0.0
+            solution_id = int(row.get("solution_id", n_sol))
+
+            _plot_one_solution(hjds, vels, errs, P, T0, Gamma, K, Omega, ecc,
+                               star_name, solution_id, jitter, star_dir)
+            n_sol += 1
+
+        # --- Plot the injected truth as its own "solution" ---
+        first = group.iloc[0]
+        P_true     = first.get("Period")
+        T0_true    = first.get("T0")
+        Gamma_true = first.get("GAMMA")
+        K_true     = first.get("K1")
+        Omega_true = first.get("OMEGA_rad")
+        ecc_true   = first.get("Eccentricity")
+
+        if all(pd.notna(v) for v in (P_true, T0_true, Gamma_true, K_true, Omega_true, ecc_true)):
+            _plot_one_solution(hjds, vels, errs,
+                               P_true, T0_true, Gamma_true, K_true, Omega_true, ecc_true,
+                               star_name + "_TRUTH", "truth", 0.0, star_dir)
+
+        print(f"  [sim {sim_id}] {star_name}: {n_sol} solutions + truth → {star_dir}")
+        n_stars += 1
+
+    print(f"Orbital-fit plots generated for {n_stars} simulations → {out_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze simulation results vs truth.")
     parser.add_argument("--run-id", required=True, help="Run ID")
@@ -244,6 +519,10 @@ def main():
                         help="Plot format (default: png)")
     parser.add_argument("--config", default=DEFAULT_YAML,
                         help=f"YAML config file (default: {DEFAULT_YAML})")
+    parser.add_argument("--plot-orbits", action="store_true",
+                        help="Generate phase-folded and time-series plots for detected solutions")
+    parser.add_argument("--sim-ids", default=None,
+                        help="Comma-separated sim IDs to plot, e.g. '0042' or '0000,0001,0002'")
     args = parser.parse_args()
 
     # Load detection criteria from YAML mcmc_params section
@@ -266,9 +545,19 @@ def main():
     df = load_results(run_dir)
     print(f"Loaded {len(df)} rows, {df['sim_id'].nunique()} unique simulations")
 
-    # Get best detections using YAML criteria (same logic as mcmc/selector_app.py)
-    det = get_best_detections(df, filter_expr, field_to_check, take_min)
-    print(f"Best-row detections: {len(det)}")
+    # --- Mark chosen (by filter) and closest-to-truth rows per sim ---
+    mark_chosen_and_closest(df, filter_expr, field_to_check, take_min)
+    df.to_csv(os.path.join(run_dir, "results_with_truth.csv"), index=False)
+    print("Annotated with chosen_filter & closest_to_truth → results_with_truth.csv")
+
+    # Get best detections — two strategies:
+    #   det_std  = standard filter + min/max field (baseline)
+    #   det_dist = prefer closest-to-truth when it passes the filter (oracle)
+    det_std = get_best_detections_standard(df, filter_expr, field_to_check, take_min)
+    det_dist = get_best_detections(df, filter_expr, field_to_check, take_min)
+    det = det_dist  # default for detection-level plots (same sim set either way)
+    print(f"Best-row detections (standard): {len(det_std)}")
+    print(f"Best-row detections (distance):  {len(det_dist)}")
 
     # Also load truth for detection fraction (need all sims, not just detected)
     truth_path = os.path.join(run_dir, "orbital_params_truth.csv")
@@ -281,15 +570,28 @@ def main():
         truth_df = None
 
     # =========================================================================
-    # Figure 1: Parameter recovery (3 panels)
+    # Figure 1: Parameter recovery (2 rows × 3 cols)
+    #   Top row:    standard selection (filter + min BIC)
+    #   Bottom row: distance-based selection (prefer closest-to-truth)
     # =========================================================================
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
-    plot_parameter_recovery(det, "Period", "Period_value", "Period [d]", logscale=True, ax=axes[0])
-    plot_parameter_recovery(det, "Eccentricity", "Eccentricity_value", "Eccentricity", logscale=False, ax=axes[1])
-    plot_parameter_recovery(det, "K1", "K1_value", "K1 [km/s]", logscale=False, ax=axes[2])
+    # Top row — standard
+    plot_parameter_recovery(det_std, "Period", "Period_value", "Period [d]", logscale=True, ax=axes[0, 0])
+    plot_parameter_recovery(det_std, "Eccentricity", "Eccentricity_value", "Eccentricity", logscale=False, ax=axes[0, 1])
+    plot_parameter_recovery(det_std, "K1", "K1_value", "K1 [km/s]", logscale=False, ax=axes[0, 2])
+    for ax in axes[0]:
+        ax.set_title("(Standard) " + ax.get_title(), fontsize=10)
 
-    fig.suptitle("Orbital Parameter Recovery", fontsize=14, y=1.02)
+    # Bottom row — distance-based
+    plot_parameter_recovery(det_dist, "Period", "Period_value", "Period [d]", logscale=True, ax=axes[1, 0])
+    plot_parameter_recovery(det_dist, "Eccentricity", "Eccentricity_value", "Eccentricity", logscale=False, ax=axes[1, 1])
+    plot_parameter_recovery(det_dist, "K1", "K1_value", "K1 [km/s]", logscale=False, ax=axes[1, 2])
+    for ax in axes[1]:
+        ax.set_title("(Distance) " + ax.get_title(), fontsize=10)
+
+    fig.suptitle("Orbital Parameter Recovery\nTop: Standard (filter+BIC)  —  Bottom: Distance-based",
+                 fontsize=14, y=1.02)
     fig.tight_layout()
     fig.savefig(os.path.join(plots_dir, f"parameter_recovery.{args.format}"),
                 dpi=150, bbox_inches="tight")
@@ -317,15 +619,28 @@ def main():
         print(f"Saved: detection_fraction.{args.format}")
 
     # =========================================================================
-    # Figure 3: Residual histograms (3 panels)
+    # Figure 3: Residual histograms (2 rows × 3 cols)
+    #   Top row:    standard selection
+    #   Bottom row: distance-based selection
     # =========================================================================
-    fig3, axes3 = plt.subplots(1, 3, figsize=(15, 5))
+    fig3, axes3 = plt.subplots(2, 3, figsize=(15, 10))
 
-    plot_residual_histogram(det, "Period", "Period_value", "P", fractional=True, ax=axes3[0])
-    plot_residual_histogram(det, "Eccentricity", "Eccentricity_value", "e", fractional=False, ax=axes3[1])
-    plot_residual_histogram(det, "K1", "K1_value", "K1", fractional=True, ax=axes3[2])
+    # Top row — standard
+    plot_residual_histogram(det_std, "Period", "Period_value", "P", fractional=True, ax=axes3[0, 0])
+    plot_residual_histogram(det_std, "Eccentricity", "Eccentricity_value", "e", fractional=False, ax=axes3[0, 1])
+    plot_residual_histogram(det_std, "K1", "K1_value", "K1", fractional=True, ax=axes3[0, 2])
+    for ax in axes3[0]:
+        ax.set_title("(Standard) " + ax.get_title(), fontsize=10)
 
-    fig3.suptitle("Recovery Residuals", fontsize=14, y=1.02)
+    # Bottom row — distance-based
+    plot_residual_histogram(det_dist, "Period", "Period_value", "P", fractional=True, ax=axes3[1, 0])
+    plot_residual_histogram(det_dist, "Eccentricity", "Eccentricity_value", "e", fractional=False, ax=axes3[1, 1])
+    plot_residual_histogram(det_dist, "K1", "K1_value", "K1", fractional=True, ax=axes3[1, 2])
+    for ax in axes3[1]:
+        ax.set_title("(Distance) " + ax.get_title(), fontsize=10)
+
+    fig3.suptitle("Recovery Residuals\nTop: Standard (filter+BIC)  —  Bottom: Distance-based",
+                  fontsize=14, y=1.02)
     fig3.tight_layout()
     fig3.savefig(os.path.join(plots_dir, f"residual_histograms.{args.format}"),
                  dpi=150, bbox_inches="tight")
@@ -386,6 +701,14 @@ def main():
         print(f"Saved: detection_density.{args.format}")
 
     # =========================================================================
+    # Optional: orbital-fit plots (phase + time series)
+    # =========================================================================
+    if args.plot_orbits:
+        sim_id_filter = _parse_sim_ids(args.sim_ids) if args.sim_ids else None
+        orbit_plots_dir = os.path.join(plots_dir, "orbital_fits")
+        plot_orbital_fits(df, run_dir, orbit_plots_dir, sim_id_filter=sim_id_filter)
+
+    # =========================================================================
     # Summary statistics
     # =========================================================================
     print("\n" + "=" * 60)
@@ -393,41 +716,59 @@ def main():
     print("=" * 60)
 
     n_total = df["sim_id"].nunique()
-    n_detected = len(det)
     print(f"  Total simulations:     {n_total}")
-    print(f"  Detected (best row):   {n_detected}")
-    print(f"  Detection rate:        {n_detected/n_total:.1%}" if n_total > 0 else "  N/A")
+    print(f"  Detected (standard):   {len(det_std)}")
+    print(f"  Detected (distance):   {len(det_dist)}")
+    print(f"  Detection rate:        {len(det_std)/n_total:.1%}" if n_total > 0 else "  N/A")
 
-    if len(det) > 0:
+    for label, det_set in [("STANDARD (filter+BIC)", det_std),
+                            ("DISTANCE-BASED", det_dist)]:
+        print(f"\n  --- {label} ---")
+        if len(det_set) == 0:
+            print("    No detections.")
+            continue
+
         # Period recovery
-        p_true = det["Period"].values
-        p_fit = det["Period_value"].values
+        p_true = det_set["Period"].values
+        p_fit = det_set["Period_value"].values
         valid_p = np.isfinite(p_true) & np.isfinite(p_fit) & (p_true > 0)
         if valid_p.sum() > 0:
             dp = (p_fit[valid_p] - p_true[valid_p]) / p_true[valid_p]
-            print(f"\n  Period ΔP/P:")
-            print(f"    Median:  {np.median(dp):.4f}")
-            print(f"    MAD:     {np.median(np.abs(dp - np.median(dp))):.4f}")
+            print(f"    Period ΔP/P:        median={np.median(dp):.4f}, MAD={np.median(np.abs(dp - np.median(dp))):.4f}")
 
         # Eccentricity recovery
-        e_true = det["Eccentricity"].values
-        e_fit = det["Eccentricity_value"].values
+        e_true = det_set["Eccentricity"].values
+        e_fit = det_set["Eccentricity_value"].values
         valid_e = np.isfinite(e_true) & np.isfinite(e_fit)
         if valid_e.sum() > 0:
             de = e_fit[valid_e] - e_true[valid_e]
-            print(f"\n  Eccentricity Δe:")
-            print(f"    Median:  {np.median(de):.4f}")
-            print(f"    MAD:     {np.median(np.abs(de - np.median(de))):.4f}")
+            print(f"    Eccentricity Δe:    median={np.median(de):.4f}, MAD={np.median(np.abs(de - np.median(de))):.4f}")
 
         # K1 recovery
-        k1_true = det["K1"].values
-        k1_fit = det["K1_value"].values
+        k1_true = det_set["K1"].values
+        k1_fit = det_set["K1_value"].values
         valid_k = np.isfinite(k1_true) & np.isfinite(k1_fit) & (k1_true > 0)
         if valid_k.sum() > 0:
             dk = (k1_fit[valid_k] - k1_true[valid_k]) / k1_true[valid_k]
-            print(f"\n  K1 ΔK1/K1:")
-            print(f"    Median:  {np.median(dk):.4f}")
-            print(f"    MAD:     {np.median(np.abs(dk - np.median(dk))):.4f}")
+            print(f"    K1 ΔK1/K1:          median={np.median(dk):.4f}, MAD={np.median(np.abs(dk - np.median(dk))):.4f}")
+
+    # --- Chosen-filter vs closest-to-truth comparison ---
+    n_chosen = df["chosen_filter"].sum()
+    n_closest = df["closest_to_truth"].sum()
+    n_agree = (df["chosen_filter"] & df["closest_to_truth"]).sum()
+
+    print(f"\n  Chosen-filter solutions:       {n_chosen}")
+    print(f"  Closest-to-truth solutions:    {n_closest}")
+    print(f"  Same row (agree):              {n_agree}")
+    print(f"  Different row (disagree):      {n_chosen - n_agree}")
+
+    if n_chosen > 0:
+        chosen_td = df.loc[df["chosen_filter"], "truth_distance"]
+        closest_td = df.loc[df["closest_to_truth"], "truth_distance"]
+        print(f"\n  Truth distance (chosen):   "
+              f"median={chosen_td.median():.4f}, mean={chosen_td.mean():.4f}")
+        print(f"  Truth distance (closest):  "
+              f"median={closest_td.median():.4f}, mean={closest_td.mean():.4f}")
 
     print(f"\nPlots saved to: {plots_dir}")
 
