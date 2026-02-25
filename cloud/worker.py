@@ -10,23 +10,27 @@ and uploads **three** things to GCS:
 
 Environment variables (set by the batch job script):
     TASK_INDEX   : int — BATCH_TASK_INDEX (0 .. n_tasks-1)
-    BASE_SEED    : int — base random seed from orchestrator
+    RUN_ID       : str — unique run identifier (timestamp or user-supplied)
     N_FIELDS     : int — number of BLOeM MJD fields (8)
     GCS_OUTPUT_DIR : gs:// prefix for uploading everything
     CONFIG_PATH  : (optional) path to params YAML, default /app/params_cloud.yaml
 
 Seed & field logic:
-    seed      = BASE_SEED + TASK_INDEX   (unique per task)
-    field_idx = TASK_INDEX % N_FIELDS    (cycles 0-7, 0-7, …)
+    seed      = sha256(run_id + task_index) % 2^31  (unique per run × task)
+    field_idx = TASK_INDEX % N_FIELDS               (cycles 0-7, 0-7, …)
 """
 
+import hashlib
 import os
 import sys
 
 import numpy as np
 import pandas as pd
 
-from google.cloud import storage
+try:
+    from google.cloud import storage
+except ImportError:
+    storage = None  # Not needed for local runs
 
 from simulations.common import BLOEM_MJD_ARRAYS
 from simulations.create_binary_simulations import (
@@ -72,7 +76,7 @@ def upload_directory(local_dir, gcs_prefix):
 # Simulation generation (one system)
 # ---------------------------------------------------------------------------
 
-def generate_one_simulation(task_index, base_seed, n_fields):
+def generate_one_simulation(task_index, run_id, n_fields, input_dir="/app/input"):
     """
     Generate a single binary RV simulation.
 
@@ -83,7 +87,7 @@ def generate_one_simulation(task_index, base_seed, n_fields):
     truth_csv : str
         Path to the written truth_row.csv file.
     """
-    seed = base_seed + task_index
+    seed = int(hashlib.sha256(f"{run_id}_{task_index}".encode()).hexdigest(), 16) % (2**31)
     field_idx = task_index % n_fields
     rng = np.random.default_rng(seed)
 
@@ -100,7 +104,6 @@ def generate_one_simulation(task_index, base_seed, n_fields):
         return None, None
 
     # --- Write pipeline-compatible CSV ---
-    input_dir = "/app/input"
     os.makedirs(input_dir, exist_ok=True)
 
     sim_name = f"SIMuLaTioN_{task_index:06d}"
@@ -119,6 +122,7 @@ def generate_one_simulation(task_index, base_seed, n_fields):
     # --- Write one-row truth CSV ---
     truth_row = pd.DataFrame([{
         "sim_id": task_index,
+        "run_id": run_id,
         "filename": csv_filename,
         "field_idx": field_idx,
         "seed": seed,
@@ -152,7 +156,7 @@ def generate_one_simulation(task_index, base_seed, n_fields):
 
 def main():
     task_index = int(os.environ.get("TASK_INDEX", os.environ.get("BATCH_TASK_INDEX", "0")))
-    base_seed = int(os.environ.get("BASE_SEED", "42"))
+    run_id = os.environ.get("RUN_ID", "unknown")
     n_fields = int(os.environ.get("N_FIELDS", str(len(BLOEM_MJD_ARRAYS))))
     gcs_output = os.environ.get("GCS_OUTPUT_DIR")
     config_path = os.environ.get("CONFIG_PATH", "/app/params_cloud.yaml")
@@ -165,11 +169,11 @@ def main():
     task_gcs = f"{gcs_output}/{sim_name}"
 
     print(f"=== Worker task {task_index} ===")
-    print(f"  base_seed={base_seed}, n_fields={n_fields}")
+    print(f"  run_id={run_id}, n_fields={n_fields}")
     print(f"  output -> {task_gcs}")
 
     # 1) Generate simulation on the fly
-    local_csv, truth_csv = generate_one_simulation(task_index, base_seed, n_fields)
+    local_csv, truth_csv = generate_one_simulation(task_index, run_id, n_fields)
     if local_csv is None:
         print("Simulation generation failed (Kepler solver). Exiting.")
         sys.exit(1)
