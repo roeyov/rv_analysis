@@ -179,12 +179,18 @@ def _make_scoring_ctx(obs_logP, obs_e, obs_K1, clip_range,
     }
 
 
-def _compute_scores(res, fbin, ctx):
+def _compute_scores(res, ctx):
     """Compute KS/AD/CvM p-values + log-GMF for one grid-point result.
 
     Pure function: takes a worker `res` dict (with logP_det/e_det/K1_det,
     n_physical, p_det) and the per-run scoring context; returns a dict
     of every scalar we want in the cubes and the CSV row.
+
+    p_det = n_detected / n_physical is the per-star detection rate (binaries
+    detected divided by all injected realizations, binary + single). It
+    already absorbs f_bin via the per-realization coin flip, so the binomial
+    success probability is `p_det` directly — multiplying by f_bin again
+    would double-count.
 
     No mutation, no I/O — safe to call from any process.
     """
@@ -199,7 +205,7 @@ def _compute_scores(res, fbin, ctx):
     if n_total_sim > 0 and p_det > 0:
         p_binom = float(binom.pmf(ctx["N_det_obs"],
                                   ctx["N_stars"],
-                                  fbin * p_det))
+                                  p_det))
     else:
         p_binom = 0.0
 
@@ -920,7 +926,7 @@ def _resume_score_worker(task):
         "e_det": shard.get("e", np.array([])),
         "K1_det": shard.get("K1", np.array([])),
     }
-    scores = _compute_scores(res_for_scoring, fbin, ctx)
+    scores = _compute_scores(res_for_scoring, ctx)
     return {
         "step": step, "i": i, "j": j, "k": k, "l": l,
         "pi": pi, "kappa": kappa, "eta": eta, "fbin": fbin,
@@ -1714,7 +1720,7 @@ class GridSearchEngine:
             pdet_cube[i, j, k, l] = p_det
 
             if scores is None:
-                scores = _compute_scores(res, fbin, scoring_ctx)
+                scores = _compute_scores(res, scoring_ctx)
 
             for tname in _ALL_TESTS:
                 test_cubes[tname]["logP"][i, j, k, l] = \
@@ -2768,8 +2774,18 @@ def load_star_properties(mass_file, rv_dir=None):
             except Exception:
                 info["field"] = 0
 
+        # Sample medians used as fallback when an individual star's
+        # spectroscopic mass fit is clearly broken (M1 ~ hundreds of M_sun
+        # or R1 outside O-star range). Median is robust to those outliers,
+        # so it represents a "typical O-star" prior for the broken entries.
+        # This keeps every observed star in the population (consistent
+        # binomial denominator) while preventing nonsense K1 injections.
+        M1_med = float(massdf["Mspec"].median())
+        R1_med = float(massdf["R_star"].median())
+
         # Merge
         rows = []
+        n_fallback = 0
         for _, mrow in massdf.iterrows():
             sid = mrow["ID"]
             # Try matching by BLOeM ID (e.g. "1-023")
@@ -2778,15 +2794,18 @@ def load_star_properties(mass_file, rv_dir=None):
                 M1_val = mrow["Mspec"]
                 R1_val = mrow["R_star"]
                 if M1_val < 5 or M1_val > 120 or R1_val < 2 or R1_val > 30:
-                    logger.debug("load_star_properties: skipping %s "
-                                 "(M1=%.1f R1=%.1f outside O-star range)",
-                                 star_key, M1_val, R1_val)
-                    continue
+                    logger.debug("load_star_properties: %s mass-fit out of "
+                                 "range (M1=%.1f R1=%.1f) -> using sample "
+                                 "median (M1=%.1f R1=%.1f)",
+                                 star_key, M1_val, R1_val, M1_med, R1_med)
+                    M1_val = M1_med
+                    R1_val = R1_med
+                    n_fallback += 1
                 ri = rv_info[star_key]
                 rows.append({
                     "ID": star_key,
-                    "Mspec": M1_val,
-                    "R_star": R1_val,
+                    "Mspec": float(M1_val),
+                    "R_star": float(R1_val),
                     "field": ri["field"],
                     "rv_err": ri["rv_err"],
                     "gamma": ri["gamma"],
@@ -2799,8 +2818,9 @@ def load_star_properties(mass_file, rv_dir=None):
                 "(e.g. /Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/"
                 "CCF/dr5_neb_div_from_coadded/)." % (mass_file, rv_dir))
         result = pd.DataFrame(rows)
-        logger.info("load_star_properties: %d stars loaded (with RV info)",
-                     len(result))
+        logger.info("load_star_properties: %d stars loaded "
+                    "(%d with median-mass fallback)",
+                     len(result), n_fallback)
         return result
 
     raise RuntimeError(
@@ -2890,6 +2910,13 @@ def main():
              "over stars within each grid point. Useful when each grid "
              "point is fast (e.g. rv_threshold detection).",
     )
+    parser.add_argument(
+        "--n-stars-sample", type=int, default=None,
+        help="Override n_stars_sample (binomial denominator). For closure "
+             "tests this must equal the synthetic catalog's n_stars in "
+             "truth_params.yaml. If unset, uses cfg['n_stars_sample'] "
+             "(default 134, the published BLOeM O-star sample).",
+    )
     cli = parser.parse_args()
 
     # --quick is a deprecated alias for --preset quick
@@ -2953,9 +2980,14 @@ def main():
     for fi, mjds in enumerate(BLOEM_MJD_ARRAYS):
         field_mjds[fi] = np.array(mjds)
 
-    # n_stars_sample for the binomial must be the full survey population
-    # (134), NOT len(star_df) which may be smaller due to missing CSVs.
-    # The default from bias_config.py (134) is correct; don't override it.
+    # n_stars_sample for the binomial denominator. Defaults to the actual
+    # number of stars realized in the injection sample (so the binomial is
+    # self-consistent with the population the simulator runs over). CLI
+    # --n-stars-sample overrides for special cases.
+    if cli.n_stars_sample is not None:
+        cfg["n_stars_sample"] = int(cli.n_stars_sample)
+    else:
+        cfg["n_stars_sample"] = len(star_df)
     logger.info("  n_stars_sample for binomial: %d (injection sample: %d)",
                 cfg["n_stars_sample"], len(star_df))
 
