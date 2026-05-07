@@ -697,6 +697,151 @@ def run_mcmc(args_dict, results_df, MJDs, rv_obs, rv_sigmas, out_dir , star_name
 
 
 # ---------------------------------------------------------------------------
+# Lightweight detection for bias-correction injection-recovery
+# ---------------------------------------------------------------------------
+
+def detect_from_arrays(mjds, rvs, errs, args_dict, use_fwhm=True):
+    """
+    Run the detection pipeline on in-memory arrays (no CSV I/O, no plots).
+
+    Returns
+    -------
+    detected : bool
+        True if a significant orbital solution was found (prob_bicc > 0.5).
+    info : dict
+        Fitted parameters and diagnostics. Keys include:
+        'period', 'ecc', 'K1', 'gamma', 'prob_bicc', 'bicc', 'redchi',
+        'LS_fap', 'PDC_fap', 'LS_iter_fap', 'PDC_iter_fap'.
+    """
+    data = {
+        TIME_STAMPS: np.asarray(mjds, dtype=float),
+        RADIAL_VELS: np.asarray(rvs, dtype=float),
+        ERRORS: np.asarray(errs, dtype=float),
+    }
+
+    # Set gamma search region from data
+    local_args = copy.deepcopy(args_dict)
+    gamma0 = get_rv_weighted_mean(data)
+    change_search_region_default(
+        local_args, GAMMA, gamma0, min(rvs), max(rvs), True
+    )
+
+    info = {
+        'detected': False, 'period': np.nan, 'ecc': np.nan, 'K1': np.nan,
+        'gamma': np.nan, 'prob_bicc': np.nan, 'bicc': np.nan,
+        'redchi': np.nan, 'LS_fap': np.nan, 'PDC_fap': np.nan,
+        'LS_iter_fap': np.nan, 'PDC_iter_fap': np.nan, 'reason': '',
+    }
+
+    # 1) Period search (no plotting)
+    try:
+        ls_p, ls_fap, ls_fal, ls_mp, pdc_p, pdc_fap, pdc_mp, candidates_df = (
+            _find_candidates(rvs, mjds, errs, local_args,
+                             star_name="inject", out_dir=None,
+                             use_fwhm=use_fwhm)
+        )
+    except Exception as e:
+        info['reason'] = f'period_search_failed: {e}'
+        return False, info
+
+    if candidates_df is None or candidates_df.empty:
+        info['reason'] = 'no_candidates'
+        return False, info
+
+    if np.isnan(ls_fap):
+        info['reason'] = 'ls_fap_nan'
+        return False, info
+
+    # 2) Fit top candidate(s) with jitter
+    cand_jitter = candidates_df.copy()
+    cand_jitter["jitter"] = True
+
+    best_row_dict = None
+    best_mini = None
+    best_redchi_diff = 1e9
+
+    for cand in cand_jitter.itertuples(index=False):
+        chosen_period = float(cand.period)
+        fit_args = copy.deepcopy(local_args)
+
+        if use_fwhm:
+            change_search_region_default(
+                fit_args, PERIOD, chosen_period,
+                float(cand.fwhm_per_low), float(cand.fwhm_per_high), True
+            )
+        else:
+            change_search_region_default(
+                fit_args, PERIOD, chosen_period,
+                chosen_period * 0.9, chosen_period * 1.1, False
+            )
+        change_search_region_default(
+            fit_args, T, min(mjds),
+            min(mjds) - chosen_period, min(mjds) + chosen_period, True
+        )
+
+        try:
+            mini_results = lmfit_on_sample(fit_args, data, use_jitter=True)
+        except Exception:
+            continue
+
+        row = summarize_result(mini_results, "inject")
+        row.update(calculate_statistical_flags(data, mini_results, is_null=False))
+        row['LS_fap'] = float(getattr(cand, 'LS_fap', np.nan))
+        row['PDC_fap'] = float(getattr(cand, 'PDC_fap', np.nan))
+        row['LS_iter_fap'] = float(getattr(cand, 'LS_iter_fap', np.nan))
+        row['PDC_iter_fap'] = float(getattr(cand, 'PDC_iter_fap', np.nan))
+        row['candidate_period'] = chosen_period
+
+        diff = abs(mini_results.redchi - 1)
+        if diff < best_redchi_diff:
+            best_redchi_diff = diff
+            best_row_dict = row
+            best_mini = mini_results
+
+    if best_row_dict is None:
+        info['reason'] = 'all_fits_failed'
+        return False, info
+
+    # 3) Null hypothesis (constant RV + jitter)
+    null_args = copy.deepcopy(local_args)
+    change_search_region_default(null_args, PERIOD, 0, -0.1, 0.1, False)
+    change_search_region_default(null_args, K1_STR, 0, -0.1, 0.1, False)
+    try:
+        null_res = lmfit_on_sample(null_args, data, null_hyp=True, use_jitter=True)
+    except Exception:
+        info['reason'] = 'null_fit_failed'
+        return False, info
+
+    null_stats = calculate_statistical_flags(data, null_res, is_null=True)
+
+    # 4) BICc comparison
+    null_bicc = float(null_stats.get('bicc', np.inf))
+    orb_bicc = float(best_row_dict.get('bicc', np.inf))
+    prob_bicc = calculate_binary_probability(orb_bicc, null_bicc)
+
+    # 5) Populate info
+    info.update({
+        'period': float(best_row_dict.get('candidate_period', np.nan)),
+        'ecc': float(best_row_dict.get(f'{ECC}_value', np.nan)),
+        'K1': float(best_row_dict.get(f'{K1_STR}_value', np.nan)),
+        'gamma': float(best_row_dict.get(f'{GAMMA}_value', np.nan)),
+        'prob_bicc': prob_bicc,
+        'bicc': orb_bicc,
+        'redchi': float(best_row_dict.get('redchi', np.nan)),
+        'LS_fap': float(best_row_dict.get('LS_fap', np.nan)),
+        'PDC_fap': float(best_row_dict.get('PDC_fap', np.nan)),
+        'LS_iter_fap': float(best_row_dict.get('LS_iter_fap', np.nan)),
+        'PDC_iter_fap': float(best_row_dict.get('PDC_iter_fap', np.nan)),
+    })
+
+    detected = prob_bicc > 0.5
+    info['detected'] = detected
+    info['reason'] = 'detected' if detected else f'prob_bicc={prob_bicc:.3f}'
+
+    return detected, info
+
+
+# ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
 
@@ -749,7 +894,6 @@ def main_single(path_to_csv, path_to_out=None, massdf=None, use_fwhm=False,
     # ----------------------------------------------------------------
     # Case 1: no lmfit_summary yet – run full pipeline (your original flow)
     # ----------------------------------------------------------------
-
     # 4) period search - conditionally set out_dir based on save_plots
     periodogram_out_dir = os.path.join(star_out_path, "periodogram") if (star_out_path and save_plots) else None
     ls_p, ls_fap, ls_fal, ls_mp, pdc_p, pdc_fap, pdc_mp, candidates_df =(

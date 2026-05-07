@@ -76,7 +76,7 @@ def run_local(n_tasks, n_fields, run_id, config_path):
         print(f"{'=' * 60}")
 
         # 1) Generate simulation — write CSV + truth into sim_dir
-        local_csv, truth_csv = generate_one_simulation(
+        local_csv, truth_csv, massdf = generate_one_simulation(
             task_index, run_id, n_fields, input_dir=sim_dir,
         )
         if local_csv is None:
@@ -89,8 +89,8 @@ def run_local(n_tasks, n_fields, run_id, config_path):
         os.makedirs(pipeline_out, exist_ok=True)
 
         try:
-            main_single(local_csv, pipeline_out, use_fwhm=True,
-                        json_param_file=config_path)
+            main_single(local_csv, pipeline_out, massdf=massdf,
+                        use_fwhm=True, json_param_file=config_path)
         except Exception as e:
             print(f"ERROR running pipeline for {sim_name}: {e}")
             failed.append(task_index)

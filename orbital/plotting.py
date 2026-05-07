@@ -21,11 +21,12 @@ import plotly.graph_objects as go
 
 from utils.constants import (
     GAMMA, K1_STR, OMEGA, ECC, PERIOD, T,
-    LN_SIGMA_JITTER,
+    LN_SIGMA_JITTER, PLOT_STYLE,
 )
 from orbital.kepler import Kepler, v1mod, true_anomaly_from_E
 from orbital.fitting import extract_observations
 from orbital.statistics import compute_orbital_params
+from utils.plot_style import get_style, apply_style_to_layout
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +59,17 @@ def compute_rv_curve_phase(P, T0, ecc, Gamma, K, Omega, n_points=1000):
     nu = 2*np.arctan2(np.sqrt(1+ecc)*np.sin(E/2), np.sqrt(1-ecc)*np.cos(E/2))
     rv = v1mod(nu, Gamma, K, Omega, ecc)
     return phase_grid, rv
+
+
+def compute_phase_residuals(hjds, vels, P, T0, ecc, Gamma, K, Omega):
+    """Compute phase-folded data, model curve, and residuals (no plotting)."""
+    phs_data = ((np.asarray(hjds, dtype=float) - float(T0)) / float(P)) % 1.0
+    phase_grid, rv_phase = compute_rv_curve_phase(P, T0, ecc, Gamma, K, Omega)
+    phase_grid = np.asarray(phase_grid, dtype=float)
+    rv_phase = np.asarray(rv_phase, dtype=float)
+    vmod_data = np.interp(phs_data, phase_grid, rv_phase)
+    residuals = np.asarray(vels, dtype=float) - vmod_data
+    return phs_data, phase_grid, rv_phase, residuals
 
 
 def compute_null_rv_curve_time(hjds, Gamma, ngrid=500, pad_frac=0.05):
@@ -141,6 +153,9 @@ def plot_time_series_with_residuals(hjds, vels, errs, time_grid, rv_model,
     vmod_data = np.interp(hjds, time_grid, rv_model)
     residuals = vels - vmod_data
 
+    if not out_dir:
+        return residuals
+
     fig, (ax1, ax1r) = plt.subplots(
         2, 1, sharex=True, figsize=figsize,
         gridspec_kw={'height_ratios': [3, 1]}
@@ -169,34 +184,35 @@ def plot_time_series_with_residuals(hjds, vels, errs, time_grid, rv_model,
 
 def plot_phase_folded_with_residuals(hjds, vels, errs, P, T0,
                                      Gamma, K, Omega, ecc,
-                                     star_name, solution_id=0, out_dir=None, plot=True,
+                                     star_name, solution_id=0, out_dir=None,
                                      figsize=(10, 10)):
-    phs_data = ((hjds - T0) / P) % 1
-    phase_grid, rv_phase = compute_rv_curve_phase(P, T0, ecc, Gamma, K, Omega)
-    vmod_data = np.interp(phs_data, phase_grid, rv_phase)
-    residuals = vels - vmod_data
-    if plot:
-        fig, (ax2, ax2r) = plt.subplots(
-            2, 1, sharex=True, figsize=figsize,
-            gridspec_kw={'height_ratios': [3, 1]}
-        )
-        ax2.errorbar(phs_data, vels, yerr=errs, fmt='o', color='red')
-        ax2.plot(phase_grid, rv_phase, color='red', label='Model')
-        ax2.axhline(Gamma, color='black', linestyle='--')
-        ax2.set_xlim(0, 1)
-        ax2.set_ylabel('RV [km s$^{-1}$]')
-        ax2.set_title(f"Folded fit {star_name}")
-        ax2.legend()
+    phs_data, phase_grid, rv_phase, residuals = compute_phase_residuals(
+        hjds, vels, P, T0, ecc, Gamma, K, Omega,
+    )
 
-        ax2r.errorbar(phs_data, residuals, yerr=errs, fmt='o', color='gray')
-        ax2r.axhline(0, color='black', lw=0.8)
-        ax2r.set_xlabel('Phase')
-        ax2r.set_ylabel('O\u2013C')
+    if not out_dir:
+        return phs_data, phase_grid, rv_phase, residuals
 
-        fig.tight_layout()
-        if out_dir:
-            fig.savefig(os.path.join(out_dir, f"{star_name}_sid-{solution_id}_phase_residuals.png"))
-        plt.show()
+    fig, (ax2, ax2r) = plt.subplots(
+        2, 1, sharex=True, figsize=figsize,
+        gridspec_kw={'height_ratios': [3, 1]}
+    )
+    ax2.errorbar(phs_data, vels, yerr=errs, fmt='o', color='red')
+    ax2.plot(phase_grid, rv_phase, color='red', label='Model')
+    ax2.axhline(Gamma, color='black', linestyle='--')
+    ax2.set_xlim(0, 1)
+    ax2.set_ylabel('RV [km s$^{-1}$]')
+    ax2.set_title(f"Folded fit {star_name}")
+    ax2.legend()
+
+    ax2r.errorbar(phs_data, residuals, yerr=errs, fmt='o', color='gray')
+    ax2r.axhline(0, color='black', lw=0.8)
+    ax2r.set_xlabel('Phase')
+    ax2r.set_ylabel('O\u2013C')
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, f"{star_name}_sid-{solution_id}_phase_residuals.png"))
+    plt.show()
     return phs_data, phase_grid, rv_phase, residuals
 
 
@@ -207,8 +223,10 @@ def plot_phase_folded_with_residuals(hjds, vels, errs, P, T0,
 def plot_time_series_with_residuals_plotly(
     hjds, vels, errs, time_grid, rv_model,
     Gamma, K, Omega, ecc, P, star_name, solution_id=0, jitter=0.0,
-    out_dir=None, figsize=(1000, 700)
+    out_dir=None, figsize=(1000, 700),
+    style="interactive",
 ):
+    s = get_style(style)
     hjds = np.asarray(hjds, dtype=float)
     vels = np.asarray(vels, dtype=float)
     errs = np.asarray(errs, dtype=float)
@@ -218,129 +236,156 @@ def plot_time_series_with_residuals_plotly(
     vmod_data = np.interp(hjds, time_grid, rv_model)
     residuals = vels - vmod_data
 
-    if (P is None) or (not np.isfinite(P)):
-        title = f"Null (constant radial-velocity) model for {star_name}"
-    else:
-        title = (
-            f"Orbital fit for {star_name}: "
-            f"Period P = {P:.2f} d, eccentricity e = {ecc:.3f}"
-        )
+    if not out_dir:
+        return residuals
 
+    # ── title ─────────────────────────────────────────────────────────
+    title = ""
+    if s.show_title:
+        if (P is None) or (not np.isfinite(P)):
+            title = f"Null (constant RV) model for {star_name}"
+        else:
+            title = (f"Orbital fit for {star_name}: "
+                     f"P = {P:.2f} d, e = {ecc:.3f}")
+
+    # ── labels (concise in paper mode) ────────────────────────────────
+    if s.show_title:
+        lbl_data = "Measurements (\u00b11\u03c3, statistical errors)"
+        lbl_jit = "Measurements (\u00b11\u03c3, including jitter)"
+        lbl_model = "Best-fit model"
+        lbl_res = "Residuals (\u00b11\u03c3, statistical errors)"
+        lbl_res_jit = "Residuals (\u00b11\u03c3, including jitter)"
+        x_label = "Time (Modified Julian Date)"
+        y_label_rv = "Radial velocity [km s\u207b\u00b9]"
+        y_label_res = "Residuals [km s\u207b\u00b9]"
+        sub_titles = ("Radial velocity versus time", "Residuals")
+    else:
+        lbl_data = "Data"
+        lbl_jit = "Data (incl. jitter)"
+        lbl_model = "Best fit"
+        lbl_res = "O\u2013C"
+        lbl_res_jit = "O\u2013C (incl. jitter)"
+        x_label = "MJD"
+        y_label_rv = "RV [km s\u207b\u00b9]"
+        y_label_res = "O\u2013C [km s\u207b\u00b9]"
+        sub_titles = None
+
+    # ── subplots ──────────────────────────────────────────────────────
+    vspacing = 0.06 if s.show_title else 0.10
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
         row_heights=[0.75, 0.25],
-        vertical_spacing=0.06,
-        subplot_titles=("Radial velocity versus time", "Residuals")
+        vertical_spacing=vspacing,
+        subplot_titles=sub_titles,
     )
 
+    # Data
     fig.add_trace(
         go.Scatter(
-            x=hjds, y=vels, mode="markers",
-            name="Measurements (\u00b11\u03c3, statistical errors)",
-            marker=dict(size=8, opacity=0.7, color="royalblue"),
-            error_y=dict(type="data", array=errs, visible=True, color="royalblue"),
-            hovertemplate=(
-                "Time (MJD) = %{x:.6f}<br>"
-                "Radial velocity = %{y:.4f} km/s"
-                "<br>\u00b11\u03c3 statistical uncertainty"
-                "<extra></extra>"
-            ),
+            x=hjds, y=vels, mode="markers", name=lbl_data,
+            marker=dict(size=s.marker_size, opacity=0.7, color=s.color_data_primary),
+            error_y=dict(type="data", array=errs, visible=True,
+                         color=s.color_data_primary),
+            hovertemplate="MJD=%{x:.4f}<br>RV=%{y:.3f}<extra></extra>",
         ),
-        row=1, col=1
+        row=1, col=1,
     )
 
     if jitter:
-        errs2 = np.sqrt(errs**2.0 + jitter**2.0)
+        errs2 = np.sqrt(errs ** 2.0 + jitter ** 2.0)
         fig.add_trace(
             go.Scatter(
-                x=hjds, y=vels, mode="markers",
-                name="Measurements (\u00b11\u03c3, including jitter)",
-                marker=dict(size=8, opacity=0.5, color="orange", symbol="circle-open"),
-                error_y=dict(type="data", array=errs2, visible=True, color="orange"),
-                hovertemplate=(
-                    "Time (MJD) = %{x:.6f}<br>"
-                    "Radial velocity = %{y:.4f} km/s"
-                    "<br>\u00b11\u03c3 including jitter term"
-                    "<extra></extra>"
-                ),
-                showlegend=True
+                x=hjds, y=vels, mode="markers", name=lbl_jit,
+                marker=dict(size=s.marker_size, opacity=0.5,
+                            color=s.color_jitter, symbol="circle-open"),
+                error_y=dict(type="data", array=errs2, visible=True,
+                             color=s.color_jitter),
+                hovertemplate="MJD=%{x:.4f}<br>RV=%{y:.3f}<extra></extra>",
             ),
-            row=1, col=1
+            row=1, col=1,
         )
 
+    # Model
     fig.add_trace(
         go.Scatter(
-            x=time_grid, y=rv_model, mode="lines", name="Best-fit model",
-            line=dict(width=3),
-            hovertemplate=(
-                "Time (MJD) = %{x:.6f}<br>"
-                "Model radial velocity = %{y:.4f} km/s"
-                "<extra>Model</extra>"
-            ),
+            x=time_grid, y=rv_model, mode="lines", name=lbl_model,
+            line=dict(width=s.line_width_model, color=s.color_model),
+            hovertemplate="MJD=%{x:.4f}<br>Model=%{y:.3f}<extra></extra>",
         ),
-        row=1, col=1
+        row=1, col=1,
     )
 
+    # Residuals
     fig.add_trace(
         go.Scatter(
-            x=hjds, y=residuals, mode="markers",
-            name="Residuals (\u00b11\u03c3, statistical errors)",
-            marker=dict(size=8, opacity=0.7),
-            error_y=dict(type="data", array=errs, visible=True),
-            hovertemplate=(
-                "Time (MJD) = %{x:.6f}<br>"
-                "Residuals = %{y:.4f} km/s"
-                "<br>\u00b11\u03c3 statistical uncertainty"
-                "<extra>Residuals</extra>"
-            ),
+            x=hjds, y=residuals, mode="markers", name=lbl_res,
+            marker=dict(size=s.marker_size, opacity=0.7, color=s.color_residuals),
+            error_y=dict(type="data", array=errs, visible=True,
+                         color=s.color_residuals),
+            hovertemplate="MJD=%{x:.4f}<br>O\u2013C=%{y:.3f}<extra></extra>",
         ),
-        row=2, col=1
+        row=2, col=1,
     )
 
     if jitter:
-        errs2 = np.sqrt(errs**2.0 + jitter**2.0)
+        errs2 = np.sqrt(errs ** 2.0 + jitter ** 2.0)
         fig.add_trace(
             go.Scatter(
-                x=hjds, y=residuals, mode="markers",
-                name="Residuals (\u00b11\u03c3, including jitter)",
-                marker=dict(size=8, opacity=0.5, color="orange", symbol="circle-open"),
-                error_y=dict(type="data", array=errs2, visible=True, color="orange"),
-                hovertemplate=(
-                    "Time (MJD) = %{x:.6f}<br>"
-                    "Residuals = %{y:.4f} km/s"
-                    "<br>\u00b11\u03c3 including jitter term"
-                    "<extra>Residuals</extra>"
-                ),
-                showlegend=True
+                x=hjds, y=residuals, mode="markers", name=lbl_res_jit,
+                marker=dict(size=s.marker_size, opacity=0.5,
+                            color=s.color_jitter, symbol="circle-open"),
+                error_y=dict(type="data", array=errs2, visible=True,
+                             color=s.color_jitter),
+                hovertemplate="MJD=%{x:.4f}<br>O\u2013C=%{y:.3f}<extra></extra>",
             ),
-            row=2, col=1
+            row=2, col=1,
         )
 
-    fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="gray", row=2, col=1)
+    fig.add_hline(y=0, line_width=s.line_width_reference, line_dash="dot",
+                  line_color=s.color_residuals, row=2, col=1)
 
-    fig.update_xaxes(title_text="Time (Modified Julian Date)", row=2, col=1,
-                     title_font=dict(size=20), tickfont=dict(size=16))
-    fig.update_yaxes(title_text="Radial velocity [km s\u207b\u00b9]", row=1, col=1,
-                     title_font=dict(size=20), tickfont=dict(size=16))
-    fig.update_yaxes(title_text="Residuals [km s\u207b\u00b9]", row=2, col=1,
-                     title_font=dict(size=20), tickfont=dict(size=16))
+    # ── axes ──────────────────────────────────────────────────────────
+    frame_kw = dict(showline=True, linewidth=1, linecolor="black",
+                    mirror=True) if s.show_axis_frame else {}
+    fig.update_xaxes(title_text=x_label, row=2, col=1,
+                     title_font=dict(size=s.font_axis_title),
+                     tickfont=dict(size=s.font_tick),
+                     showgrid=s.show_grid, gridcolor=s.grid_color, **frame_kw)
+    fig.update_yaxes(title_text=y_label_rv, row=1, col=1,
+                     title_font=dict(size=s.font_axis_title),
+                     tickfont=dict(size=s.font_tick),
+                     showgrid=s.show_grid, gridcolor=s.grid_color, **frame_kw)
+    fig.update_yaxes(title_text=y_label_res, row=2, col=1,
+                     title_font=dict(size=s.font_axis_title),
+                     tickfont=dict(size=s.font_tick),
+                     showgrid=s.show_grid, gridcolor=s.grid_color, **frame_kw)
+    # top subplot x-axis also needs frame
+    fig.update_xaxes(row=1, col=1,
+                     showgrid=s.show_grid, gridcolor=s.grid_color, **frame_kw)
 
+    # ── layout ────────────────────────────────────────────────────────
+    w = s.width
+    h = s.height
+    apply_style_to_layout(fig, s)
     fig.update_layout(
-        width=figsize[0], height=figsize[1],
-        template="plotly_white", title=title,
-        title_font=dict(size=22), font=dict(size=18),
-        legend=dict(orientation="h", y=-0.15, x=0.5, xanchor="center", yanchor="top",
-                    font=dict(size=16)),
-        margin=dict(l=80, r=20, t=80, b=90),
+        width=w, height=h,
+        title=title if title else None,
+        title_font=dict(size=s.font_title),
     )
 
+    # ── save ──────────────────────────────────────────────────────────
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         safe_star = _sanitize_filename(star_name)
-        html_path = os.path.join(out_dir, f"{safe_star}_sid-{solution_id}_time_residuals.html")
-        fig.write_html(html_path, include_plotlyjs="cdn", full_html=True)
-        png_path = os.path.join(out_dir, f"{safe_star}_sid-{solution_id}_time_residuals.png")
-        fig.write_image(png_path, scale=4)
+        base = f"{safe_star}_sid-{solution_id}_time_residuals"
+
+        fig.write_html(os.path.join(out_dir, f"{base}.html"),
+                       include_plotlyjs="cdn", full_html=True)
+        fig.write_image(os.path.join(out_dir, f"{base}.png"),
+                        width=w, height=h, scale=s.scale)
+        if s.export_pdf:
+            fig.write_image(os.path.join(out_dir, f"{base}.pdf"),
+                            format="pdf", width=w, height=h, scale=s.scale)
 
     return residuals
 
@@ -349,138 +394,165 @@ def plot_phase_folded_with_residuals_plotly(
     hjds, vels, errs, P, T0,
     Gamma, K, Omega, ecc,
     star_name, solution_id=0, jitter=0, out_dir=None, plot=True,
-    figsize=(1000, 700)
+    figsize=(1000, 700),
+    style="interactive",
 ):
-    phs_data = ((np.asarray(hjds, dtype=float) - float(T0)) / float(P)) % 1.0
-    phase_grid, rv_phase = compute_rv_curve_phase(P, T0, ecc, Gamma, K, Omega)
-    phase_grid = np.asarray(phase_grid, dtype=float)
-    rv_phase = np.asarray(rv_phase, dtype=float)
+    s = get_style(style)
 
-    vmod_data = np.interp(phs_data, phase_grid, rv_phase)
+    phs_data, phase_grid, rv_phase, residuals = compute_phase_residuals(
+        hjds, vels, P, T0, ecc, Gamma, K, Omega,
+    )
     vels = np.asarray(vels, dtype=float)
     errs = np.asarray(errs, dtype=float)
-    residuals = vels - vmod_data
 
-    if plot:
+    if plot and out_dir:
+        # ── labels ────────────────────────────────────────────────────
+        if s.show_title:
+            lbl_data = "Measurements (\u00b11\u03c3, statistical errors)"
+            lbl_jit = "Measurements (\u00b11\u03c3, including jitter)"
+            lbl_model = "Best-fit model"
+            lbl_res = "Residuals (\u00b11\u03c3, statistical errors)"
+            lbl_res_jit = "Residuals (\u00b11\u03c3, including jitter)"
+            x_label = "Orbital phase (cycle fraction)"
+            y_label_rv = "Radial velocity [km s\u207b\u00b9]"
+            y_label_res = "Residuals [km s\u207b\u00b9]"
+            sub_titles = ("Phase-folded radial-velocity curve",
+                          "Phase-folded residuals")
+            title = (f"Phase-folded RV curve for {star_name}: "
+                     f"P = {P:.2f} d, e = {ecc:.3f}")
+        else:
+            lbl_data = "Data"
+            lbl_jit = "Data (incl. jitter)"
+            lbl_model = "Best fit"
+            lbl_res = "O\u2013C"
+            lbl_res_jit = "O\u2013C (incl. jitter)"
+            x_label = "Phase"
+            y_label_rv = "RV [km s\u207b\u00b9]"
+            y_label_res = "O\u2013C [km s\u207b\u00b9]"
+            sub_titles = None
+            title = ""
+
+        # ── subplots ──────────────────────────────────────────────────
+        vspacing = 0.06 if s.show_title else 0.10
         fig = make_subplots(
             rows=2, cols=1, shared_xaxes=True,
-            row_heights=[0.75, 0.25], vertical_spacing=0.06,
-            subplot_titles=("Phase-folded radial-velocity curve", "Phase-folded residuals")
+            row_heights=[0.75, 0.25], vertical_spacing=vspacing,
+            subplot_titles=sub_titles,
         )
 
+        # Data
         fig.add_trace(
             go.Scatter(
-                x=phs_data, y=vels, mode="markers",
-                name="Measurements (\u00b11\u03c3, statistical errors)",
-                marker=dict(size=8, opacity=0.7, color="crimson"),
-                error_y=dict(type="data", array=errs, visible=True),
-                hovertemplate=(
-                    "Orbital phase = %{x:.5f}<br>"
-                    "Radial velocity = %{y:.4f} km/s"
-                    "<br>\u00b11\u03c3 statistical uncertainty"
-                    "<extra>Data</extra>"
-                ),
+                x=phs_data, y=vels, mode="markers", name=lbl_data,
+                marker=dict(size=s.marker_size, opacity=0.7,
+                            color=s.color_data_secondary),
+                error_y=dict(type="data", array=errs, visible=True,
+                             color=s.color_data_secondary),
+                hovertemplate="Phase=%{x:.4f}<br>RV=%{y:.3f}<extra></extra>",
             ),
-            row=1, col=1
+            row=1, col=1,
         )
 
         if jitter:
-            errs2 = np.sqrt(errs**2.0 + jitter**2.0)
+            errs2 = np.sqrt(errs ** 2.0 + jitter ** 2.0)
             fig.add_trace(
                 go.Scatter(
-                    x=phs_data, y=vels, mode="markers",
-                    name="Measurements (\u00b11\u03c3, including jitter)",
-                    marker=dict(size=8, opacity=0.5, color="orange", symbol="circle-open"),
-                    error_y=dict(type="data", array=errs2, visible=True, color="orange"),
-                    hovertemplate=(
-                        "Orbital phase = %{x:.5f}<br>"
-                        "Radial velocity = %{y:.4f} km/s"
-                        "<br>\u00b11\u03c3 including jitter term"
-                        "<extra>Data</extra>"
-                    ),
-                    showlegend=True
+                    x=phs_data, y=vels, mode="markers", name=lbl_jit,
+                    marker=dict(size=s.marker_size, opacity=0.5,
+                                color=s.color_jitter, symbol="circle-open"),
+                    error_y=dict(type="data", array=errs2, visible=True,
+                                 color=s.color_jitter),
+                    hovertemplate="Phase=%{x:.4f}<br>RV=%{y:.3f}<extra></extra>",
                 ),
-                row=1, col=1
+                row=1, col=1,
             )
 
+        # Model
         fig.add_trace(
             go.Scatter(
-                x=phase_grid, y=rv_phase, mode="lines",
-                name="Best-fit model",
-                line=dict(width=3, color="crimson"),
-                hovertemplate=(
-                    "Orbital phase = %{x:.5f}<br>"
-                    "Model radial velocity = %{y:.4f} km/s"
-                    "<extra>Model</extra>"
-                ),
+                x=phase_grid, y=rv_phase, mode="lines", name=lbl_model,
+                line=dict(width=s.line_width_model, color=s.color_model),
+                hovertemplate="Phase=%{x:.4f}<br>Model=%{y:.3f}<extra></extra>",
             ),
-            row=1, col=1
+            row=1, col=1,
         )
 
-        fig.add_hline(y=float(Gamma), line_dash="dash", line_color="gray", row=1, col=1)
+        # Gamma line
+        fig.add_hline(y=float(Gamma), line_dash="dash",
+                      line_color=s.color_gamma,
+                      line_width=s.line_width_reference, row=1, col=1)
 
+        # Residuals
         fig.add_trace(
             go.Scatter(
-                x=phs_data, y=residuals, mode="markers",
-                name="Residuals (\u00b11\u03c3, statistical errors)",
-                marker=dict(size=8, opacity=0.8, color="gray"),
-                error_y=dict(type="data", array=errs, visible=True),
-                hovertemplate=(
-                    "Orbital phase = %{x:.5f}<br>"
-                    "Residuals = %{y:.4f} km/s"
-                    "<br>\u00b11\u03c3 statistical uncertainty"
-                    "<extra>Residuals</extra>"
-                ),
+                x=phs_data, y=residuals, mode="markers", name=lbl_res,
+                marker=dict(size=s.marker_size, opacity=0.8,
+                            color=s.color_residuals),
+                error_y=dict(type="data", array=errs, visible=True,
+                             color=s.color_residuals),
+                hovertemplate="Phase=%{x:.4f}<br>O\u2013C=%{y:.3f}<extra></extra>",
             ),
-            row=2, col=1
+            row=2, col=1,
         )
 
         if jitter:
-            errs2 = np.sqrt(errs**2.0 + jitter**2.0)
+            errs2 = np.sqrt(errs ** 2.0 + jitter ** 2.0)
             fig.add_trace(
                 go.Scatter(
-                    x=phs_data, y=residuals, mode="markers",
-                    name="Residuals (\u00b11\u03c3, including jitter)",
-                    marker=dict(size=8, opacity=0.5, color="orange", symbol="circle-open"),
-                    error_y=dict(type="data", array=errs2, visible=True, color="orange"),
-                    hovertemplate=(
-                        "Orbital phase = %{x:.5f}<br>"
-                        "Residuals = %{y:.4f} km/s"
-                        "<br>\u00b11\u03c3 including jitter term"
-                        "<extra>Residuals</extra>"
-                    ),
-                    showlegend=True
+                    x=phs_data, y=residuals, mode="markers", name=lbl_res_jit,
+                    marker=dict(size=s.marker_size, opacity=0.5,
+                                color=s.color_jitter, symbol="circle-open"),
+                    error_y=dict(type="data", array=errs2, visible=True,
+                                 color=s.color_jitter),
+                    hovertemplate="Phase=%{x:.4f}<br>O\u2013C=%{y:.3f}<extra></extra>",
                 ),
-                row=2, col=1
+                row=2, col=1,
             )
 
-        fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="gray", row=2, col=1)
+        fig.add_hline(y=0, line_width=s.line_width_reference, line_dash="dot",
+                      line_color=s.color_residuals, row=2, col=1)
 
-        fig.update_xaxes(title_text="Orbital phase (cycle fraction)", range=[0, 1],
-                         row=2, col=1, title_font=dict(size=20), tickfont=dict(size=16))
-        fig.update_yaxes(title_text="Radial velocity [km s\u207b\u00b9]", row=1, col=1,
-                         title_font=dict(size=20), tickfont=dict(size=16))
-        fig.update_yaxes(title_text="Residuals [km s\u207b\u00b9]", row=2, col=1,
-                         title_font=dict(size=20), tickfont=dict(size=16))
+        # ── axes ──────────────────────────────────────────────────────
+        frame_kw = dict(showline=True, linewidth=1, linecolor="black",
+                        mirror=True) if s.show_axis_frame else {}
+        fig.update_xaxes(title_text=x_label, range=[0, 1], row=2, col=1,
+                         title_font=dict(size=s.font_axis_title),
+                         tickfont=dict(size=s.font_tick),
+                         showgrid=s.show_grid, gridcolor=s.grid_color, **frame_kw)
+        fig.update_yaxes(title_text=y_label_rv, row=1, col=1,
+                         title_font=dict(size=s.font_axis_title),
+                         tickfont=dict(size=s.font_tick),
+                         showgrid=s.show_grid, gridcolor=s.grid_color, **frame_kw)
+        fig.update_yaxes(title_text=y_label_res, row=2, col=1,
+                         title_font=dict(size=s.font_axis_title),
+                         tickfont=dict(size=s.font_tick),
+                         showgrid=s.show_grid, gridcolor=s.grid_color, **frame_kw)
+        fig.update_xaxes(row=1, col=1,
+                         showgrid=s.show_grid, gridcolor=s.grid_color, **frame_kw)
 
+        # ── layout ────────────────────────────────────────────────────
+        w = s.width
+        h = s.height
+        apply_style_to_layout(fig, s)
         fig.update_layout(
-            width=figsize[0], height=figsize[1],
-            template="plotly_white",
-            title=(f"Phase-folded radial-velocity curve for {star_name}: "
-                   f"P = {P:.2f} d, e = {ecc:.3f}"),
-            title_font=dict(size=22), font=dict(size=18),
-            legend=dict(orientation="h", y=-0.15, x=0.5, xanchor="center", yanchor="top",
-                        font=dict(size=16)),
-            margin=dict(l=80, r=20, t=80, b=90),
+            width=w, height=h,
+            title=title if title else None,
+            title_font=dict(size=s.font_title),
         )
 
+        # ── save ──────────────────────────────────────────────────────
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
             safe_star = _sanitize_filename(star_name)
-            html_path = os.path.join(out_dir, f"{safe_star}_sid-{solution_id}_phase_residuals.html")
-            fig.write_html(html_path, include_plotlyjs="cdn", full_html=True)
-            png_path = os.path.join(out_dir, f"{safe_star}_sid-{solution_id}_phase_residuals.png")
-            fig.write_image(png_path, scale=4)
+            base = f"{safe_star}_sid-{solution_id}_phase_residuals"
+
+            fig.write_html(os.path.join(out_dir, f"{base}.html"),
+                           include_plotlyjs="cdn", full_html=True)
+            fig.write_image(os.path.join(out_dir, f"{base}.png"),
+                            width=w, height=h, scale=s.scale)
+            if s.export_pdf:
+                fig.write_image(os.path.join(out_dir, f"{base}.pdf"),
+                                format="pdf", width=w, height=h, scale=s.scale)
 
     return phs_data, phase_grid, rv_phase, residuals
 
@@ -491,6 +563,7 @@ def plot_phase_folded_with_residuals_plotly(
 
 def print_lmfit_result(data, args_dict, star_name, result, solution_id=0, out_dir=None):
     sys.setrecursionlimit(int(1e6))
+    plot_style = args_dict.get(PLOT_STYLE, "interactive") if args_dict else "interactive"
     hjds, vels, errs = extract_observations(data)
     get_fit_report(result, star_name, solution_id, out_dir)
     Gamma, K, Omega, ecc, P, T0 = compute_orbital_params(result)
@@ -501,17 +574,16 @@ def print_lmfit_result(data, args_dict, star_name, result, solution_id=0, out_di
     plot_time_series_with_residuals_plotly(
         hjds, vels, errs, time_grid, rv_time,
         Gamma, K, Omega, ecc, P, star_name, solution_id, jitter=sig_jit,
-        out_dir=out_dir
+        out_dir=out_dir, style=plot_style,
     )
-    phs_data, phase_grid, rv_phase, residuals = plot_phase_folded_with_residuals(
-        hjds, vels, errs, P, T0,
-        Gamma, K, Omega, ecc,
-        star_name, solution_id, out_dir, plot=False
+    phs_data, phase_grid, rv_phase, residuals = compute_phase_residuals(
+        hjds, vels, P, T0, ecc, Gamma, K, Omega,
     )
     plot_phase_folded_with_residuals_plotly(
         hjds, vels, errs, P, T0,
         Gamma, K, Omega, ecc,
-        star_name, solution_id, jitter=sig_jit, out_dir=out_dir, plot=True
+        star_name, solution_id, jitter=sig_jit, out_dir=out_dir, plot=True,
+        style=plot_style,
     )
 
     return phs_data
@@ -555,8 +627,10 @@ def print_lmfit_result_null(
 
     time_grid, rv_time = compute_null_rv_curve_time(hjds, Gamma_val)
 
+    plot_style = args_dict.get(PLOT_STYLE, "interactive") if args_dict else "interactive"
     plot_time_series_with_residuals_plotly(
         hjds, vels, errs, time_grid, rv_time,
         Gamma_val, 0.0, 0.0, 0.0, None,
-        star_name, solution_id, jitter=sig_jit, out_dir=out_dir
+        star_name, solution_id, jitter=sig_jit, out_dir=out_dir,
+        style=plot_style,
     )

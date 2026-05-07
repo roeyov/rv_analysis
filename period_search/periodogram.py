@@ -92,14 +92,35 @@ def pdc(time, data, data_err=[], pmin=1., pmax=1000 , probabilities=(0.5, 0.01, 
 #     return best_period1, maxpow1, fap1, fal1, freq, pdc_power_reg, fap_vec
 
 
-def pdc_opt(times, data, data_err=[], pmin=1., pmax=1000, probabilities=(0.5, 0.01, 0.001)):
+def make_pdc_freq_grid(pmin, pmax, T_baseline, samples_per_peak=10):
+    """
+    Build a frequency grid for the PDC periodogram.
+
+    The intrinsic peak width in any periodogram is set by the observation
+    baseline: Δf_peak ≈ 1/T_baseline.  A grid spacing of
+    Δf = 1/(T_baseline × samples_per_peak) guarantees at least
+    `samples_per_peak` points across every peak, regardless of frequency.
+
+    Returns frequencies sorted **descending** (high-f / short-P first),
+    matching the convention used by the rest of the pipeline.
+    """
+    df = 1.0 / (T_baseline * samples_per_peak)
+    fmin = 1.0 / pmax
+    fmax = 1.0 / pmin
+    freq = np.arange(fmin, fmax + df, df)  # +df to include fmax endpoint
+    freq = freq[freq <= fmax]               # clip to exact bound
+    return freq[::-1]                       # descending (short-P first)
+
+
+def pdc_opt(times, data, data_err=[], pmin=1., pmax=1000,
+            probabilities=(0.5, 0.01, 0.001), samples_per_peak=10):
     """
     Drop-in replacement for 'pdc' that uses the M4-optimized kernel.
     """
-    # 1. Frequency Grid Generation (Identical to original)
-    log_p = np.arange(np.log(pmin), np.log(pmax), 0.0005)
-    p_range = np.exp(log_p)
-    freq = 1 / p_range
+    # 1. Frequency Grid — linear in frequency, ensuring adequate sampling
+    #    at all periods (see make_pdc_freq_grid docstring).
+    T_baseline = float(np.ptp(times))
+    freq = make_pdc_freq_grid(pmin, pmax, T_baseline, samples_per_peak)
 
     # 2. Optimized Calculation
     # This calls the Numba-compiled function
@@ -180,6 +201,8 @@ def plotls(frequency, power, fal, bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 50
     Returns:
             Periodogram computed by "ls"
     '''
+    if not out_dir:
+        return
 
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(1/frequency, power, 'k-', alpha=0.5)
@@ -212,66 +235,72 @@ import os
 import numpy as np
 import plotly.graph_objects as go
 
+from utils.plot_style import get_style, apply_style_to_layout
+
 def plot_periodogram_plotly(
     frequency,
     power,
     fal,
-    bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
+    bins=None,
     star_id='',
     pmin=1.0,
     pmax=1000.0,
     out_dir=None,
-    periodogram_kind="LS",   # "LS" for Lomb–Scargle, "PDC" for Phase–Distance Correlation
+    periodogram_kind="LS",
+    style="interactive",
+    fal_labels=None,
 ):
     """
-    Plot a periodogram with Plotly and save as HTML/PNG.
+    Plot a periodogram with Plotly and save as HTML/PNG (+ PDF in paper mode).
 
-    periodogram_kind:
-        "LS"  → Lomb–Scargle periodogram (default)
-        "PDC" → Phase–distance correlation periodogram
+    Parameters
+    ----------
+    frequency : array-like
+        Frequencies (1/days).
+    power : array-like
+        Periodogram statistic (LS power or PDC value).
+    fal : array-like
+        False-alarm levels (typically for p ~ 0.1, 0.01, 0.001).
+    bins : list[float] or None
+        Tick locations for the period axis (days).
+    star_id : str
+        Star identifier (for title and filenames).
+    pmin, pmax : float
+        Period display range (days).
+    out_dir : str | Path | None
+        Save directory; if *None*, returns HTML string.
+    periodogram_kind : str
+        ``"LS"`` or ``"PDC"`` — controls axis / trace labels.
+    style : str or PlotStyle
+        ``"interactive"`` (default, backward-compatible) or ``"paper"``.
 
-    Args:
-        frequency (array-like): Frequencies (1/days).
-        power     (array-like): Periodogram statistic (e.g., LS power or PDC value).
-        fal       (array-like): False-alarm levels in the same units as `power`
-                                (typically for p ≈ 0.1, 0.01, 0.001).
-        bins      (list[float]): Tick locations for period axis (days).
-        star_id   (str): Star name / identifier (for title and filenames).
-        pmin, pmax (float): Minimum and maximum period to display (days).
-        out_dir   (str|Path|None): If provided, saves HTML + PNG there and returns
-                                   path to HTML. If None, returns HTML string.
-        periodogram_kind (str): "LS" or "PDC" – controls human-readable labels.
-
-    Returns:
-        str: Path to saved HTML (if out_dir is provided) or HTML string (if out_dir is None).
+    Returns
+    -------
+    str
+        Path to saved HTML (if *out_dir*) or HTML string.
     """
-    # Map kind → nice labels
+    s = get_style(style)
+
+    # ── labels ────────────────────────────────────────────────────────
     kind_key = (periodogram_kind or "LS").upper()
-    if kind_key == "PDC" or  kind_key == "PDC_OPT":
-        method_label = "PDC"
-        y_label      = "PDC statistic"
-        trace_name   = "PDC statistic"
+    if kind_key in ("PDC", "PDC_OPT"):
+        method_label, y_label, trace_name = "PDC", "PDC statistic", "PDC statistic"
     else:
-        method_label = "LS"
-        y_label      = "LS power"
-        trace_name   = "LS power"
+        method_label, y_label, trace_name = "LS", "LS power", "LS power"
 
     frequency = np.asarray(frequency, dtype=float)
-    power     = np.asarray(power, dtype=float)
+    power = np.asarray(power, dtype=float)
     if bins is None:
         bins = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
 
-    # Guard: avoid division by zero/infs
+    # Guard: avoid division by zero / infs
     mask = np.isfinite(frequency) & (frequency > 0) & np.isfinite(power)
     freq = frequency[mask]
     powv = power[mask]
     period = 1.0 / freq
 
     # y-range
-    if powv.size:
-        ymax = float(np.nanmax(powv))
-    else:
-        ymax = 1.0
+    ymax = float(np.nanmax(powv)) if powv.size else 1.0
     yr_lo = -0.03 * ymax
     yr_hi = ymax * 1.10
 
@@ -279,130 +308,128 @@ def plot_periodogram_plotly(
     if powv.size:
         best_idx = int(np.nanargmax(powv))
         best_period = float(period[best_idx])
-        best_power  = float(powv[best_idx])
     else:
-        best_period, best_power = np.nan, np.nan
-
-    # Build figure
-    fig = go.Figure()
-
-    # Main line
-    fig.add_trace(
-        go.Scatter(
-            x=period,
-            y=powv,
-            mode="lines",
-            line=dict(width=2),
-            name=trace_name,
-            hovertemplate=(
-                "Orbital period = %{x:.5g} days<br>"
-                f"{y_label} = %{{y:.5g}}"
-                "<extra></extra>"
-            ),
-        )
-    )
-
-    # False-alarm levels (FAL): show up to 3 lines.
-    fal_colors = ["red", "goldenrod", "green"]
-    fal_styles = ["solid", "dash", "dot"]
-    approx_ps  = [0.5, 0.01, 0.001]
-
-    if fal is not None:
-        fal_flat = np.asarray(fal).ravel()
-        for i, val in enumerate(fal_flat[:3]):
-            if np.isfinite(val):
-                p_label = f"p ≈ {approx_ps[i]}" if i < len(approx_ps) else ""
-                fig.add_hline(
-                    y=float(val),
-                    line_width=1.5,
-                    line_dash=fal_styles[i % len(fal_styles)],
-                    line_color=fal_colors[i % len(fal_colors)],
-                    annotation_text=f"False-alarm level ({p_label})",
-                    annotation_position="top left",
-                    opacity=0.9
-                )
-
-    # Mark best period
-    if np.isfinite(best_period):
-        fig.add_vline(
-            x=best_period,
-            line_width=1.5,
-            line_dash="dash",
-            line_color="dodgerblue",
-            annotation_text=f"Best period ≈ {best_period:.3f} d",
-            annotation_position="top right"
-        )
-
-    # Titles
-    if np.isfinite(best_period):
-        title_main = f"Best orbital period ≈ {best_period:.3f} days"
-    else:
-        title_main = f"{method_label} periodogram"
-
-    if star_id:
-        title_full = f"{star_id} — {method_label} periodogram ({title_main})"
-    else:
-        title_full = f"{method_label} periodogram — {title_main}"
-
-    # y tick format
-    y_format = ".0f" if yr_hi >= 10 else ".1f"
+        best_period = np.nan
 
     # Axis ranges (log period)
     log_pmin = np.log10(max(pmin, 1e-6))
     log_pmax = np.log10(max(pmax, pmin * 1.001))
 
+    # ── build figure ──────────────────────────────────────────────────
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=period, y=powv, mode="lines",
+            line=dict(width=s.line_width_main, color=s.color_data_primary),
+            name=trace_name,
+            hovertemplate=(
+                "Period = %{x:.5g} d<br>"
+                f"{y_label} = %{{y:.5g}}<extra></extra>"
+            ),
+        )
+    )
+
+    # ── False-alarm levels → legend traces ────────────────────────────
+    fal_styles = ["solid", "dash", "dot"]
+    approx_ps = fal_labels if fal_labels is not None else [0.5, 0.01, 0.001]
+
+    if fal is not None:
+        fal_flat = np.asarray(fal).ravel()
+        for i, val in enumerate(fal_flat[:3]):
+            if np.isfinite(val):
+                fig.add_trace(
+                    go.Scatter(
+                        x=[10 ** log_pmin, 10 ** log_pmax],
+                        y=[float(val), float(val)],
+                        mode="lines",
+                        line=dict(
+                            color=s.color_fal[i % len(s.color_fal)],
+                            dash=fal_styles[i % len(fal_styles)],
+                            width=s.line_width_reference,
+                        ),
+                        name=f"FAL (p={approx_ps[i]:.4g})",
+                        showlegend=True,
+                        hoverinfo="skip",
+                    )
+                )
+
+    # ── mark best period ──────────────────────────────────────────────
+    if np.isfinite(best_period):
+        ann_text = (f"P={best_period:.2f} d" if not s.show_title
+                    else f"Best period ≈ {best_period:.3f} d")
+        fig.add_vline(
+            x=best_period,
+            line_width=s.line_width_reference,
+            line_dash="dash",
+            line_color=s.color_best_period,
+            annotation_text=ann_text,
+            annotation_position="top right",
+            annotation_font=dict(size=s.font_annotation),
+        )
+
+    # ── title ─────────────────────────────────────────────────────────
+    title = ""
+    if s.show_title:
+        if np.isfinite(best_period):
+            title_main = f"Best orbital period ≈ {best_period:.3f} days"
+        else:
+            title_main = f"{method_label} periodogram"
+        title = (f"{star_id} — {method_label} periodogram ({title_main})"
+                 if star_id else f"{method_label} periodogram — {title_main}")
+
+    # ── y tick format ─────────────────────────────────────────────────
+    y_format = ".0f" if yr_hi >= 10 else ".1f"
+
+    # ── layout ────────────────────────────────────────────────────────
+    apply_style_to_layout(fig, s)
+
     fig.update_layout(
-        title=title_full,
-        xaxis_title="Orbital period (days)",
-        yaxis_title=y_label,
-        template="plotly_white",
-        margin=dict(l=80, r=20, t=80, b=80),
-        font=dict(size=18),
-        title_font=dict(size=22),
-        legend=dict(
-            orientation="h",
-            y=-0.18,
-            x=0.5,
-            xanchor="center",
-            yanchor="top",
-            font=dict(size=16),
-        ),
+        title=title if title else None,
+        title_font=dict(size=s.font_title),
         xaxis=dict(
             type="log",
             range=[log_pmin, log_pmax],
             tickmode="array",
             tickvals=bins,
             ticktext=[str(b) for b in bins],
-            title_font=dict(size=20),
-            tickfont=dict(size=16),
+            title_text="Period [d]",
+            title_font=dict(size=s.font_axis_title),
+            tickfont=dict(size=s.font_tick),
+            showgrid=s.show_grid,
+            gridcolor=s.grid_color,
+            **(dict(showline=True, linewidth=1, linecolor="black", mirror=True)
+               if s.show_axis_frame else {}),
         ),
         yaxis=dict(
             range=[yr_lo, yr_hi],
             tickformat=y_format,
-            title_font=dict(size=20),
-            tickfont=dict(size=16),
+            title_text=y_label,
+            title_font=dict(size=s.font_axis_title),
+            tickfont=dict(size=s.font_tick),
+            showgrid=s.show_grid,
+            gridcolor=s.grid_color,
+            **(dict(showline=True, linewidth=1, linecolor="black", mirror=True)
+               if s.show_axis_frame else {}),
         ),
     )
 
-    fig.update_xaxes(range=[log_pmin, log_pmax])
-
-    # Save or return
+    # ── save / return ─────────────────────────────────────────────────
     if out_dir is not None:
         os.makedirs(out_dir, exist_ok=True)
         suffix = "ls" if kind_key == "LS" else "pdc" if kind_key == "PDC" else "pdc_opt"
-        base_html = f"{star_id}_{suffix}_periodogram.html" if star_id else f"{suffix}_periodogram.html"
-        base_png  = f"{star_id}_{suffix}_periodogram.png"  if star_id else f"{suffix}_periodogram.png"
+        base = f"{star_id}_{suffix}_periodogram" if star_id else f"{suffix}_periodogram"
 
-        out_html = os.path.join(out_dir, base_html)
-        out_png  = os.path.join(out_dir, base_png)
+        out_html = os.path.join(out_dir, f"{base}.html")
+        out_png = os.path.join(out_dir, f"{base}.png")
 
         fig.write_html(out_html, include_plotlyjs="cdn", full_html=True)
-        fig.write_image(
-            out_png,
-            width=900,  # wide enough for long titles
-            height=550,  # tall enough so subtitles aren't cropped
-            scale=4  # multiplies resolution → very crisp
-        )
+        fig.write_image(out_png, width=s.width, height=s.height, scale=s.scale)
+
+        if s.export_pdf:
+            out_pdf = os.path.join(out_dir, f"{base}.pdf")
+            fig.write_image(out_pdf, format="pdf",
+                            width=s.width, height=s.height, scale=s.scale)
         return out_html
     else:
         return fig.to_html(include_plotlyjs="cdn", full_html=True)

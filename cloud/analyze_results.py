@@ -521,6 +521,8 @@ def main():
                         help=f"YAML config file (default: {DEFAULT_YAML})")
     parser.add_argument("--plot-orbits", action="store_true",
                         help="Generate phase-folded and time-series plots for detected solutions")
+    parser.add_argument("--no-plots", action="store_true",
+                        help="Skip diagnostic plot generation")
     parser.add_argument("--sim-ids", default=None,
                         help="Comma-separated sim IDs to plot, e.g. '0042' or '0000,0001,0002'")
     args = parser.parse_args()
@@ -570,135 +572,153 @@ def main():
         truth_df = None
 
     # =========================================================================
-    # Figure 1: Parameter recovery (2 rows × 3 cols)
-    #   Top row:    standard selection (filter + min BIC)
-    #   Bottom row: distance-based selection (prefer closest-to-truth)
+    # Diagnostic plots (skip with --no-plots)
     # =========================================================================
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    if args.no_plots:
+        print("Skipping diagnostic plots (--no-plots).")
+    else:
+        # =================================================================
+        # Figure 1: Parameter recovery (2 rows × 3 cols)
+        #   Top row:    standard selection (filter + min BIC)
+        #   Bottom row: distance-based selection (prefer closest-to-truth)
+        # =================================================================
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
-    # Top row — standard
-    plot_parameter_recovery(det_std, "Period", "Period_value", "Period [d]", logscale=True, ax=axes[0, 0])
-    plot_parameter_recovery(det_std, "Eccentricity", "Eccentricity_value", "Eccentricity", logscale=False, ax=axes[0, 1])
-    plot_parameter_recovery(det_std, "K1", "K1_value", "K1 [km/s]", logscale=False, ax=axes[0, 2])
-    for ax in axes[0]:
-        ax.set_title("(Standard) " + ax.get_title(), fontsize=10)
+        # Top row — standard
+        plot_parameter_recovery(det_std, "Period", "Period_value", "Period [d]", logscale=True, ax=axes[0, 0])
+        plot_parameter_recovery(det_std, "Eccentricity", "Eccentricity_value", "Eccentricity", logscale=False, ax=axes[0, 1])
+        plot_parameter_recovery(det_std, "K1", "K1_value", "K1 [km/s]", logscale=False, ax=axes[0, 2])
+        for ax in axes[0]:
+            ax.set_title("(Standard) " + ax.get_title(), fontsize=10)
 
-    # Bottom row — distance-based
-    plot_parameter_recovery(det_dist, "Period", "Period_value", "Period [d]", logscale=True, ax=axes[1, 0])
-    plot_parameter_recovery(det_dist, "Eccentricity", "Eccentricity_value", "Eccentricity", logscale=False, ax=axes[1, 1])
-    plot_parameter_recovery(det_dist, "K1", "K1_value", "K1 [km/s]", logscale=False, ax=axes[1, 2])
-    for ax in axes[1]:
-        ax.set_title("(Distance) " + ax.get_title(), fontsize=10)
+        # Bottom row — distance-based
+        plot_parameter_recovery(det_dist, "Period", "Period_value", "Period [d]", logscale=True, ax=axes[1, 0])
+        plot_parameter_recovery(det_dist, "Eccentricity", "Eccentricity_value", "Eccentricity", logscale=False, ax=axes[1, 1])
+        plot_parameter_recovery(det_dist, "K1", "K1_value", "K1 [km/s]", logscale=False, ax=axes[1, 2])
+        for ax in axes[1]:
+            ax.set_title("(Distance) " + ax.get_title(), fontsize=10)
 
-    fig.suptitle("Orbital Parameter Recovery\nTop: Standard (filter+BIC)  —  Bottom: Distance-based",
-                 fontsize=14, y=1.02)
-    fig.tight_layout()
-    fig.savefig(os.path.join(plots_dir, f"parameter_recovery.{args.format}"),
-                dpi=150, bbox_inches="tight")
-    print(f"Saved: parameter_recovery.{args.format}")
+        fig.suptitle("Orbital Parameter Recovery\nTop: Standard (filter+BIC)  —  Bottom: Distance-based",
+                     fontsize=14, y=1.02)
+        fig.tight_layout()
+        fig.savefig(os.path.join(plots_dir, f"parameter_recovery.{args.format}"),
+                    dpi=150, bbox_inches="tight")
+        print(f"Saved: parameter_recovery.{args.format}")
 
-    # =========================================================================
-    # Figure 2: Detection fraction (2 panels)
-    # =========================================================================
-    if truth_df is not None:
-        det_sim_ids = set(det["sim_id"].dropna().astype(int))
+        # =================================================================
+        # Figure 2: Detection fraction (2 panels)
+        # =================================================================
+        if truth_df is not None:
+            det_sim_ids = set(det["sim_id"].dropna().astype(int))
 
-        fig2, axes2 = plt.subplots(1, 3, figsize=(17, 5))
+            fig2, axes2 = plt.subplots(1, 3, figsize=(17, 5))
 
-        plot_detection_fraction(truth_df, "Period", "Period [d]", n_bins=10,
-                                ax=axes2[0], det_sim_ids=det_sim_ids, logscale=True)
-        plot_detection_fraction(truth_df, "K1", "K1 [km/s]", n_bins=10,
-                                ax=axes2[1], det_sim_ids=det_sim_ids)
-        plot_detection_fraction(truth_df, "Eccentricity", "Eccentricity", n_bins=10,
-                                ax=axes2[2], det_sim_ids=det_sim_ids)
+            plot_detection_fraction(truth_df, "Period", "Period [d]", n_bins=10,
+                                    ax=axes2[0], det_sim_ids=det_sim_ids, logscale=True)
+            plot_detection_fraction(truth_df, "K1", "K1 [km/s]", n_bins=10,
+                                    ax=axes2[1], det_sim_ids=det_sim_ids)
+            plot_detection_fraction(truth_df, "Eccentricity", "Eccentricity", n_bins=10,
+                                    ax=axes2[2], det_sim_ids=det_sim_ids)
 
-        fig2.suptitle("Detection Fraction", fontsize=14, y=1.02)
-        fig2.tight_layout()
-        fig2.savefig(os.path.join(plots_dir, f"detection_fraction.{args.format}"),
+            fig2.suptitle("Detection Fraction", fontsize=14, y=1.02)
+            fig2.tight_layout()
+            fig2.savefig(os.path.join(plots_dir, f"detection_fraction.{args.format}"),
+                         dpi=150, bbox_inches="tight")
+            print(f"Saved: detection_fraction.{args.format}")
+
+        # =================================================================
+        # Figure 3: Residual histograms (2 rows × 3 cols)
+        #   Top row:    standard selection
+        #   Bottom row: distance-based selection
+        # =================================================================
+        fig3, axes3 = plt.subplots(2, 3, figsize=(15, 10))
+
+        # Top row — standard
+        plot_residual_histogram(det_std, "Period", "Period_value", "P", fractional=True, ax=axes3[0, 0])
+        plot_residual_histogram(det_std, "Eccentricity", "Eccentricity_value", "e", fractional=False, ax=axes3[0, 1])
+        plot_residual_histogram(det_std, "K1", "K1_value", "K1", fractional=True, ax=axes3[0, 2])
+        for ax in axes3[0]:
+            ax.set_title("(Standard) " + ax.get_title(), fontsize=10)
+
+        # Bottom row — distance-based
+        plot_residual_histogram(det_dist, "Period", "Period_value", "P", fractional=True, ax=axes3[1, 0])
+        plot_residual_histogram(det_dist, "Eccentricity", "Eccentricity_value", "e", fractional=False, ax=axes3[1, 1])
+        plot_residual_histogram(det_dist, "K1", "K1_value", "K1", fractional=True, ax=axes3[1, 2])
+        for ax in axes3[1]:
+            ax.set_title("(Distance) " + ax.get_title(), fontsize=10)
+
+        fig3.suptitle("Recovery Residuals\nTop: Standard (filter+BIC)  —  Bottom: Distance-based",
+                      fontsize=14, y=1.02)
+        fig3.tight_layout()
+        fig3.savefig(os.path.join(plots_dir, f"residual_histograms.{args.format}"),
                      dpi=150, bbox_inches="tight")
-        print(f"Saved: detection_fraction.{args.format}")
+        print(f"Saved: residual_histograms.{args.format}")
 
-    # =========================================================================
-    # Figure 3: Residual histograms (2 rows × 3 cols)
-    #   Top row:    standard selection
-    #   Bottom row: distance-based selection
-    # =========================================================================
-    fig3, axes3 = plt.subplots(2, 3, figsize=(15, 10))
+        # =================================================================
+        # Figure 4: Detection maps (scatter) — Period-K1 and Period-Ecc
+        # =================================================================
+        if truth_df is not None:
+            fig4, axes4 = plt.subplots(1, 3, figsize=(21, 6))
 
-    # Top row — standard
-    plot_residual_histogram(det_std, "Period", "Period_value", "P", fractional=True, ax=axes3[0, 0])
-    plot_residual_histogram(det_std, "Eccentricity", "Eccentricity_value", "e", fractional=False, ax=axes3[0, 1])
-    plot_residual_histogram(det_std, "K1", "K1_value", "K1", fractional=True, ax=axes3[0, 2])
-    for ax in axes3[0]:
-        ax.set_title("(Standard) " + ax.get_title(), fontsize=10)
+            plot_detection_map(truth_df, det_sim_ids,
+                               "Period", "K1", "Period [d] (true)", "K1 [km/s] (true)",
+                               ax=axes4[0], xlog=True)
+            axes4[0].set_title("Detection Map: Period vs K1")
 
-    # Bottom row — distance-based
-    plot_residual_histogram(det_dist, "Period", "Period_value", "P", fractional=True, ax=axes3[1, 0])
-    plot_residual_histogram(det_dist, "Eccentricity", "Eccentricity_value", "e", fractional=False, ax=axes3[1, 1])
-    plot_residual_histogram(det_dist, "K1", "K1_value", "K1", fractional=True, ax=axes3[1, 2])
-    for ax in axes3[1]:
-        ax.set_title("(Distance) " + ax.get_title(), fontsize=10)
-
-    fig3.suptitle("Recovery Residuals\nTop: Standard (filter+BIC)  —  Bottom: Distance-based",
-                  fontsize=14, y=1.02)
-    fig3.tight_layout()
-    fig3.savefig(os.path.join(plots_dir, f"residual_histograms.{args.format}"),
-                 dpi=150, bbox_inches="tight")
-    print(f"Saved: residual_histograms.{args.format}")
-
-    # =========================================================================
-    # Figure 4: Detection maps (scatter) — Period-K1 and Period-Ecc
-    # =========================================================================
-    if truth_df is not None:
-        fig4, axes4 = plt.subplots(1, 2, figsize=(15, 6))
-
-        plot_detection_map(truth_df, det_sim_ids,
-                           "Period", "K1", "Period [d] (true)", "K1 [km/s] (true)",
-                           ax=axes4[0], xlog=True)
-        axes4[0].set_title("Detection Map: Period vs K1")
-
-        plot_detection_map(truth_df, det_sim_ids,
-                           "Period", "Eccentricity",
-                           "Period [d] (true)", "Eccentricity (true)",
-                           ax=axes4[1], xlog=True)
-        axes4[1].set_title("Detection Map: Period vs Eccentricity")
-
-        fig4.suptitle("Detection Maps", fontsize=14, y=1.02)
-        fig4.tight_layout()
-        fig4.savefig(os.path.join(plots_dir, f"detection_map.{args.format}"),
-                     dpi=150, bbox_inches="tight")
-        print(f"Saved: detection_map.{args.format}")
-
-    # =========================================================================
-    # Figure 5: Detection probability density maps (2D binned)
-    #   Period-K1, Period-Ecc, Ecc-K1
-    # =========================================================================
-    if truth_df is not None:
-        fig5, axes5 = plt.subplots(1, 3, figsize=(20, 6))
-
-        plot_detection_density(truth_df, det_sim_ids,
-                               "Period", "K1",
-                               "Period [d]", "K1 [km/s]",
-                               ax=axes5[0], xlog=True)
-        axes5[0].set_title("Detection Probability: Period vs K1")
-
-        plot_detection_density(truth_df, det_sim_ids,
+            plot_detection_map(truth_df, det_sim_ids,
                                "Period", "Eccentricity",
-                               "Period [d]", "Eccentricity",
-                               ax=axes5[1], xlog=True)
-        axes5[1].set_title("Detection Probability: Period vs Ecc")
+                               "Period [d] (true)", "Eccentricity (true)",
+                               ax=axes4[1], xlog=True)
+            axes4[1].set_title("Detection Map: Period vs Eccentricity")
 
-        plot_detection_density(truth_df, det_sim_ids,
-                               "Eccentricity", "K1",
-                               "Eccentricity", "K1 [km/s]",
-                               ax=axes5[2])
-        axes5[2].set_title("Detection Probability: Ecc vs K1")
+            plot_detection_map(truth_df, det_sim_ids,
+                               "Period", "MassRatio",
+                               "Period [d] (true)", "q (true)",
+                               ax=axes4[2], xlog=True)
+            axes4[2].set_title("Detection Map: Period vs q")
 
-        fig5.suptitle("Detection Probability Density Maps", fontsize=14, y=1.02)
-        fig5.tight_layout()
-        fig5.savefig(os.path.join(plots_dir, f"detection_density.{args.format}"),
-                     dpi=150, bbox_inches="tight")
-        print(f"Saved: detection_density.{args.format}")
+            fig4.suptitle("Detection Maps", fontsize=14, y=1.02)
+            fig4.tight_layout()
+            fig4.savefig(os.path.join(plots_dir, f"detection_map.{args.format}"),
+                         dpi=150, bbox_inches="tight")
+            print(f"Saved: detection_map.{args.format}")
+
+        # =================================================================
+        # Figure 5: Detection probability density maps (2D binned)
+        #   Period-K1, Period-Ecc, Ecc-K1
+        # =================================================================
+        if truth_df is not None:
+            fig5, axes5 = plt.subplots(2, 2, figsize=(16, 12))
+
+            plot_detection_density(truth_df, det_sim_ids,
+                                   "Period", "K1",
+                                   "Period [d]", "K1 [km/s]",
+                                   ax=axes5[0, 0], nx=20, ny=20, xlog=True)
+            axes5[0, 0].set_title("Detection Probability: Period vs K1")
+
+            plot_detection_density(truth_df, det_sim_ids,
+                                   "Period", "Eccentricity",
+                                   "Period [d]", "Eccentricity",
+                                   ax=axes5[0, 1], nx=20, ny=20, xlog=True)
+            axes5[0, 1].set_title("Detection Probability: Period vs Ecc")
+
+            plot_detection_density(truth_df, det_sim_ids,
+                                   "Eccentricity", "K1",
+                                   "Eccentricity", "K1 [km/s]",
+                                   ax=axes5[1, 0], nx=20, ny=20)
+            axes5[1, 0].set_title("Detection Probability: Ecc vs K1")
+
+            plot_detection_density(truth_df, det_sim_ids,
+                                   "Period", "MassRatio",
+                                   "Period [d]", "q",
+                                   ax=axes5[1, 1], nx=20, ny=20, xlog=True)
+            axes5[1, 1].set_title("Detection Probability: Period vs q")
+
+            fig5.suptitle("Detection Probability Density Maps", fontsize=14, y=1.02)
+            fig5.tight_layout()
+            fig5.savefig(os.path.join(plots_dir, f"detection_density.{args.format}"),
+                         dpi=150, bbox_inches="tight")
+            print(f"Saved: detection_density.{args.format}")
 
     # =========================================================================
     # Optional: orbital-fit plots (phase + time series)

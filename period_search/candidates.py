@@ -16,6 +16,7 @@ from utils.constants import (
     PERIODOGRAM_PARAMS, PERI_MIN_PERIOD, PERI_MAX_PERIOD,
     PERI_LS_NORM, PERI_LS_METHOD, PERI_LS_FA_METHOD,
     PERI_RANDOM_STATE, N_SIG_PERIODS, MIN_SEP, WINDOW_ITERATIONS,
+    PERI_PDC_SAMPLES_PER_PEAK, PERI_RUN_PERMUTATIONS_LS,PERI_RUN_PERMUTATIONS_PDC, PLOT_STYLE,
 )
 from period_search.periodogram import ls, pdc_opt, plot_periodogram_plotly
 from period_search.permutation import ls_permutation_max_powers_mp, pdc_permutation_max_powers
@@ -240,17 +241,8 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
     peri_params = args_dict[PERIODOGRAM_PARAMS]
     pmin = peri_params[PERI_MIN_PERIOD]
     pmax = peri_params[PERI_MAX_PERIOD]
-
-    # --- Lomb-Scargle Window Aliasing---
-    period, _,fap, fal, freq_ls, pow, ls_fap_vec = ls(mjds,
-                                                    np.ones_like(mjds, dtype=float),
-                                                    data_err=err_vs/max(err_vs),
-                                                    pmin=pmin, pmax=pmax,
-                                                    norm=peri_params[PERI_LS_NORM],
-                                                    ls_method='fast',
-                                                    fa_method=peri_params[PERI_LS_FA_METHOD],
-                                                    center_data=False, random_state=peri_params[PERI_RANDOM_STATE])
-    plot_periodogram_plotly(freq_ls, pow, fal, pmin=pmin, pmax=pmax, star_id=star_name+'_WA',out_dir=out_dir, periodogram_kind='LS')
+    pdc_spp = peri_params.get(PERI_PDC_SAMPLES_PER_PEAK, 10)
+    plot_style = args_dict.get(PLOT_STYLE, "interactive")
 
     # --- Lomb-Scargle ---
     period, _, fap, fal, freq_ls, pow, ls_fap_vec = ls(mjds,
@@ -261,48 +253,82 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
                                                     fa_method=peri_params[PERI_LS_FA_METHOD],
                                                     center_data=True, random_state=peri_params[PERI_RANDOM_STATE])
     ls_sig_periods = significant_periods(1 / freq_ls, pow,max_periods=peri_params[N_SIG_PERIODS],min_separation=peri_params[MIN_SEP])
-    plot_periodogram_plotly(freq_ls, pow, fal, pmin=pmin, pmax=pmax, star_id=star_name,out_dir=out_dir, periodogram_kind='LS')
 
-    freq_w, pdc_w = pdc_window(mjds, pmin=pmin, pmax=pmax, df=1e-3)
+    freq_w, pdc_w = pdc_window(mjds, pmin=pmin, pmax=pmax, samples_per_peak=pdc_spp)
     plot_periodogram_plotly(freq_w, pdc_w, fal=None, pmin=pmin, pmax=pmax,
-                            star_id=star_name + '_WA', out_dir=out_dir, periodogram_kind='PDC')
+                            star_id=star_name + '_WA', out_dir=out_dir, periodogram_kind='PDC', style=plot_style)
 
     best_period1, _, fap1, fal1, freq_pdc, pdc_power_reg, pdc_fap_vec = pdc_opt(
-        mjds, rvs, data_err=err_vs, pmin=pmin, pmax=pmax
+        mjds, rvs, data_err=err_vs, pmin=pmin, pmax=pmax, samples_per_peak=pdc_spp
     )
 
     pdc_sig_periods = significant_periods(1 / freq_pdc, pdc_power_reg,max_periods=peri_params[N_SIG_PERIODS],min_separation=peri_params[MIN_SEP])
-    plot_periodogram_plotly(freq_pdc, pdc_power_reg, fal=fal1,pmin=pmin, pmax=pmax, star_id=star_name, out_dir=out_dir, periodogram_kind='PDC_opt')
 
     # --- Collect results into a DataFrame ---
     n_iter = peri_params[WINDOW_ITERATIONS]
     # n_iter = 100_000  # hardcoded for FAP convergence investigation
 
-    ls_iterations = ls_permutation_max_powers_mp(
-        rvs=rvs,
-        mjds=mjds,
-        err_vs=err_vs,
-        n_iter=n_iter,
-        pmin=pmin,
-        pmax=pmax,
-        norm=peri_params[PERI_LS_NORM],
-        ls_method=peri_params[PERI_LS_METHOD],
-        fa_method=peri_params[PERI_LS_FA_METHOD],
-        center_data=True,
-        random_state=peri_params[PERI_RANDOM_STATE],
-        show_progress=True,
-    )
-    pdc_iterations = pdc_permutation_max_powers(
-        rvs=rvs,
-        mjds=mjds,
-        err_vs=err_vs,
-        n_iter=n_iter,
-        pmin=pmin,
-        pmax=pmax,
-        probabilities=(0.5, 0.01, 0.001),
-        random_state=peri_params[PERI_RANDOM_STATE],
-        show_progress=True,
-    )
+    run_perms = peri_params.get(PERI_RUN_PERMUTATIONS_LS, False)
+    if run_perms:
+        ls_iterations = ls_permutation_max_powers_mp(
+            rvs=rvs,
+            mjds=mjds,
+            err_vs=err_vs,
+            n_iter=n_iter,
+            pmin=pmin,
+            pmax=pmax,
+            norm=peri_params[PERI_LS_NORM],
+            ls_method=peri_params[PERI_LS_METHOD],
+            fa_method=peri_params[PERI_LS_FA_METHOD],
+            center_data=True,
+            random_state=peri_params[PERI_RANDOM_STATE],
+            show_progress=True,
+        )
+    else:
+        ls_iterations = []
+    run_perms = peri_params.get(PERI_RUN_PERMUTATIONS_PDC, False)
+
+    if run_perms:
+        pdc_iterations = pdc_permutation_max_powers(
+            rvs=rvs,
+            mjds=mjds,
+            err_vs=err_vs,
+            n_iter=n_iter,
+            pmin=pmin,
+            pmax=pmax,
+            probabilities=(0.5, 0.01, 0.001),
+            random_state=peri_params[PERI_RANDOM_STATE],
+            show_progress=True,
+            samples_per_peak=pdc_spp,
+        )
+    else:
+        pdc_iterations = []
+
+    # --- Plot periodograms (use empirical FAL from permutations when available) ---
+    empirical_percentiles = [50, 80, 99]
+    empirical_fal_labels = [1 - p / 100 for p in empirical_percentiles]
+    analytical_fal_labels = [0.5, 0.01, 0.001]
+
+    if len(ls_iterations) > 0:
+        ls_fal_plot = np.percentile(ls_iterations, empirical_percentiles)
+        ls_fal_labels = empirical_fal_labels
+    else:
+        ls_fal_plot = fal
+        ls_fal_labels = analytical_fal_labels
+    plot_periodogram_plotly(freq_ls, pow, ls_fal_plot, pmin=pmin, pmax=pmax,
+                            star_id=star_name, out_dir=out_dir, periodogram_kind='LS',
+                            style=plot_style, fal_labels=ls_fal_labels)
+
+    if len(pdc_iterations) > 0:
+        pdc_fal_plot = np.percentile(pdc_iterations, empirical_percentiles)
+        pdc_fal_labels = empirical_fal_labels
+    else:
+        pdc_fal_plot = fal1
+        pdc_fal_labels = analytical_fal_labels
+    plot_periodogram_plotly(freq_pdc, pdc_power_reg, fal=pdc_fal_plot, pmin=pmin, pmax=pmax,
+                            star_id=star_name, out_dir=out_dir, periodogram_kind='PDC_opt',
+                            style=plot_style, fal_labels=pdc_fal_labels)
+
     # # --- FAP convergence analysis ---
     # ls_convergence = analyze_permutation_convergence(
     #     Z=np.array(ls_iterations),

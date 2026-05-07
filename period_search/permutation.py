@@ -82,6 +82,7 @@ def pdc_permutation_max_powers(
         probabilities=(0.5, 0.01, 0.001),
         random_state=12345,
         show_progress=True,
+        samples_per_peak=10,
 ):
     """
     Run PDC on random permutations using a standard loop.
@@ -130,7 +131,8 @@ def pdc_permutation_max_powers(
             data_err=err_vs,
             pmin=pmin,
             pmax=pmax,
-            probabilities=probabilities
+            probabilities=probabilities,
+            samples_per_peak=samples_per_peak,
         )
 
         results[i] = max_pow
@@ -174,6 +176,11 @@ def ls_permutation_max_powers_mp(
         n_workers = os.cpu_count()-1 or 1
     n_workers = int(n_workers)
 
+    # Inside a bias-grid subprocess, force sequential to avoid
+    # nested multiprocessing deadlock on macOS fork.
+    if os.environ.get("_BIAS_GRID_SUBPROCESS"):
+        n_workers = 1
+
     # reproducible per-iteration seeds
     # if random_state is None -> still create deterministic default sequence
     base_seed = 12345 if random_state is None else int(random_state)
@@ -184,31 +191,40 @@ def ls_permutation_max_powers_mp(
     # Run tasks
     results = np.empty(n_iter, dtype=float)
 
-    with ProcessPoolExecutor(
-        max_workers=n_workers,
-        initializer=_init_worker,
-        initargs=(
-            mjds,
-            err_vs,
-            pmin,
-            pmax,
-            norm,
-            ls_method,
-            fa_method,
-            center_data,
-            random_state,
-        ),
-    ) as ex:
-        futures = [ex.submit(_one_perm, (seeds[i], rvs)) for i in range(n_iter)]
-
-        it = as_completed(futures)
+    if n_workers == 1:
+        # Sequential — avoids forking (safe inside subprocess workers).
+        _init_worker(mjds, err_vs, pmin, pmax, norm,
+                     ls_method, fa_method, center_data, random_state)
+        it = range(n_iter)
         if show_progress:
-            it = tqdm.tqdm(it, total=len(futures), desc="LS permutations")
+            it = tqdm.tqdm(it, total=n_iter, desc="LS permutations")
+        for k in it:
+            results[k] = _one_perm((seeds[k], rvs))
+    else:
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            initializer=_init_worker,
+            initargs=(
+                mjds,
+                err_vs,
+                pmin,
+                pmax,
+                norm,
+                ls_method,
+                fa_method,
+                center_data,
+                random_state,
+            ),
+        ) as ex:
+            futures = [ex.submit(_one_perm, (seeds[i], rvs)) for i in range(n_iter)]
 
-        # Order doesn’t matter for your usage; store sequentially
-        k = 0
-        for fut in it:
-            results[k] = fut.result()
-            k += 1
+            it = as_completed(futures)
+            if show_progress:
+                it = tqdm.tqdm(it, total=len(futures), desc="LS permutations")
+
+            k = 0
+            for fut in it:
+                results[k] = fut.result()
+                k += 1
 
     return results

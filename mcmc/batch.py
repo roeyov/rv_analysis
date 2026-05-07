@@ -237,6 +237,9 @@ def run_mcmc_batch(args_dict, rv_dir, lmfit_dir, out_dir,
     rows = []
     for rv_path in rv_files:
         star_name = os.path.basename(rv_path).replace("_CCF_RVs.csv", "")
+        DEBUG_STAR = None  # set to e.g. "4-110" to run only that star
+        if DEBUG_STAR and DEBUG_STAR not in star_name:
+            continue
         if wanted_periods and star_name not in wanted_periods:
             continue
         print(f"\n=== Processing star: {star_name} ===")

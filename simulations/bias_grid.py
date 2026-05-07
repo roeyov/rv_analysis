@@ -17,6 +17,7 @@ import time
 import logging
 import argparse
 import itertools
+import yaml
 import numpy as np
 import pandas as pd
 from scipy.stats import ks_2samp, anderson_ksamp, cramervonmises_2samp, binom
@@ -2980,6 +2981,43 @@ def main():
     logger.info("  Output: %s", output_dir)
     logger.info("  Detection method: %s", cli.detect_method)
     logger.info("=" * 60)
+
+    # 3b) Dump the resolved run config to YAML for reproducibility.
+    # Includes the chosen preset (resolved n_inject + grid arrays) and the
+    # full bias_cfg as actually used (defaults + any CLI overrides).
+    os.makedirs(output_dir, exist_ok=True)
+    run_cfg_yaml = {
+        "preset_name": cli.preset,
+        "preset": {
+            "n_inject_per_star": int(n_inject),
+            "pi": pi_grid.tolist(),
+            "kappa": kappa_grid.tolist(),
+            "eta": eta_grid.tolist(),
+            "fbin": fbin_grid.tolist(),
+        },
+        "bias_cfg": {
+            k: (v.tolist() if isinstance(v, np.ndarray) else v)
+            for k, v in cfg.items()
+        },
+        "cli_overrides": {
+            "config": cli.config,
+            "seed": cli.seed,
+            "sb1_tex": sb1_tex,
+            "sb2_tex": sb2_tex,
+            "mass_file": mass_file,
+            "rv_dir": cli.rv_dir,
+            "detect_method": cli.detect_method,
+            "parallel_grid": bool(cli.parallel_grid),
+            "n_workers": cli.n_workers,
+            "n_inject": cli.n_inject,
+            "grid_start": cli.grid_start,
+            "grid_end": cli.grid_end,
+        },
+    }
+    run_cfg_path = os.path.join(output_dir, "run_config.yaml")
+    with open(run_cfg_path, "w") as fh:
+        yaml.safe_dump(run_cfg_yaml, fh, sort_keys=False, default_flow_style=False)
+    logger.info("Saved run config to %s", run_cfg_path)
 
     # 4) Run grid search
     engine = GridSearchEngine(

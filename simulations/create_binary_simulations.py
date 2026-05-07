@@ -28,6 +28,7 @@ from simulations.common import (
     uniform_random_sample,
     sine_inclination_sample,
 )
+from utils.roche_lobe import _solve_Pmin_peri
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,56 @@ DEFAULT_PARAMS = {
 
 
 # ---------------------------------------------------------------------------
+# Stellar radius sampling & Roche lobe validation
+# ---------------------------------------------------------------------------
+
+def sample_radius(m_true, rng=None):
+    """Sample a physical stellar radius using the SMC O-star mass-radius relation.
+
+    R = 0.90 * 0.8 * M^0.6  with 12% evolutionary spread (ZAMS-TAMS).
+    The 0.90 factor accounts for SMC metallicity (Z ~ 0.2 Z_sun).
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    z_scale = 0.90
+    r_mean = z_scale * 0.8 * (m_true ** 0.6)
+    r_phys = rng.normal(r_mean, 0.12 * r_mean)
+    return max(r_phys, 0.1)
+
+
+def is_roche_valid(m1, r_phys, period, k1, ecc, inc):
+    """Check whether a sampled binary system fits inside its Roche lobe.
+
+    Returns True if the orbital period exceeds the minimum Roche-lobe period
+    at periastron (the tightest constraint).
+    """
+    sini3 = float(np.sin(inc) ** 3)
+    try:
+        p_min_peri, _ = _solve_Pmin_peri(m1, r_phys, k1, ecc, alpha=1.2, sini3=sini3)
+        return period >= p_min_peri
+    except (ValueError, ZeroDivisionError):
+        # brentq convergence failure — treat as invalid
+        return False
+
+
+def build_mass_row(sim_id_str, m_true, r_phys):
+    """Build a mass-file row (mass_bloem.csv format) for one simulation.
+
+    Uses true physical values with ~20% mass and ~15% radius error bars.
+    Both error columns are positive (magnitude of the error).
+    """
+    return {
+        "ID": sim_id_str,
+        "Mspec": m_true,
+        "Mspec_er_plus": 0.20 * m_true,
+        "Mspec_er_minus": 0.20 * m_true,
+        "R_star": r_phys,
+        "R_star_er_plus": 0.15 * r_phys,
+        "R_star_er_minus": 0.15 * r_phys,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Sampling one binary system's orbital parameters
 # ---------------------------------------------------------------------------
 
@@ -63,7 +114,7 @@ def sample_orbital_params(rng=None, params=None):
 
     Returns
     -------
-    dict with keys: t0, period, ecc, omega, k1, k2, gamma, m1, q, inc
+    dict with keys: t0, period, ecc, omega, k1, k2, gamma, m1, q, inc, r_phys
     """
     if params is None:
         params = DEFAULT_PARAMS
@@ -95,6 +146,9 @@ def sample_orbital_params(rng=None, params=None):
     # Physical K1, K2 from mass, period, q, ecc, inclination
     k1, k2 = get_rv_amplitudes(m1, period, q, ecc, inc)
 
+    # Stellar radius from SMC mass-radius relation
+    r_phys = sample_radius(m1, rng)
+
     # Systemic velocity
     gamma = norm.rvs(loc=params["mean_gamma"], scale=params["std_gamma"])
 
@@ -109,6 +163,7 @@ def sample_orbital_params(rng=None, params=None):
         "m1": float(m1),
         "q": float(q),
         "inc": float(inc),
+        "r_phys": float(r_phys),
     }
 
 
@@ -211,12 +266,21 @@ def generate_binary_csvs(output_path, mjd_arrays=None, n_per_field=5,
     digits = len(str(total_systems))
     saved = 0
     failed = 0
+    roche_rejected = 0
     truth_rows = []
+    mass_rows = []
 
     for field_idx, mjds in enumerate(mjd_arrays):
         for _ in range(n_per_field):
             # Sample new orbital parameters for each realization
             orb = sample_orbital_params(rng=rng, params=params)
+
+            # Validate Roche lobe constraint before generating RVs
+            if not is_roche_valid(orb["m1"], orb["r_phys"], orb["period"],
+                                  orb["k1"], orb["ecc"], orb["inc"]):
+                roche_rejected += 1
+                failed += 1
+                continue
 
             rvs, sigmas = generate_binary_rv_at_mjds(mjds, orb)
 
@@ -254,7 +318,12 @@ def generate_binary_csvs(output_path, mjd_arrays=None, n_per_field=5,
                 "MassRatio": orb["q"],
                 "Inclination_rad": orb["inc"],
                 "Inclination_deg": np.degrees(orb["inc"]),
+                "R_star": orb["r_phys"],
             })
+
+            # --- Collect mass row (mass_bloem.csv format) ---
+            sim_id_str = f"BLOeM_SIM_{saved:0{digits}d}"
+            mass_rows.append(build_mass_row(sim_id_str, orb["m1"], orb["r_phys"]))
 
             saved += 1
 
@@ -264,11 +333,19 @@ def generate_binary_csvs(output_path, mjd_arrays=None, n_per_field=5,
         truth_df = pd.DataFrame(truth_rows)
         truth_df.to_csv(truth_path, index=False)
 
+    # --- Save mass file (pipeline-compatible) ---
+    mass_path = os.path.join(output_path, "sim_mass.csv")
+    if mass_rows:
+        mass_df = pd.DataFrame(mass_rows)
+        mass_df.to_csv(mass_path, index=False)
+
     return {
         "saved": saved,
         "failed": failed,
+        "roche_rejected": roche_rejected,
         "total_attempted": total_systems,
         "truth_table": truth_path,
+        "mass_file": mass_path,
     }
 
 
@@ -291,8 +368,10 @@ def main():
         random_seed=42,
     )
 
-    print(f"\nDone: {stats['saved']} CSVs written, {stats['failed']} Kepler failures")
+    print(f"\nDone: {stats['saved']} CSVs written, {stats['failed']} failures "
+          f"({stats['roche_rejected']} Roche-rejected)")
     print(f"Truth table: {stats['truth_table']}")
+    print(f"Mass file:   {stats['mass_file']}")
 
 
 if __name__ == "__main__":

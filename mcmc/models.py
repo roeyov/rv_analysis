@@ -182,3 +182,100 @@ def log_probability_null(theta, t, rv, rv_err,  add_jitter=False):
     if not np.isfinite(lp):
         return -np.inf
     return lp + log_likelihood_null(theta, t, rv, rv_err, add_jitter=add_jitter)
+
+
+# ======================================================================
+# Double-Keplerian (hierarchical triple) model
+# ======================================================================
+
+def rv_model_double_kepler(t, P_in, T0_in, omega_in, e_in, K1_in,
+                           P_out, T0_out, omega_out, e_out, K1_out, gamma):
+    """Double-Keplerian RV model from timestamps."""
+    nu_in = true_anomaly(t, P_in, T0_in, e_in, solver="newton")
+    nu_out = true_anomaly(t, P_out, T0_out, e_out, solver="newton")
+    return (gamma
+            + K1_in * (np.cos(nu_in + omega_in) + e_in * np.cos(omega_in))
+            + K1_out * (np.cos(nu_out + omega_out) + e_out * np.cos(omega_out)))
+
+
+def log_prior_double_kepler(theta, P_in_center, T0_in_center, K1_in_center,
+                            P_out_center, T0_out_center, K1_out_center,
+                            dP_in_frac=0.01, dT0_in_days=2.0,
+                            dP_out_frac=0.3, dT0_out_days=500.0):
+    """
+    theta = [P_in, T0_in, omega_in, e_in, K1_in,
+             P_out, T0_out, omega_out, e_out, K1_out,
+             gamma, log_sj]
+    """
+    (P_in, T0_in, omega_in, e_in, K1_in,
+     P_out, T0_out, omega_out, e_out, K1_out,
+     gamma, log_sj) = theta
+
+    # Inner period: narrow Gaussian
+    Pmin_in = P_in_center * (1 - dP_in_frac)
+    Pmax_in = P_in_center * (1 + dP_in_frac)
+    if not (Pmin_in < P_in < Pmax_in):
+        return -np.inf
+    sigma_P_in = 0.002 * P_in_center
+    lp = -0.5 * ((P_in - P_in_center) / sigma_P_in) ** 2
+
+    # Inner T0
+    if not (T0_in_center - dT0_in_days < T0_in < T0_in_center + dT0_in_days):
+        return -np.inf
+    # Inner ecc, K1, omega
+    if not (0.0 <= e_in < Max_e):
+        return -np.inf
+    if not (0 < K1_in < K1_in_center * 2.5):
+        return -np.inf
+    if not (0 <= omega_in <= 2 * np.pi):
+        return -np.inf
+
+    # Outer period: wider Gaussian
+    Pmin_out = P_out_center * (1 - dP_out_frac)
+    Pmax_out = P_out_center * (1 + dP_out_frac)
+    if not (Pmin_out < P_out < Pmax_out):
+        return -np.inf
+    sigma_P_out = 0.1 * P_out_center
+    lp += -0.5 * ((P_out - P_out_center) / sigma_P_out) ** 2
+
+    # Outer T0
+    if not (T0_out_center - dT0_out_days < T0_out < T0_out_center + dT0_out_days):
+        return -np.inf
+    # Outer ecc, K1, omega
+    if not (0.0 <= e_out < Max_e):
+        return -np.inf
+    if not (0 < K1_out < K1_out_center * 3.0):
+        return -np.inf
+    if not (0 <= omega_out <= 2 * np.pi):
+        return -np.inf
+
+    # Jitter prior
+    lp += -0.5 * (log_sj / 3.0) ** 2
+
+    return lp
+
+
+def log_likelihood_double_kepler(theta, t, rv, rv_err):
+    (P_in, T0_in, omega_in, e_in, K1_in,
+     P_out, T0_out, omega_out, e_out, K1_out,
+     gamma, log_sj) = theta
+    s_jit = np.exp(log_sj)
+    var = rv_err ** 2 + s_jit ** 2
+    model_rv = rv_model_double_kepler(t, P_in, T0_in, omega_in, e_in, K1_in,
+                                      P_out, T0_out, omega_out, e_out, K1_out,
+                                      gamma)
+    return -0.5 * np.sum((rv - model_rv) ** 2 / var + np.log(2 * np.pi * var))
+
+
+def log_probability_double_kepler(theta, t, rv, rv_err,
+                                  P_in_center, T0_in_center, K1_in_center,
+                                  P_out_center, T0_out_center, K1_out_center,
+                                  dP_in_frac=0.01, dT0_in_days=2.0,
+                                  dP_out_frac=0.3, dT0_out_days=500.0):
+    lp = log_prior_double_kepler(theta, P_in_center, T0_in_center, K1_in_center,
+                                 P_out_center, T0_out_center, K1_out_center,
+                                 dP_in_frac, dT0_in_days,
+                                 dP_out_frac, dT0_out_days)
+    if not np.isfinite(lp):
+        return -np.inf
+    return lp + log_likelihood_double_kepler(theta, t, rv, rv_err)

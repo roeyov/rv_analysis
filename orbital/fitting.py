@@ -20,7 +20,7 @@ from utils.constants import (
     PERIOD, GAMMA, K1_STR, OMEGA, ECC, T,
     LN_SIGMA_JITTER, INIT_VAL, MIN_VAL, MAX_VAL, VARY,
 )
-from orbital.kepler import nus1, v1mod
+from orbital.kepler import nus1, v1mod, rv_double_kepler_from_times
 
 
 # ---------------------------------------------------------------------------
@@ -284,4 +284,132 @@ def lmfit_on_sample(args_dict, data, null_hyp=False, use_jitter=False):
                      ERRORS: errv1s}
         )
     result = mini.minimize(method=mini_method, max_nfev=200000)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Double-Keplerian (hierarchical triple) fitting
+# ---------------------------------------------------------------------------
+
+# Parameter name constants for outer orbit
+_P_IN = "Period_in"
+_K_IN = "K1_in"
+_OMEGA_IN = "OMEGA_in"
+_ECC_IN = "Ecc_in"
+_T0_IN = "T0_in"
+_P_OUT = "Period_out"
+_K_OUT = "K1_out"
+_OMEGA_OUT = "OMEGA_out"
+_ECC_OUT = "Ecc_out"
+_T0_OUT = "T0_out"
+
+
+def chisqr_double_kepler_with_jitter(p, **kws):
+    """
+    Double-Keplerian objective with jitter for hierarchical triple systems.
+
+    Returns scalar log-likelihood-like cost (same convention as
+    chisqr_with_jitter).
+    """
+    # Inner orbit
+    P_in = float(p[_P_IN].value)
+    K_in = float(p[_K_IN].value)
+    omega_in = float(p[_OMEGA_IN].value)
+    ecc_in = float(p[_ECC_IN].value)
+    T0_in = float(p[_T0_IN].value)
+    # Outer orbit
+    P_out = float(p[_P_OUT].value)
+    K_out = float(p[_K_OUT].value)
+    omega_out = float(p[_OMEGA_OUT].value)
+    ecc_out = float(p[_ECC_OUT].value)
+    T0_out = float(p[_T0_OUT].value)
+    # Shared
+    gamma = float(p[GAMMA].value)
+    sigmaJ = float(np.exp(p[LN_SIGMA_JITTER].value))
+
+    hjd = np.asarray(kws[TIME_STAMPS], float)
+    rv = np.asarray(kws[RADIAL_VELS], float)
+    err = np.asarray(kws[ERRORS], float)
+
+    if not (np.isfinite(P_in) and P_in > 0
+            and np.isfinite(P_out) and P_out > 0
+            and np.isfinite(ecc_in) and 0 <= ecc_in < 1
+            and np.isfinite(ecc_out) and 0 <= ecc_out < 1
+            and np.isfinite(sigmaJ) and sigmaJ >= 0):
+        return 2e12
+    try:
+        model = rv_double_kepler_from_times(
+            hjd, P_in, T0_in, omega_in, ecc_in, K_in,
+            P_out, T0_out, omega_out, ecc_out, K_out, gamma)
+        sig2 = err**2 + sigmaJ**2
+        res_chi_sqrd = (model - rv)**2 / sig2
+        res_ln = np.log(sig2)
+        res = res_ln.sum() + res_chi_sqrd.sum()
+    except Exception:
+        res = 2e12
+    return float(res)
+
+
+def lmfit_double_kepler(data, inner_params, outer_params,
+                        method="differential_evolution", max_nfev=500000):
+    """
+    Fit a double-Keplerian (hierarchical triple) model.
+
+    Parameters
+    ----------
+    data : dict-like
+        Must contain keys TIME_STAMPS, RADIAL_VELS, ERRORS.
+    inner_params : dict
+        Inner orbit seeds: {P, K1, omega, ecc, T0} with keys
+        'value', 'min', 'max', 'vary' for each.
+    outer_params : dict
+        Outer orbit seeds: same structure.
+    method : str
+        lmfit minimization method.
+    max_nfev : int
+        Maximum function evaluations.
+
+    Returns
+    -------
+    lmfit.MinimizerResult
+    """
+    sys.setrecursionlimit(int(1e6))
+
+    hjds = np.array(data[TIME_STAMPS])
+    v1s = np.array(data[RADIAL_VELS])
+    errv1s = np.abs(data[ERRORS])
+
+    params = lmfit.Parameters()
+
+    # Inner orbit
+    for name, cfg in [(_P_IN, inner_params["Period"]),
+                      (_K_IN, inner_params["K1"]),
+                      (_OMEGA_IN, inner_params["omega"]),
+                      (_ECC_IN, inner_params["ecc"]),
+                      (_T0_IN, inner_params["T0"])]:
+        params.add(name, value=cfg["value"], min=cfg["min"],
+                   max=cfg["max"], vary=cfg["vary"])
+
+    # Outer orbit
+    for name, cfg in [(_P_OUT, outer_params["Period"]),
+                      (_K_OUT, outer_params["K1"]),
+                      (_OMEGA_OUT, outer_params["omega"]),
+                      (_ECC_OUT, outer_params["ecc"]),
+                      (_T0_OUT, outer_params["T0"])]:
+        params.add(name, value=cfg["value"], min=cfg["min"],
+                   max=cfg["max"], vary=cfg["vary"])
+
+    # Shared
+    params.add(GAMMA, value=inner_params["gamma"]["value"],
+               min=inner_params["gamma"]["min"],
+               max=inner_params["gamma"]["max"], vary=True)
+    params.add(LN_SIGMA_JITTER, value=inner_params["ln_sigmaJ"]["value"],
+               min=inner_params["ln_sigmaJ"]["min"],
+               max=inner_params["ln_sigmaJ"]["max"], vary=True)
+
+    mini = lmfit.Minimizer(
+        chisqr_double_kepler_with_jitter, params,
+        fcn_kws={TIME_STAMPS: hjds, RADIAL_VELS: v1s, ERRORS: errv1s}
+    )
+    result = mini.minimize(method=method, max_nfev=max_nfev)
     return result

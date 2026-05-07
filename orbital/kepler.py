@@ -209,3 +209,38 @@ def rv_model_from_times(t, P, T0, omega, ecc, K1, gamma, solver="iterative"):
     """
     nu = true_anomaly(t, P, T0, ecc, solver=solver)
     return rv_model(nu, gamma, K1, omega, ecc)
+
+
+def rv_double_kepler_from_times(t, P_in, T0_in, omega_in, ecc_in, K1_in,
+                                 P_out, T0_out, omega_out, ecc_out, K1_out,
+                                 gamma, solver="iterative"):
+    """
+    Compute radial velocity for a hierarchical triple (double Keplerian).
+
+    RV(t) = gamma
+          + K1_in  [cos(omega_in  + nu_in(t))  + ecc_in  cos(omega_in)]
+          + K1_out [cos(omega_out + nu_out(t)) + ecc_out cos(omega_out)]
+
+    Parameters
+    ----------
+    t : array_like
+        Observation timestamps (e.g. MJD).
+    P_in, T0_in, omega_in, ecc_in, K1_in : float
+        Inner-orbit Keplerian elements.
+    P_out, T0_out, omega_out, ecc_out, K1_out : float
+        Outer-orbit Keplerian elements.
+    gamma : float
+        True systemic velocity [km/s].
+    solver : str
+        Kepler equation solver ("iterative" or "newton").
+
+    Returns
+    -------
+    rv : ndarray
+        Radial velocity [km/s].
+    """
+    nu_in = true_anomaly(t, P_in, T0_in, ecc_in, solver=solver)
+    nu_out = true_anomaly(t, P_out, T0_out, ecc_out, solver=solver)
+    return (gamma
+            + K1_in * (np.cos(omega_in + nu_in) + ecc_in * np.cos(omega_in))
+            + K1_out * (np.cos(omega_out + nu_out) + ecc_out * np.cos(omega_out)))

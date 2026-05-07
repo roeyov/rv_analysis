@@ -12,13 +12,13 @@ random_seed: 562
 manual_candidate_periods: []
 
 # ---- Stage 2: pipeline I/O paths (container-relative) ----
-rv_input_dir:    &rv_input_dir    "/app/input/"
-lmfit_output_dir: &lmfit_output_dir "/app/output/"
-mcmc_output_dir: &mcmc_output_dir  "/app/output/mcmc_out/"
+# Relative *_dir values are resolved against base_dir by load_args().
+base_dir:      "/app"
+rv_subdir:     "input"                               # stage 1 output (RV tables)
+lmfit_subdir:  &lmfit_subdir  "output"               # stage 2 writes, stage 4 reads
+mcmc_subdir:   &mcmc_subdir   "mcmc_out"             # stage 4 writes (nested under lmfit_subdir)
 
 pipeline_io:
-  rv_input_dir: *rv_input_dir
-  output_dir: *lmfit_output_dir
   object_list: []
   mass_file: ""
   use_fwhm: true
@@ -35,7 +35,10 @@ periodogram_params:
   random_state: 123
   n_sig_periods: 4
   min_period_separation: 1.1
-  window_iterations: 10000
+  pdc_samples_per_peak: 10
+  window_iterations: 100
+  run_permutations_ls: true
+  run_permutations_pdc: true
 
 # ---- Simulated data parameters ----
 simulated_params:
@@ -89,18 +92,14 @@ mcmc_params:
   thin: 5
   walkers: 32
 
-  rv_input_dir: *rv_input_dir
-  lmfit_input_dir: *lmfit_output_dir
-  output_dir: *mcmc_output_dir
-
   filter_expression: >-
     ~candidate_method.str.contains('MANUAL')
     & ~candidate_method.str.contains('null')
     & (prob_bicc > 0.5)
     & (mass_flag_peri == 0)
     & ((candidate_method.str.contains('LS')
-    & (LS_iter_fap < 0.1))
+    & (LS_iter_fap < 0.2))
     | (candidate_method.str.contains('PDC')
-    & (PDC_iter_fap < 0.1)))
+    & (PDC_iter_fap < 0.2)))
   field_to_check: "bicc"
   take_min: true

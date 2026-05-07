@@ -287,13 +287,13 @@ def calculate_phase_criterias(data, result):
         bottom_max_rv_gap     in [0,1]  (distance from model trough)
     """
     # Import here to avoid circular imports (plotting uses statistics)
-    from orbital.plotting import plot_phase_folded_with_residuals
+    from orbital.plotting import compute_phase_residuals
 
     hjds, vels, errs = extract_observations(data)
     Gamma, K, Omega, ecc, P, T0 = compute_orbital_params(result)
 
-    phs_data, phase_grid, rv_phase, residuals = plot_phase_folded_with_residuals(
-        hjds, vels, errs, P, T0, Gamma, K, Omega, ecc, '', plot=False
+    phs_data, phase_grid, rv_phase, residuals = compute_phase_residuals(
+        hjds, vels, P, T0, ecc, Gamma, K, Omega,
     )
 
     # --- Max phase gap on the circle ---

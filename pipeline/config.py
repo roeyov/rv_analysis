@@ -33,9 +33,41 @@ def load_args(config_path=None):
     with open(config_path, "r") as f:
         if ext in (".yaml", ".yml"):
             import yaml
-            return yaml.safe_load(f)
+            cfg = yaml.safe_load(f)
         else:
-            return json.load(f)
+            cfg = json.load(f)
+    _resolve_dir_paths(cfg)
+    return cfg
+
+
+def _resolve_dir_paths(cfg):
+    """Build directory paths from base_dir / lmfit_subdir / mcmc_subdir.
+
+    Hierarchy (always):
+        rv_dir    = base_dir (/ rv_subdir if set)
+        lmfit_dir = base_dir / lmfit_subdir
+        mcmc_dir  = base_dir / lmfit_subdir / mcmc_subdir
+    """
+    base = cfg.get("base_dir", "")
+    if not base:
+        return
+    rv_sub = cfg.get("rv_subdir", "")
+    lmfit_sub = cfg.get("lmfit_subdir", "")
+    mcmc_sub = cfg.get("mcmc_subdir", "")
+
+    rv_dir = os.path.join(base, rv_sub) if rv_sub else base
+    lmfit_dir = os.path.join(base, lmfit_sub) if lmfit_sub else base
+    mcmc_dir = os.path.join(lmfit_dir, mcmc_sub) if mcmc_sub else lmfit_dir
+
+    # Inject resolved paths into the sections that consume them.
+    pio = cfg.setdefault("pipeline_io", {})
+    pio["rv_input_dir"] = rv_dir
+    pio["output_dir"] = lmfit_dir
+
+    mcmc = cfg.setdefault("mcmc_params", {})
+    mcmc["rv_input_dir"] = rv_dir
+    mcmc["lmfit_input_dir"] = lmfit_dir
+    mcmc["output_dir"] = mcmc_dir
 
 
 def _load_json_args(json_param_file=None):

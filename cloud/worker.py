@@ -36,6 +36,8 @@ from simulations.common import BLOEM_MJD_ARRAYS
 from simulations.create_binary_simulations import (
     sample_orbital_params,
     generate_binary_rv_at_mjds,
+    is_roche_valid,
+    build_mass_row,
 )
 
 
@@ -82,10 +84,12 @@ def generate_one_simulation(task_index, run_id, n_fields, input_dir="/app/input"
 
     Returns
     -------
-    local_csv : str
+    local_csv : str or None
         Path to the written *_CCF_RVs.csv file.
-    truth_csv : str
+    truth_csv : str or None
         Path to the written truth_row.csv file.
+    massdf : pd.DataFrame or None
+        One-row DataFrame in mass_bloem.csv format for Roche lobe constraints.
     """
     seed = int(hashlib.sha256(f"{run_id}_{task_index}".encode()).hexdigest(), 16) % (2**31)
     field_idx = task_index % n_fields
@@ -96,12 +100,19 @@ def generate_one_simulation(task_index, run_id, n_fields, input_dir="/app/input"
     # Sample orbital parameters (unique per seed)
     orb = sample_orbital_params(rng=rng)
 
+    # Validate Roche lobe constraint
+    if not is_roche_valid(orb["m1"], orb["r_phys"], orb["period"],
+                          orb["k1"], orb["ecc"], orb["inc"]):
+        print(f"WARNING: Roche lobe violation for task {task_index} (seed={seed}), "
+              f"P={orb['period']:.2f}d, R={orb['r_phys']:.1f}Rsun")
+        return None, None, None
+
     # Generate noisy Keplerian RVs at the field's MJD times
     rvs, sigmas = generate_binary_rv_at_mjds(mjds, orb)
 
     if rvs is None:
         print(f"WARNING: Kepler solver failed for task {task_index} (seed={seed})")
-        return None, None
+        return None, None, None
 
     # --- Write pipeline-compatible CSV ---
     os.makedirs(input_dir, exist_ok=True)
@@ -139,15 +150,31 @@ def generate_one_simulation(task_index, run_id, n_fields, input_dir="/app/input"
         "MassRatio": orb["q"],
         "Inclination_rad": orb["inc"],
         "Inclination_deg": np.degrees(orb["inc"]),
+        "R_star": orb["r_phys"],
     }])
     truth_csv = os.path.join(input_dir, "truth_row.csv")
     truth_row.to_csv(truth_csv, index=False)
 
-    print(f"Generated simulation: {csv_filename}")
-    print(f"  seed={seed}, field={field_idx}, P={orb['period']:.2f}d, "
-          f"e={orb['ecc']:.3f}, K1={orb['k1']:.1f}km/s")
+    # --- Build mass DataFrame for pipeline Roche lobe constraints ---
+    sim_id_str = f"BLOeM_SIM_{task_index:06d}"
+    massdf = pd.DataFrame([build_mass_row(sim_id_str, orb["m1"], orb["r_phys"])])
 
-    return local_csv, truth_csv
+    print(f"Generated simulation: {csv_filename}")
+    print(f"  {'Seed':>12}: {seed}")
+    print(f"  {'Field':>12}: {field_idx}  ({len(mjds)} obs)")
+    print(f"  {'Period':>12}: {orb['period']:.4f} d")
+    print(f"  {'Ecc':>12}: {orb['ecc']:.4f}")
+    print(f"  {'omega':>12}: {orb['omega']:.4f} rad")
+    print(f"  {'T0':>12}: {orb['t0']:.4f}")
+    print(f"  {'K1':>12}: {orb['k1']:.2f} km/s")
+    print(f"  {'K2':>12}: {orb['k2']:.2f} km/s")
+    print(f"  {'gamma':>12}: {orb['gamma']:.2f} km/s")
+    print(f"  {'M1':>12}: {orb['m1']:.2f} Msun")
+    print(f"  {'q':>12}: {orb['q']:.4f}")
+    print(f"  {'inc':>12}: {np.degrees(orb['inc']):.2f} deg")
+    print(f"  {'R_star':>12}: {orb['r_phys']:.2f} Rsun")
+
+    return local_csv, truth_csv, massdf
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +200,9 @@ def main():
     print(f"  output -> {task_gcs}")
 
     # 1) Generate simulation on the fly
-    local_csv, truth_csv = generate_one_simulation(task_index, run_id, n_fields)
+    local_csv, truth_csv, massdf = generate_one_simulation(task_index, run_id, n_fields)
     if local_csv is None:
-        print("Simulation generation failed (Kepler solver). Exiting.")
+        print("Simulation generation failed (Roche/Kepler). Exiting.")
         sys.exit(1)
 
     # 2) Run pipeline
@@ -185,7 +212,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Running pipeline on {os.path.basename(local_csv)} ...")
-    main_single(local_csv, output_dir, use_fwhm=True, json_param_file=config_path)
+    main_single(local_csv, output_dir, massdf=massdf, use_fwhm=True,
+                json_param_file=config_path)
 
     # 3) Upload everything to GCS
     print("Uploading results ...")
