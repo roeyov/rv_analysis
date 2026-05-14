@@ -115,6 +115,17 @@ def load_grid_data(output_dir):
     data["test_pval_cubes"] = test_pval_cubes
     data["best_fits"] = best_fits
 
+    # Recover the eccentricity scoring mode used to produce these cubes.
+    # Modern files carry an explicit "e_score_mode" entry; legacy files
+    # are inferred from the presence of *_e_circ_cube (split mode) vs.
+    # absence (combined mode — the only other historical option).
+    if "e_score_mode" in cubes.files:
+        data["e_score_mode"] = str(cubes["e_score_mode"])
+    else:
+        has_e_circ = any("e_circ" in test_pval_cubes.get(t, {})
+                         for t in test_pval_cubes)
+        data["e_score_mode"] = "split" if has_e_circ else "combined"
+
     # Default gmf_cube / best_fit (KS for backward compat)
     default_test = available_tests[0] if available_tests else "ks"
     data["gmf_cube"] = gmf_cubes.get(default_test, cubes.get("gmf_cube"))
@@ -273,121 +284,155 @@ REF_VALS = [-0.55, -0.10, -0.45, 0.69]  # Sana+2012 Galactic
 COLORS_1D = ["#4393c3", "#d6604d", "#5aae61", "#9970ab"]
 
 
-def plot_1d_posteriors(prob, grids, best_fit, current_vals):
-    """Create 1D marginalized posterior plots."""
-    fig = make_subplots(rows=1, cols=4, subplot_titles=PARAM_NAMES)
-
-    for idx in range(4):
-        col = idx + 1
-        grid = grids[idx]
-        post = get_1d_posterior(prob, grids, idx)
-        color = COLORS_1D[idx]
-
-        # Posterior density fill
-        fig.add_trace(go.Scatter(
-            x=grid, y=post, mode="lines", fill="tozeroy",
-            line=dict(color=color, width=2),
-            fillcolor="rgba(%d,%d,%d,0.2)" % (
-                int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)),
-            name=PARAM_NAMES[idx], showlegend=False,
-        ), row=1, col=col)
-
-        # 68% CI
-        cdf = np.cumsum(post)
-        if cdf[-1] > 0:
-            cdf = cdf / cdf[-1]
-            lo = np.interp(0.16, cdf, grid)
-            hi = np.interp(0.84, cdf, grid)
-            fig.add_vrect(x0=lo, x1=hi, fillcolor="crimson", opacity=0.1,
-                          line_width=0, row=1, col=col)
-
-        # Best-fit star
-        fig.add_trace(go.Scatter(
-            x=[best_fit[idx]], y=[np.interp(best_fit[idx], grid, post)],
-            mode="markers", marker=dict(symbol="star", size=14,
-                                        color="gold", line=dict(width=1, color="black")),
-            name="Best fit", showlegend=(idx == 0),
-        ), row=1, col=col)
-
-        # Current slider position circle
-        fig.add_trace(go.Scatter(
-            x=[current_vals[idx]], y=[np.interp(current_vals[idx], grid, post)],
-            mode="markers", marker=dict(symbol="circle", size=10,
-                                        color="red", line=dict(width=1, color="black")),
-            name="Current", showlegend=(idx == 0),
-        ), row=1, col=col)
-
-        # Sana+2012 reference
-        fig.add_vline(x=REF_VALS[idx], line_dash="dot", line_color="grey",
-                      row=1, col=col)
-        fig.add_annotation(
-            text="Sana+12: %s=%.2f" % (PARAM_NAMES[idx], REF_VALS[idx]),
-            x=REF_VALS[idx], y=1.0,
-            xref="x%d" % col if col > 1 else "x",
-            yref="y%d domain" % col if col > 1 else "y domain",
-            xanchor="left", yanchor="top",
-            showarrow=False, font=dict(size=10, color="grey"),
-            row=1, col=col,
-        )
-
-        fig.update_xaxes(title_text=PARAM_NAMES[idx], row=1, col=col)
-        fig.update_yaxes(title_text="Density" if col == 1 else "", row=1, col=col)
-
-    fig.update_layout(height=300, margin=dict(t=40, b=40))
-    return fig
-
-
-def plot_2d_heatmaps(prob, grids, best_fit, current_vals, smooth=True):
-    """Create 2D marginalized GMF heatmaps for all 6 parameter pairs."""
-    pairs = [
-        (0, 1), (0, 2), (0, 3),
-        (1, 2), (1, 3), (2, 3),
-    ]
-
+def plot_corner(prob, grids, best_fit, current_vals, smooth=True):
+    """Create a corner plot: 1D marginals on the diagonal, 2D marginals
+    on the lower triangle. Upper triangle is hidden."""
+    n = len(grids)
     fig = make_subplots(
-        rows=2, cols=3,
-        subplot_titles=["%s vs %s" % (PARAM_NAMES[i1], PARAM_NAMES[i2])
-                        for i1, i2 in pairs],
+        rows=n, cols=n,
+        shared_xaxes=False, shared_yaxes=False,
+        horizontal_spacing=0.04, vertical_spacing=0.04,
     )
 
-    for plot_idx, (i1, i2) in enumerate(pairs):
-        row = plot_idx // 3 + 1
-        col = plot_idx % 3 + 1
-        marg = get_2d_marginal(prob, i1, i2)
-        g1, g2 = grids[i1], grids[i2]
+    first_heatmap = True
+    legend_used = False
 
-        fig.add_trace(go.Heatmap(
-            z=marg.T, x=g1, y=g2,
-            colorscale="RdYlBu_r", zsmooth="best" if smooth else False,
-            showscale=(plot_idx == 0),
-            colorbar=dict(title="Marginal prob") if plot_idx == 0 else None,
-        ), row=row, col=col)
+    for row_idx in range(n):
+        for col_idx in range(n):
+            row = row_idx + 1
+            col = col_idx + 1
 
-        # Best-fit star
-        fig.add_trace(go.Scatter(
-            x=[best_fit[i1]], y=[best_fit[i2]],
-            mode="markers", marker=dict(symbol="star", size=14,
-                                        color="gold", line=dict(width=1.5, color="black")),
-            showlegend=False,
-        ), row=row, col=col)
+            if row_idx == col_idx:
+                # Diagonal: 1D marginal posterior
+                idx = row_idx
+                grid = grids[idx]
+                post = get_1d_posterior(prob, grids, idx)
+                color = COLORS_1D[idx]
 
-        # Current position circle
-        fig.add_trace(go.Scatter(
-            x=[current_vals[i1]], y=[current_vals[i2]],
-            mode="markers", marker=dict(symbol="circle", size=10,
-                                        color="red", line=dict(width=1.5, color="black")),
-            showlegend=False,
-        ), row=row, col=col)
+                # Density fill
+                fig.add_trace(go.Scatter(
+                    x=grid, y=post, mode="lines", fill="tozeroy",
+                    line=dict(color=color, width=2),
+                    fillcolor="rgba(%d,%d,%d,0.2)" % (
+                        int(color[1:3], 16),
+                        int(color[3:5], 16),
+                        int(color[5:7], 16)),
+                    name=PARAM_NAMES[idx], showlegend=False,
+                ), row=row, col=col)
 
-        fig.update_xaxes(title_text=PARAM_NAMES[i1], row=row, col=col)
-        fig.update_yaxes(title_text=PARAM_NAMES[i2], row=row, col=col)
+                # 68% CI band
+                cdf = np.cumsum(post)
+                if cdf[-1] > 0:
+                    cdf = cdf / cdf[-1]
+                    lo = np.interp(0.16, cdf, grid)
+                    hi = np.interp(0.84, cdf, grid)
+                    fig.add_vrect(x0=lo, x1=hi, fillcolor="crimson",
+                                  opacity=0.1, line_width=0,
+                                  row=row, col=col)
 
-    fig.update_layout(height=550, margin=dict(t=40, b=40))
+                # Best-fit star
+                fig.add_trace(go.Scatter(
+                    x=[best_fit[idx]],
+                    y=[np.interp(best_fit[idx], grid, post)],
+                    mode="markers",
+                    marker=dict(symbol="star", size=14, color="gold",
+                                line=dict(width=1, color="black")),
+                    name="Best fit", showlegend=(not legend_used),
+                ), row=row, col=col)
+
+                # Current slider position circle
+                fig.add_trace(go.Scatter(
+                    x=[current_vals[idx]],
+                    y=[np.interp(current_vals[idx], grid, post)],
+                    mode="markers",
+                    marker=dict(symbol="circle", size=10, color="red",
+                                line=dict(width=1, color="black")),
+                    name="Current", showlegend=(not legend_used),
+                ), row=row, col=col)
+                legend_used = True
+
+                # Sana+2012 reference line + annotation
+                fig.add_vline(x=REF_VALS[idx], line_dash="dot",
+                              line_color="grey", row=row, col=col)
+                axis_num = (row - 1) * n + col
+                fig.add_annotation(
+                    text="Sana+12: %s=%.2f" % (PARAM_NAMES[idx],
+                                               REF_VALS[idx]),
+                    x=REF_VALS[idx], y=1.0,
+                    xref="x" if axis_num == 1 else "x%d" % axis_num,
+                    yref=("y domain" if axis_num == 1
+                          else "y%d domain" % axis_num),
+                    xanchor="left", yanchor="top",
+                    showarrow=False, font=dict(size=9, color="grey"),
+                    row=row, col=col,
+                )
+
+            elif row_idx > col_idx:
+                # Lower triangle: 2D marginal heatmap
+                # x-axis = grids[col_idx], y-axis = grids[row_idx]
+                marg = get_2d_marginal(prob, col_idx, row_idx)
+                gx, gy = grids[col_idx], grids[row_idx]
+
+                fig.add_trace(go.Heatmap(
+                    z=marg.T, x=gx, y=gy,
+                    colorscale="RdYlBu_r",
+                    zsmooth="best" if smooth else False,
+                    showscale=first_heatmap,
+                    colorbar=dict(title="Marginal prob")
+                             if first_heatmap else None,
+                ), row=row, col=col)
+                first_heatmap = False
+
+                # Best-fit star
+                fig.add_trace(go.Scatter(
+                    x=[best_fit[col_idx]], y=[best_fit[row_idx]],
+                    mode="markers",
+                    marker=dict(symbol="star", size=14, color="gold",
+                                line=dict(width=1.5, color="black")),
+                    showlegend=False,
+                ), row=row, col=col)
+
+                # Current position circle
+                fig.add_trace(go.Scatter(
+                    x=[current_vals[col_idx]], y=[current_vals[row_idx]],
+                    mode="markers",
+                    marker=dict(symbol="circle", size=10, color="red",
+                                line=dict(width=1.5, color="black")),
+                    showlegend=False,
+                ), row=row, col=col)
+
+            else:
+                # Upper triangle: hide axes
+                fig.update_xaxes(visible=False, row=row, col=col)
+                fig.update_yaxes(visible=False, row=row, col=col)
+                continue
+
+            # Axis titles: only bottom row gets x-titles,
+            # only leftmost column gets y-titles.
+            if row == n:
+                fig.update_xaxes(title_text=PARAM_NAMES[col_idx],
+                                 row=row, col=col)
+            else:
+                fig.update_xaxes(showticklabels=False, row=row, col=col)
+
+            if col == 1:
+                if row_idx == col_idx:
+                    y_title = "Density" if row_idx == 0 else ""
+                    fig.update_yaxes(title_text=y_title,
+                                     showticklabels=(row_idx == 0),
+                                     row=row, col=col)
+                else:
+                    fig.update_yaxes(title_text=PARAM_NAMES[row_idx],
+                                     row=row, col=col)
+            else:
+                fig.update_yaxes(showticklabels=False, row=row, col=col)
+
+    fig.update_layout(height=750, width=750, margin=dict(t=40, b=40))
     return fig
 
 
 def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
-              use_empirical=False, p_det=None):
+              use_empirical=False, p_det=None, e_score_mode="combined"):
     """Plot CDF + PDF comparison: observed vs synthetic detected vs intrinsic.
 
     Layout: 2 rows x 4 cols.
@@ -416,11 +461,21 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             if len(det_arr) or len(nondet_arr):
                 empirical_all[key] = np.concatenate([det_arr, nondet_arr])
 
+    # Only eccentric_only ignores circular systems entirely. 'split' still
+    # scores them via the separate circular-fraction binomial, so they
+    # belong in the CDF visualization.
+    obs_e_arr = obs.get("e")
+    if e_score_mode == "eccentric_only" and obs_e_arr is not None:
+        obs_e_arr = np.asarray(obs_e_arr)
+        obs_e_arr = obs_e_arr[obs_e_arr > 0]
+        if "e" in empirical_all:
+            empirical_all["e"] = empirical_all["e"][empirical_all["e"] > 0]
+
     # (key, obs_array_or_None, xlabel, color, alpha, xmin, xmax, n_bins)
     param_configs = [
         ("logP", obs["logP"], "log\u2081\u2080(P/d)", "#4393c3",
          pi_val, cfg["log_p_min"], cfg["log_p_max"], 15),
-        ("e", obs["e"], "e", "#d6604d",
+        ("e", obs_e_arr, "e", "#d6604d",
          eta_val, 1e-6, cfg["e_max"], 15),
         ("K1", obs["K1"], "K\u2081 [km/s]", "#5aae61",
          None, None, None, 15),
@@ -449,7 +504,10 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             obs_s = None
 
         if key == "e":
-            clip_lo, clip_hi = 0.0, 1.0
+            # Only eccentric_only mode excludes the circular spike from
+            # sim/empirical CDFs and histograms.
+            clip_lo = 1e-12 if e_score_mode == "eccentric_only" else 0.0
+            clip_hi = 1.0
         elif has_obs:
             clip_lo, clip_hi = 0.0, float(obs_s[-1])
         else:
@@ -461,13 +519,26 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
         # Completeness scaling so intrinsic CDF → [0, 1] and
         # detected/observed → [0, completeness].
         # Use empirical ratio when available, otherwise fall back to p_det.
+        # For the e marginal in eccentric_only mode, restrict the ratio to
+        # the e>0 subset so the displayed CDF can reach 1.0.
         completeness = 1.0
         if use_empirical and key in empirical_all:
             all_vals = empirical_all[key]
             n_all = len(all_vals)
             if n_all > 0 and det_params is not None:
-                n_det = len(det_params.get(key, np.array([])))
-                completeness = n_det / n_all
+                det_vals = det_params.get(key, np.array([]))
+                if key == "e" and e_score_mode == "eccentric_only":
+                    all_vals_subset = all_vals[all_vals > 0]
+                    det_vals_subset = (
+                        np.asarray(det_vals)[np.asarray(det_vals) > 0]
+                        if len(det_vals) else det_vals
+                    )
+                    n_all_sub = len(all_vals_subset)
+                    n_det_sub = len(det_vals_subset)
+                    if n_all_sub > 0:
+                        completeness = n_det_sub / n_all_sub
+                else:
+                    completeness = len(det_vals) / n_all
         elif p_det is not None and p_det < 1.0:
             completeness = p_det
 
@@ -532,10 +603,11 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
         if not np.isnan(pval):
             xref = "x domain" if col == 1 else "x%d domain" % col
             yref = "y domain" if col == 1 else "y%d domain" % col
-            # For eccentricity with split mode, show both p(e>0) and p(f_circ)
-            p_e_circ = ks_pvals.get("ks_e_circ", np.nan)
-            if key == "e" and not np.isnan(p_e_circ):
+            if key == "e" and e_score_mode == "split":
+                p_e_circ = ks_pvals.get("ks_e_circ", np.nan)
                 ann_text = "p(e>0)=%.3f\np(f_circ)=%.3f" % (pval, p_e_circ)
+            elif key == "e" and e_score_mode == "eccentric_only":
+                ann_text = "p(e>0) = %.3f" % pval
             else:
                 ann_text = "%s p = %.3f" % (test_label, pval)
             fig.add_annotation(
@@ -819,6 +891,8 @@ def main():
     test_label = test_labels.get(selected_test, selected_test.upper())
     st.sidebar.markdown("---")
     st.sidebar.subheader("Current Grid Point Stats")
+    st.sidebar.caption("e_score_mode: %s" %
+                       data.get("e_score_mode", "combined"))
     st.sidebar.metric("p_det", "%.4f" % data["pdet_cube"][i, j, k, l])
     gmf_val = gmf_cube[i, j, k, l]
     st.sidebar.metric("log GMF (%s)" % test_label,
@@ -826,10 +900,15 @@ def main():
     if pval_cubes:
         st.sidebar.metric("p(logP)", "%.4f" % pval_cubes.get(
             "logP", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
-        has_e_circ = "e_circ" in pval_cubes
-        if has_e_circ:
+        e_mode = data.get("e_score_mode", "combined")
+        if e_mode == "split":
             st.sidebar.metric("p(e>0)", "%.4f" % pval_cubes["e"][i, j, k, l])
-            st.sidebar.metric("p(f_circ)", "%.4f" % pval_cubes["e_circ"][i, j, k, l])
+            if "e_circ" in pval_cubes:
+                st.sidebar.metric(
+                    "p(f_circ)", "%.4f" % pval_cubes["e_circ"][i, j, k, l])
+        elif e_mode == "eccentric_only":
+            st.sidebar.metric("p(e>0)", "%.4f" % pval_cubes.get(
+                "e", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
         else:
             st.sidebar.metric("p(e)", "%.4f" % pval_cubes.get(
                 "e", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
@@ -855,16 +934,13 @@ def main():
     # --- Main area ---
     prob = gmf_to_prob(gmf_cube)
 
-    # Section 1: 1D Posteriors
-    st.header("1D Marginalized Posteriors (%s)" % test_label)
-    fig_1d = plot_1d_posteriors(prob, grids, best_fit, current_vals)
-    st.plotly_chart(fig_1d, use_container_width=True)
-
-    # Section 2: 2D Heatmaps
-    st.header("2D Marginalized Heatmaps (%s)" % test_label)
-    smooth_2d = st.checkbox("Smooth interpolation", value=True, key="smooth_2d")
-    fig_2d = plot_2d_heatmaps(prob, grids, best_fit, current_vals, smooth=smooth_2d)
-    st.plotly_chart(fig_2d, use_container_width=True)
+    # Section 1: Marginalized Posterior Corner Plot
+    st.header("Marginalized Posterior Corner (%s)" % test_label)
+    smooth_corner = st.checkbox("Smooth interpolation", value=True,
+                                key="smooth_corner")
+    fig_corner = plot_corner(prob, grids, best_fit, current_vals,
+                             smooth=smooth_corner)
+    st.plotly_chart(fig_corner, use_container_width=True)
 
     # Section 3: CDF Comparison
     if data["has_detected"] and obs is not None:
@@ -891,7 +967,9 @@ def main():
             fig_cdf = plot_cdfs(det_params, obs, current_vals, ks_pvals,
                                 test_label=test_label,
                                 use_empirical=use_empirical,
-                                p_det=p_det)
+                                p_det=p_det,
+                                e_score_mode=data.get(
+                                    "e_score_mode", "combined"))
             st.plotly_chart(fig_cdf, use_container_width=True)
         else:
             st.info("No detected systems for this grid point "
