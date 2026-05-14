@@ -903,7 +903,7 @@ _resume_shared = {}
 
 def _init_grid_worker(field_mjds, field_arr, rv_err_arr, M1_arr, R1_arr,
                       gamma_arr, cfg, args_dict, detect_method,
-                      checkpoint_dir=None):
+                      checkpoint_dir=None, scoring_ctx=None):
     """Pool initializer: stash shared data in module-level dict."""
     _shared["field_mjds"] = field_mjds
     _shared["field_arr"] = field_arr
@@ -915,6 +915,7 @@ def _init_grid_worker(field_mjds, field_arr, rv_err_arr, M1_arr, R1_arr,
     _shared["args_dict"] = args_dict
     _shared["detect_method"] = detect_method
     _shared["checkpoint_dir"] = checkpoint_dir
+    _shared["scoring_ctx"] = scoring_ctx
 
 
 def _init_resume_worker(checkpoint_dir, scoring_ctx):
@@ -1104,9 +1105,19 @@ def _worker_grid_point(task):
     checkpoint_dir = _shared.get("checkpoint_dir")
     if checkpoint_dir:
         _save_det_shard(checkpoint_dir, step, i, j, k, l, res)
-        # Keep only what _score_and_accumulate needs: det arrays for
-        # scoring (logP/e/K1), histograms, and scalar counts.
-        for _key in ("q_det",
+
+    # Score in-worker so the KS/AD/CvM work parallelizes across cores
+    # instead of bottlenecking the main process. Mirrors the pattern
+    # used by _resume_score_worker.
+    scoring_ctx = _shared.get("scoring_ctx")
+    if scoring_ctx is not None:
+        res["scores"] = _compute_scores(res, scoring_ctx)
+
+    if checkpoint_dir:
+        # Drop everything _score_and_accumulate doesn't need when
+        # `scores` is supplied: the det arrays are already in the shard
+        # and main only reads p_det, n_*, and the small histograms.
+        for _key in ("logP_det", "e_det", "K1_det", "q_det",
                      "logP_nondet", "e_nondet", "K1_nondet", "q_nondet",
                      "logP_rlof", "q_rlof", "e_rlof",
                      "M1_rlof", "R1_rlof"):
@@ -2019,7 +2030,8 @@ class GridSearchEngine:
                               self.R1_arr, self.gamma_arr,
                               self.cfg, self.args_dict,
                               self.detect_method,
-                              checkpoint_dir),
+                              checkpoint_dir,
+                              scoring_ctx),
                     maxtasksperchild=500,
             ) as pool:
                 for task_result in pool.imap_unordered(
@@ -2031,8 +2043,10 @@ class GridSearchEngine:
                         eta = eta_grid[k]
                         fbin = fbin_grid[l]
 
+                        scores = res.pop("scores", None)
                         p_det, log_gmf = _score_and_accumulate(
-                            step, i, j, k, l, pi, kappa, eta, fbin, res)
+                            step, i, j, k, l, pi, kappa, eta, fbin, res,
+                            scores=scores)
 
                         steps_done += 1
                         elapsed = time.time() - t0

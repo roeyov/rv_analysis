@@ -18,6 +18,9 @@ if _project_root not in sys.path:
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+# numpy 2.x renamed trapz -> trapezoid
+_trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -217,7 +220,7 @@ def get_1d_posterior(prob, grids, axis_idx):
     post = np.nansum(prob, axis=axes_to_sum)
     grid = grids[axis_idx]
     if np.sum(post) > 0 and len(grid) > 1:
-        post = post / np.trapz(post, grid)
+        post = post / _trapz(post, grid)
     return post
 
 

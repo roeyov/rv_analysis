@@ -154,7 +154,26 @@ GRID_PRESETS = {
         "fbin":  np.linspace(0.5, 0.8, 11),
         "n_inject_per_star": 100,
     },
-    
+    # final3_10min2 posteriors hit the pi upper edge (-0.30) and fbin lower
+    # edge (0.50). Extend both, bracket Sana+12 (pi=-0.55, kappa=-0.10,
+    # eta=-0.45, fbin=0.69), and use a uniform 0.05 step across all axes.
+    "final3_10min3": {  # 27×25×17×13 = 149,175 pts, ~10 min on astro3 post-refactor
+        "pi":    np.linspace(-0.80, 0.50, 27),   # extend past hit upper edge; covers Sana -0.55
+        "kappa": np.linspace(-0.50, 0.70, 25),   # slight widen vs 10min2; Sana -0.10 well inside
+        "eta":   np.linspace(-0.60, 0.20, 17),   # narrow around constrained mode ~-0.24; Sana -0.45 inside
+        "fbin":  np.linspace(0.40, 1.00, 13),    # extend past hit lower edge; brackets Sana 0.69
+        "n_inject_per_star": 100,
+    },
+    # Same axis bounds as final3_10min3 but uniform ~0.03 step and kappa
+    # lower bound pushed to -1.50 (captures equal-mass-biased priors).
+    "final3_2hr": {  # 44×74×28×21 = 1,914,528 pts, ~2 hr on astro3 post-refactor
+        "pi":    np.linspace(-0.80, 0.50, 44),   # step 0.030
+        "kappa": np.linspace(-1.50, 0.70, 74),   # step 0.030; lower edge widened from -0.50
+        "eta":   np.linspace(-0.60, 0.20, 28),   # step 0.030
+        "fbin":  np.linspace(0.40, 1.00, 21),    # step 0.030
+        "n_inject_per_star": 100,
+    },
+
     "final3_3hr": {  # serious analysis — 30×30×20×15 = 270,000 pts, ~3 hr
         "pi":    np.linspace(-0.80, -0.10, 30),
         "kappa": np.linspace(-2.10, 0.20, 30),
