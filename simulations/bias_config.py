@@ -16,7 +16,11 @@ DEFAULT_BIAS_CFG = {
     # Eccentricity
     "e_max": 0.95,
     "p_circ": 2.26,       # tidal circularization cutoff [days]
-    "split_e_circular": True,  # split e scoring: binomial for circular fraction + test for e>0
+    # e scoring mode (3-way):
+    #   "combined"       — single 2-sample test on full e (zeros + nonzeros)
+    #   "split"          — 2-sample test on e>0 + binomial on circular fraction
+    #   "eccentric_only" — 2-sample test on e>0 only; circular fraction ignored
+    "e_score_mode": "split",
 
     # Grid search
     "n_inject_per_star": 100,
@@ -34,6 +38,22 @@ DEFAULT_BIAS_CFG = {
     "sb1_tex": "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb1_solutions.tex",
     "sb2_tex": "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb2_solutions.tex",
     "mass_file": "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv",
+    "rv_dir": "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded/",
+    "sb2_analysis_dir": "/Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR5.0_Combined_perStar_sb2",
+    "ostar_catalog": "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/ostar_catalog.csv",
+    "output_dir": None,           # None -> <base_dir>/bias_grid_results/<preset>/
+
+    # Run shape (former CLI flags)
+    "preset": "D",
+    "n_inject": None,             # None -> preset default
+    "seed": 42,
+    # n_stars_sample (above) doubles as the override: when None at runtime
+    # the loader sets it to len(star_df).
+    "detect_method": "pipeline",  # pipeline | rv_threshold
+
+    # Parallelism (former CLI flags)
+    "n_workers": None,            # None -> cpu_count - 2
+    "parallel_grid": False,
 }
 
 # =============================================================================
@@ -127,9 +147,9 @@ GRID_PRESETS = {
         "fbin":  np.linspace(0.60, 0.95, 9),
         "n_inject_per_star": 100,
     },
-        "final3_10min2": {  # development iteration — 17×17×11×9 = 28,611 pts, ~10 min
+        "final3_10min2": {  # 17×33×11×11 = 67,881 pts, ~20 min (kappa extended to 0.70)
         "pi":    np.linspace(-0.60, -0.30, 17),
-        "kappa": np.linspace(-0.30, 0.20, 17),
+        "kappa": np.linspace(-0.30, 0.70, 33),
         "eta":   np.linspace(-0.60, 0.0, 11),
         "fbin":  np.linspace(0.5, 0.8, 11),
         "n_inject_per_star": 100,

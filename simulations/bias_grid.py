@@ -17,10 +17,14 @@ import time
 import logging
 import argparse
 import itertools
+import warnings
 import yaml
 import numpy as np
 import pandas as pd
 from scipy.stats import ks_2samp, anderson_ksamp, cramervonmises_2samp, binom
+
+# numpy 2.x renamed trapz -> trapezoid
+_trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 
 from numba import njit
 
@@ -144,7 +148,9 @@ def _ks_pvalue(obs, sim):
 
 
 def _ad_pvalue(obs, sim):
-    return anderson_ksamp([obs, sim]).pvalue
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return anderson_ksamp([obs, sim]).pvalue
 
 
 def _cvm_pvalue(obs, sim):
@@ -154,21 +160,48 @@ def _cvm_pvalue(obs, sim):
 _ALL_TESTS = {"ks": _ks_pvalue, "ad": _ad_pvalue, "cvm": _cvm_pvalue}
 
 
+_E_SCORE_MODES = ("combined", "split", "eccentric_only")
+
+
+def _resolve_e_score_mode(cfg):
+    """Pick the eccentricity scoring mode from a config dict.
+
+    Accepts the new ``e_score_mode`` key (string enum) and falls back
+    to the legacy boolean ``split_e_circular`` (True → "split",
+    False → "combined") for old YAMLs and seed run-config snapshots.
+    Defaults to "combined" if neither is present.
+    """
+    if "e_score_mode" in cfg:
+        mode = cfg["e_score_mode"]
+    elif "split_e_circular" in cfg:
+        mode = "split" if cfg["split_e_circular"] else "combined"
+    else:
+        mode = "combined"
+    if mode not in _E_SCORE_MODES:
+        raise ValueError(
+            "e_score_mode must be one of %s, got %r" % (_E_SCORE_MODES, mode))
+    return mode
+
+
 # ---------------------------------------------------------------------------
 # Pure scoring (used by both forward and resume paths, picklable for workers)
 # ---------------------------------------------------------------------------
 
 def _make_scoring_ctx(obs_logP, obs_e, obs_K1, clip_range,
-                      split_e_circular, obs_e_cont,
+                      e_score_mode, obs_e_cont,
                       n_obs_circ, n_obs_e_total,
                       N_det_obs, N_stars):
     """Bundle the per-run constants that every grid-point score needs."""
+    if e_score_mode not in _E_SCORE_MODES:
+        raise ValueError(
+            "e_score_mode must be one of %s, got %r" %
+            (_E_SCORE_MODES, e_score_mode))
     return {
         "obs_logP": np.asarray(obs_logP),
         "obs_e": np.asarray(obs_e),
         "obs_K1": np.asarray(obs_K1),
         "clip_range": clip_range,
-        "split_e_circular": bool(split_e_circular),
+        "e_score_mode": e_score_mode,
         "obs_e_cont": np.asarray(obs_e_cont) if obs_e_cont is not None
                       else None,
         "n_obs_circ": int(n_obs_circ) if n_obs_circ is not None else 0,
@@ -210,26 +243,29 @@ def _compute_scores(res, ctx):
         p_binom = 0.0
 
     out = {"p_binom": p_binom}
-    split = ctx["split_e_circular"]
+    mode = ctx["e_score_mode"]
     for tname, tfn in _ALL_TESTS.items():
         p_logP = _safe_pvalue(tfn, ctx["obs_logP"], sim_clipped["logP"])
         p_K1 = _safe_pvalue(tfn, ctx["obs_K1"], sim_clipped["K1"],
                             min_samples=3)
-        if split:
-            sim_e_cont = sim_clipped["e"][sim_clipped["e"] > 0]
-            p_e = _safe_pvalue(tfn, ctx["obs_e_cont"], sim_e_cont)
-            n_sim_e = len(sim_clipped["e"])
-            n_sim_circ = int(np.sum(sim_clipped["e"] == 0))
-            f_circ_sim = n_sim_circ / max(n_sim_e, 1)
-            p_e_circ = float(binom.pmf(
-                ctx["n_obs_circ"], ctx["n_obs_e_total"], f_circ_sim
-            )) if n_sim_e > 0 else 0.0
-        else:
+        if mode == "combined":
             p_e = _safe_pvalue(tfn, ctx["obs_e"], sim_clipped["e"])
             p_e_circ = None
+        else:  # "split" or "eccentric_only"
+            sim_e_cont = sim_clipped["e"][sim_clipped["e"] > 0]
+            p_e = _safe_pvalue(tfn, ctx["obs_e_cont"], sim_e_cont)
+            if mode == "split":
+                n_sim_e = len(sim_clipped["e"])
+                n_sim_circ = int(np.sum(sim_clipped["e"] == 0))
+                f_circ_sim = n_sim_circ / max(n_sim_e, 1)
+                p_e_circ = float(binom.pmf(
+                    ctx["n_obs_circ"], ctx["n_obs_e_total"], f_circ_sim
+                )) if n_sim_e > 0 else 0.0
+            else:
+                p_e_circ = None
 
         gmf_pvals = [p_logP, p_e, p_K1, p_binom]
-        if split:
+        if mode == "split":
             gmf_pvals.append(p_e_circ)
         log_gmf = 0.0
         for pv in gmf_pvals:
@@ -242,7 +278,7 @@ def _compute_scores(res, ctx):
         out["%s_p_logP" % tname] = p_logP
         out["%s_p_e" % tname] = p_e
         out["%s_p_K1" % tname] = p_K1
-        if split:
+        if mode == "split":
             out["%s_p_e_circ" % tname] = p_e_circ
         out["log_gmf_%s" % tname] = log_gmf
 
@@ -1204,6 +1240,7 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
                      pi_grid, kappa_grid, eta_grid, fbin_grid,
                      all_results,
                      n_inject_per_star, seed, preset_name,
+                     e_score_mode,
                      global_hists=None):
     """Save intermediate results so a killed run can be resumed.
 
@@ -1222,6 +1259,7 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
         n_inject_per_star=np.array(n_inject_per_star),
         seed=np.array(seed),
         preset_name=np.array(preset_name),
+        e_score_mode=np.array(e_score_mode),
     )
     # All tests
     for tname in _ALL_TESTS:
@@ -1486,7 +1524,7 @@ class GridSearchEngine:
         if n_inject_per_star is None:
             n_inject_per_star = self.cfg.get("n_inject_per_star", 100)
 
-        split_e_circular = self.cfg.get("split_e_circular", False)
+        e_score_mode = _resolve_e_score_mode(self.cfg)
 
         N_det_obs = len(obs_logP)
         N_stars = self.cfg.get("n_stars_sample", len(self.M1_arr))
@@ -1509,7 +1547,7 @@ class GridSearchEngine:
                 "e": np.zeros(shape),
                 "K1": np.zeros(shape),
             }
-            if split_e_circular:
+            if e_score_mode == "split":
                 tc["e_circ"] = np.zeros(shape)
             test_cubes[tname] = tc
             gmf_cubes[tname] = np.full(shape, -np.inf)
@@ -1534,14 +1572,27 @@ class GridSearchEngine:
                      *clip_range["K1"])
 
         # Pre-split observed eccentricities for the circular/continuous
-        # scoring mode (avoids recomputing inside the inner loop).
-        if split_e_circular:
+        # scoring modes (avoids recomputing inside the inner loop).
+        # "split" needs all three; "eccentric_only" only needs obs_e_cont.
+        obs_e_cont = None
+        n_obs_circ = None
+        n_obs_e_total = None
+        if e_score_mode != "combined":
             obs_e_cont = obs_e[obs_e > 0]
-            n_obs_circ = int(np.sum(obs_e == 0))
-            n_obs_e_total = len(obs_e)
-            logger.info("split_e_circular: %d circular (e=0) + %d eccentric "
-                         "out of %d observed",
-                         n_obs_circ, len(obs_e_cont), n_obs_e_total)
+            if e_score_mode == "split":
+                n_obs_circ = int(np.sum(obs_e == 0))
+                n_obs_e_total = len(obs_e)
+                logger.info(
+                    "e_score_mode=split: %d circular (e=0) + %d eccentric "
+                    "out of %d observed",
+                    n_obs_circ, len(obs_e_cont), n_obs_e_total)
+            else:
+                logger.info(
+                    "e_score_mode=eccentric_only: %d eccentric (e>0) of %d "
+                    "observed; circular fraction ignored",
+                    len(obs_e_cont), len(obs_e))
+        else:
+            logger.info("e_score_mode=combined: full e distribution tested")
 
         # Lightweight index: which steps have been processed and their
         # grid indices.  The actual detected arrays live on disk as
@@ -1613,6 +1664,25 @@ class GridSearchEngine:
                             "preset_name: stored=%s current=%s" % (
                                 stored_preset, preset_name))
 
+                # Recover the stored eccentricity-scoring mode. Checkpoints
+                # from before the 3-way switch lack this key — infer it
+                # from the legacy boolean if present, else from the
+                # presence of *_e_circ_cube entries.
+                if "e_score_mode" in ckpt.files:
+                    stored_mode = str(ckpt["e_score_mode"])
+                elif "split_e_circular" in ckpt.files:
+                    stored_mode = ("split"
+                                   if bool(ckpt["split_e_circular"])
+                                   else "combined")
+                else:
+                    has_e_circ = any(("%s_e_circ_cube" % t) in ckpt.files
+                                     for t in _ALL_TESTS)
+                    stored_mode = "split" if has_e_circ else "combined"
+                if stored_mode != e_score_mode:
+                    mismatches.append(
+                        "e_score_mode: stored=%s current=%s" % (
+                            stored_mode, e_score_mode))
+
                 if mismatches:
                     raise RuntimeError(
                         "Checkpoint in %s is incompatible with the current "
@@ -1640,6 +1710,10 @@ class GridSearchEngine:
                             old_key = "ks_%s_cube" % par
                             if old_key in ckpt.files:
                                 test_cubes["ks"][par][:] = ckpt[old_key]
+                    if e_score_mode == "split":
+                        ec_key = "%s_e_circ_cube" % tname
+                        if ec_key in ckpt.files:
+                            test_cubes[tname]["e_circ"][:] = ckpt[ec_key]
                 # Update aliases
                 gmf_cube = gmf_cubes["ks"]
                 ks_logP_cube = test_cubes["ks"]["logP"]
@@ -1686,10 +1760,10 @@ class GridSearchEngine:
         scoring_ctx = _make_scoring_ctx(
             obs_logP=obs_logP, obs_e=obs_e, obs_K1=obs_K1,
             clip_range=clip_range,
-            split_e_circular=split_e_circular,
-            obs_e_cont=obs_e_cont if split_e_circular else None,
-            n_obs_circ=n_obs_circ if split_e_circular else None,
-            n_obs_e_total=n_obs_e_total if split_e_circular else None,
+            e_score_mode=e_score_mode,
+            obs_e_cont=obs_e_cont,
+            n_obs_circ=n_obs_circ,
+            n_obs_e_total=n_obs_e_total,
             N_det_obs=N_det_obs, N_stars=N_stars,
         )
 
@@ -1729,7 +1803,7 @@ class GridSearchEngine:
                     scores["%s_p_e" % tname]
                 test_cubes[tname]["K1"][i, j, k, l] = \
                     scores["%s_p_K1" % tname]
-                if split_e_circular:
+                if e_score_mode == "split":
                     test_cubes[tname]["e_circ"][i, j, k, l] = \
                         scores["%s_p_e_circ" % tname]
                 gmf_cubes[tname][i, j, k, l] = scores["log_gmf_%s" % tname]
@@ -1893,6 +1967,7 @@ class GridSearchEngine:
                     n_inject_per_star=n_inject_per_star,
                     seed=seed,
                     preset_name=preset_name,
+                    e_score_mode=e_score_mode,
                     global_hists={
                         "total": global_hist_total,
                         "det": global_hist_det,
@@ -1991,6 +2066,7 @@ class GridSearchEngine:
                                 n_inject_per_star=n_inject_per_star,
                                 seed=seed,
                                 preset_name=preset_name,
+                                e_score_mode=e_score_mode,
                                 global_hists={
                                     "total": global_hist_total,
                                     "det": global_hist_det,
@@ -2017,6 +2093,7 @@ class GridSearchEngine:
                     n_inject_per_star=n_inject_per_star,
                     seed=seed,
                     preset_name=preset_name,
+                    e_score_mode=e_score_mode,
                     global_hists={
                         "total": global_hist_total,
                         "det": global_hist_det,
@@ -2073,6 +2150,7 @@ class GridSearchEngine:
                         n_inject_per_star=n_inject_per_star,
                         seed=seed,
                         preset_name=preset_name,
+                        e_score_mode=e_score_mode,
                         global_hists={
                             "total": global_hist_total,
                             "det": global_hist_det,
@@ -2121,6 +2199,7 @@ class GridSearchEngine:
             "N_det_obs": len(obs_logP),
             "step_to_ijkl": step_to_ijkl,
             "checkpoint_dir": checkpoint_dir,
+            "e_score_mode": e_score_mode,
             "global_hists": {
                 "total": global_hist_total,
                 "det": global_hist_det,
@@ -2171,7 +2250,7 @@ def plot_grid_results(results, output_dir=None, obs_logP=None, obs_e=None,
 
         # Normalize
         if np.sum(post_1d) > 0 and len(grid) > 1:
-            post_1d /= np.trapz(post_1d, grid)
+            post_1d /= _trapz(post_1d, grid)
 
         ax.fill_between(grid, post_1d, alpha=0.3, color=color)
         ax.plot(grid, post_1d, color=color, lw=2)
@@ -2419,6 +2498,7 @@ def aggregate_tasks(base_dir, output_dir=None):
     merged_hist_det = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS))
                        for pair in _HIST_PAIRS}
     has_detected = False
+    merged_e_score_mode = None
 
     for td in task_dirs:
         npz_path = os.path.join(td, "checkpoint_cubes.npz")
@@ -2428,6 +2508,21 @@ def aggregate_tasks(base_dir, output_dir=None):
             continue
 
         ckpt = np.load(npz_path, allow_pickle=True)
+
+        # Track scoring mode across tasks — flag if SLURM tasks were
+        # somehow run with different settings.
+        if "e_score_mode" in ckpt.files:
+            this_mode = str(ckpt["e_score_mode"])
+        else:
+            has_e_circ = any(("%s_e_circ_cube" % t) in ckpt.files
+                             for t in _ALL_TESTS)
+            this_mode = "split" if has_e_circ else "combined"
+        if merged_e_score_mode is None:
+            merged_e_score_mode = this_mode
+        elif this_mode != merged_e_score_mode:
+            logger.warning(
+                "Task %s e_score_mode=%s differs from %s; merge may be "
+                "inconsistent", td, this_mode, merged_e_score_mode)
 
         # Merge cubes: each task only fills its own cells.
         pdet_cube += ckpt["pdet_cube"]
@@ -2448,7 +2543,7 @@ def aggregate_tasks(base_dir, output_dir=None):
                     old_key = "ks_%s_cube" % par
                     if old_key in ckpt.files:
                         test_cubes_agg["ks"][par] += ckpt[old_key]
-            # e_circ cube (split_e_circular mode)
+            # e_circ cube (only present when e_score_mode == "split")
             ec_key = "%s_e_circ_cube" % tname
             if ec_key in ckpt.files:
                 if "e_circ" not in test_cubes_agg[tname]:
@@ -2554,6 +2649,7 @@ def aggregate_tasks(base_dir, output_dir=None):
         "ks_logP_cube": test_cubes_agg["ks"]["logP"],
         "ks_e_cube": test_cubes_agg["ks"]["e"],
         "ks_K1_cube": test_cubes_agg["ks"]["K1"],
+        "e_score_mode": merged_e_score_mode or "combined",
     }
 
     # Save merged output.
@@ -2565,6 +2661,7 @@ def aggregate_tasks(base_dir, output_dir=None):
         kappa_grid=kappa_grid,
         eta_grid=eta_grid,
         fbin_grid=fbin_grid,
+        e_score_mode=np.array(merged_e_score_mode or "combined"),
     )
     for tname in _ALL_TESTS:
         save_kw_cubes["gmf_%s_cube" % tname] = gmf_cubes_agg[tname]
@@ -2627,7 +2724,139 @@ def _bloem_id_root(star_id):
     return s.strip()
 
 
-def load_observed_star_properties(mass_file, rv_dir, sb1_tex, sb2_tex):
+def _load_sb2_rv_from_analysis_dir(sb2_base_dir, star_key):
+    """Load primary-component RVs from BLOeM_DR5 sb2_analysis output.
+
+    Looks under ``<sb2_base_dir>/BLOeM_<star_key>/sb2_analysis/`` and
+    selects the latest ``YYYYMMDD_HHMMSS`` subdirectory (lexicographic
+    sort == chronological for that format). Priority chain:
+    ``rv_final_for_mcmc.csv`` → ``rv_corrected.csv`` (post
+    gamma-crossing correction) → ``rv_extracted.csv`` (pre-correction,
+    last resort).
+
+    Returns
+    -------
+    dict or None
+        ``{"mjds": np.ndarray, "rv_err": float, "gamma": float,
+        "source": "sb2_final" | "sb2_corrected" | "sb2_extracted"}``
+        on success, ``None`` on any failure.
+    """
+    star_dir = os.path.join(sb2_base_dir, "BLOeM_%s" % star_key)
+    sb2_dir = os.path.join(star_dir, "sb2_analysis")
+    if not os.path.isdir(sb2_dir):
+        return None
+    try:
+        timestamps = [d for d in os.listdir(sb2_dir)
+                      if os.path.isdir(os.path.join(sb2_dir, d))]
+        if not timestamps:
+            return None
+        latest = max(timestamps)
+        data_dir = os.path.join(sb2_dir, latest, "data")
+        for fname, source in (("rv_final_for_mcmc.csv", "sb2_final"),
+                              ("rv_corrected.csv", "sb2_corrected"),
+                              ("rv_extracted.csv", "sb2_extracted")):
+            csv_path = os.path.join(data_dir, fname)
+            if not os.path.isfile(csv_path):
+                continue
+            df = pd.read_csv(csv_path, comment="#")
+            if not {"rv1", "rv1_err", "mjd"}.issubset(df.columns):
+                continue
+            return {
+                "mjds": df["mjd"].values,
+                "rv_err": float(df["rv1_err"].median()),
+                "gamma": float(df["rv1"].median()),
+                "source": source,
+            }
+        return None
+    except Exception:
+        return None
+
+
+_LUMCLASS_RE = re.compile(
+    # Order: longest tokens first so 'III' wins over 'II' and 'IV' over 'I'.
+    r"O\s*(\d+(?:\.\d+)?)\s*"
+    r"(Iaf\+?|Iab|Iaf|Ia|Ib|III|IV|II|I|V)?"
+)
+
+
+def _parse_spectral_type(sp_str):
+    """Parse a BLOeM spectral type into ``(subclass_num, lum_class)``.
+
+    Picks the first ``O<N> <LUMCLASS>`` token, so composite/SB2 strings
+    like ``'O7.5 V: + O9.5 neb'`` resolve to the primary ``(7.5, 'V')``.
+    Returns ``(None, None)`` if no O-type subclass can be parsed.
+    """
+    if sp_str is None or (isinstance(sp_str, float) and pd.isna(sp_str)):
+        return (None, None)
+    m = _LUMCLASS_RE.search(str(sp_str))
+    if not m:
+        return (None, None)
+    subclass = float(m.group(1))
+    lum = m.group(2) or None
+    # Collapse Ia/Iab/Iaf+ into a coarser 'I' bucket so the small number
+    # of supergiants is matchable.
+    if lum and lum.startswith("I") and lum not in ("II", "III", "IV"):
+        lum = "I"
+    return (subclass, lum)
+
+
+def _nearest_spectral_type_mass(target_sp, sp_table):
+    """Find the M, R of the nearest-spectral-type star.
+
+    Parameters
+    ----------
+    target_sp : tuple (subclass, lum_class)
+    sp_table : list of dicts with keys 'key', 'subclass', 'lum', 'M', 'R'.
+        Only stars that have both a parseable spectral type and valid
+        mass/radius should be in this table.
+
+    Returns
+    -------
+    (M, R, match_key) or (None, None, None) on no match.
+    Matching rule: same luminosity class first, then minimum
+    |subclass difference|. If the target has no lum class, match across
+    all entries.
+    """
+    sub, lum = target_sp
+    if sub is None:
+        return (None, None, None)
+    if lum is not None:
+        same_lum = [r for r in sp_table if r["lum"] == lum]
+    else:
+        same_lum = []
+    pool = same_lum or sp_table
+    if not pool:
+        return (None, None, None)
+    best = min(pool, key=lambda r: abs(r["subclass"] - sub))
+    return (best["M"], best["R"], best["key"])
+
+
+def _load_sb2_ids_from_catalog(ostar_catalog_path,
+                               statuses=("SB2", "Higher-order")):
+    """Return the set of BLOeM IDs (cleaned, no 'BLOeM_' prefix) whose
+    ``Binary status`` matches any of ``statuses`` in ``ostar_catalog.csv``.
+
+    SB2 and Higher-order systems are analysed with the SB2 pipeline and
+    have their primary-component RVs in
+    ``sb2_analysis/<latest>/data/rv_*.csv`` — they should be pulled from
+    there rather than from the single-line CCF output.
+
+    Returns an empty set on any failure (caller falls back to CCF-only).
+    """
+    if not ostar_catalog_path or not os.path.isfile(ostar_catalog_path):
+        return set()
+    try:
+        cat = pd.read_csv(ostar_catalog_path)
+        status_col = cat["Binary status"].astype(str).str.strip()
+        sel = cat.loc[status_col.isin(statuses), "BLOeM ID"]
+        return set(s.replace("BLOeM_", "").strip() for s in sel.astype(str))
+    except Exception:
+        return set()
+
+
+def load_observed_star_properties(mass_file, rv_dir, sb1_tex, sb2_tex,
+                                  sb2_analysis_dir=None,
+                                  ostar_catalog=None):
     """Build the bias-grid star sample from the SB1+SB2 LaTeX tables.
 
     Returns one row per detected binary in the LaTeX tables (~71 entries),
@@ -2660,8 +2889,24 @@ def load_observed_star_properties(mass_file, rv_dir, sb1_tex, sb2_tex):
             base = os.path.basename(f).replace("_CCF_RVs.csv", "")
             csv_by_id[base.replace("BLOeM_", "")] = f
 
+    # SB2 ids from the O-star catalog: these stars' RVs always come from
+    # rv_final_for_mcmc.csv (rv1/rv1_err) under sb2_analysis_dir.
+    sb2_ids = _load_sb2_ids_from_catalog(ostar_catalog)
+
+    def _field_from_mjds(star_mjds):
+        best_field = 0
+        best_overlap = 0
+        for fi, fld_mjds in enumerate(BLOEM_MJD_ARRAYS):
+            overlap = sum(1 for m in star_mjds
+                          if any(abs(m - fm) < 0.5 for fm in fld_mjds))
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_field = fi
+        return best_field
+
     rows = []
     n_csv_hit = 0
+    n_sb2_hit = 0
     n_mass_hit = 0
     for _, b in obs_binaries.iterrows():
         sid_raw = str(b["star_id"])
@@ -2677,32 +2922,42 @@ def load_observed_star_properties(mass_file, rv_dir, sb1_tex, sb2_tex):
             M1 = M1_med
             R1 = R1_med
 
-        # rv_err / gamma / field from CSV (defaults if missing).
-        csv_path = csv_by_id.get(sid)
-        if csv_path is not None:
-            try:
-                rv_df = pd.read_csv(csv_path)
-                rv_err = float(rv_df["Mean RVsig"].median())
-                gamma_csv = float(rv_df["Mean RV"].median())
-                star_mjds = rv_df["MJD"].values
-                best_field = 0
-                best_overlap = 0
-                for fi, fld_mjds in enumerate(BLOEM_MJD_ARRAYS):
-                    overlap = sum(1 for m in star_mjds
-                                  if any(abs(m - fm) < 0.5
-                                         for fm in fld_mjds))
-                    if overlap > best_overlap:
-                        best_overlap = overlap
-                        best_field = fi
-                n_csv_hit += 1
-            except Exception:
+        # Resolve rv_err / gamma / field.
+        rv_err = None
+        gamma_csv = None
+        best_field = 0
+        source = "default"
+
+        if sid in sb2_ids and sb2_analysis_dir:
+            info = _load_sb2_rv_from_analysis_dir(sb2_analysis_dir, sid)
+            if info is not None:
+                rv_err = info["rv_err"]
+                gamma_csv = info["gamma"]
+                best_field = _field_from_mjds(info["mjds"])
+                source = info["source"]
+                n_sb2_hit += 1
+            else:
+                logger.warning("load_observed_star_properties: SB2 star "
+                               "%s flagged in catalog but no usable "
+                               "rv_final_for_mcmc.csv / rv_extracted.csv "
+                               "under %s", sid, sb2_analysis_dir)
+
+        if rv_err is None:
+            csv_path = csv_by_id.get(sid)
+            if csv_path is not None:
+                try:
+                    rv_df = pd.read_csv(csv_path)
+                    rv_err = float(rv_df["Mean RVsig"].median())
+                    gamma_csv = float(rv_df["Mean RV"].median())
+                    best_field = _field_from_mjds(rv_df["MJD"].values)
+                    source = "ccf"
+                    n_csv_hit += 1
+                except Exception:
+                    rv_err = 2.0
+                    gamma_csv = float(b.get("gamma", 168.0))
+            else:
                 rv_err = 2.0
                 gamma_csv = float(b.get("gamma", 168.0))
-                best_field = 0
-        else:
-            rv_err = 2.0
-            gamma_csv = float(b.get("gamma", 168.0))
-            best_field = 0
 
         # Prefer the orbital-solution gamma from the LaTeX table when
         # available; fall back to the per-CSV median.
@@ -2717,115 +2972,257 @@ def load_observed_star_properties(mass_file, rv_dir, sb1_tex, sb2_tex):
             "field": best_field,
             "rv_err": rv_err,
             "gamma": gamma,
+            "source": source,
         })
 
     df = pd.DataFrame(rows)
     logger.info("load_observed_star_properties: %d stars built "
-                "(mass-file hits: %d, csv hits: %d)",
-                len(df), n_mass_hit, n_csv_hit)
+                "(mass-file hits: %d, ccf hits: %d, sb2-analysis hits: %d)",
+                len(df), n_mass_hit, n_csv_hit, n_sb2_hit)
     return df
 
 
-def load_star_properties(mass_file, rv_dir=None):
+def load_star_properties(mass_file, rv_dir=None, sb2_analysis_dir=None,
+                         ostar_catalog=None):
     """
-    Load star properties from mass_bloem.csv.
+    Load star properties for the bias-grid injection sample.
 
-    Returns DataFrame with columns: ID, Mspec, R_star, field, rv_err, gamma.
+    When ``ostar_catalog`` is provided, the iteration universe is the
+    catalog (134 stars) — every catalog star gets considered. M, R are
+    pulled from ``mass_bloem.csv`` when available; otherwise from the
+    nearest-spectral-type catalog star that does have a mass fit (same
+    luminosity class + closest subclass number), then from the sample
+    median as a last resort.
+
+    RV resolution per star:
+        - If ``Binary status == "SB2"``: pull rv1/rv1_err/mjd from the
+          latest ``sb2_analysis/<timestamp>/data/rv_final_for_mcmc.csv``
+          (fall back to ``rv_extracted.csv`` if absent).
+        - Else: use ``<rv_dir>/BLOeM_<id>_CCF_RVs.csv``.
+
+    Returns
+    -------
+    DataFrame with columns:
+        ID, Mspec, R_star, field, rv_err, gamma, source, mass_source.
+    ``source`` ∈ {"ccf", "sb2_final", "sb2_extracted"}.
+    ``mass_source`` ∈ {"mass_bloem", "spectral_type", "median"}.
     """
     massdf = pd.read_csv(mass_file)
+    massdf["_key"] = massdf["ID"].astype(str).str.replace(
+        "BLOeM_", "", regex=False)
 
-    # If rv_dir is provided, load per-star RV errors and gamma from CSVs
-    if rv_dir and os.path.isdir(rv_dir):
-        import glob
-        rv_files = glob.glob(os.path.join(rv_dir, "*_CCF_RVs.csv"))
-        rv_info = {}
-        rv_files_by_key = {}  # remember source path for each key
-        for f in rv_files:
-            base = os.path.basename(f).replace("_CCF_RVs.csv", "")
-            # Normalize: strip BLOeM_ prefix so the key matches the
-            # mass-file ID after its own BLOeM_ strip below.
-            star = base.replace("BLOeM_", "")
-            try:
-                df = pd.read_csv(f)
-                rv_info[star] = {
-                    "rv_err": df["Mean RVsig"].median(),
-                    "gamma": df["Mean RV"].median(),
-                    "field": None,  # will be assigned by MJD matching
-                }
-                rv_files_by_key[star] = f
-            except Exception:
+    if not (rv_dir and os.path.isdir(rv_dir)):
+        raise RuntimeError(
+            "rv_dir is required so per-star MJDs/rv_err/gamma are loaded "
+            "from real CCF outputs.")
+
+    import glob
+    rv_files = glob.glob(os.path.join(rv_dir, "*_CCF_RVs.csv"))
+    rv_info = {}
+    rv_files_by_key = {}  # remember source path for each key
+    for f in rv_files:
+        base = os.path.basename(f).replace("_CCF_RVs.csv", "")
+        star = base.replace("BLOeM_", "")
+        try:
+            df = pd.read_csv(f)
+            rv_info[star] = {
+                "rv_err": float(df["Mean RVsig"].median()),
+                "gamma": float(df["Mean RV"].median()),
+                "field": None,
+            }
+            rv_files_by_key[star] = f
+        except Exception:
+            continue
+
+    # Match CCF stars to fields by MJD-array overlap.
+    for star, info in rv_info.items():
+        try:
+            df = pd.read_csv(rv_files_by_key[star])
+            star_mjds = df["MJD"].values
+            best_field = 0
+            best_overlap = 0
+            for fi, fld_mjds in enumerate(BLOEM_MJD_ARRAYS):
+                overlap = sum(1 for m in star_mjds
+                             if any(abs(m - fm) < 0.5
+                                    for fm in fld_mjds))
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_field = fi
+            info["field"] = best_field
+        except Exception:
+            info["field"] = 0
+
+    def _field_from_mjds(star_mjds):
+        best_field = 0
+        best_overlap = 0
+        for fi, fld_mjds in enumerate(BLOEM_MJD_ARRAYS):
+            overlap = sum(1 for m in star_mjds
+                          if any(abs(m - fm) < 0.5 for fm in fld_mjds))
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_field = fi
+        return best_field
+
+    # Sample medians: robust prior for stars whose individual mass fit
+    # is broken or absent.
+    M1_med = float(massdf["Mspec"].median())
+    R1_med = float(massdf["R_star"].median())
+
+    # Per-mass-file lookup.
+    massdf_indexed = massdf.set_index("_key")
+
+    # Catalog-driven iteration when a catalog is supplied; otherwise
+    # fall back to mass_bloem iteration (legacy behaviour).
+    if ostar_catalog and os.path.isfile(ostar_catalog):
+        cat = pd.read_csv(ostar_catalog)
+        cat["_key"] = cat["BLOeM ID"].astype(str).str.replace(
+            "BLOeM_", "", regex=False).str.strip()
+        cat["_status"] = cat["Binary status"].astype(str).str.strip()
+        cat["_sp_parsed"] = cat["Spectral type"].apply(_parse_spectral_type)
+        # SB2 + Higher-order systems both use the SB2 pipeline output
+        # (sb2_analysis/.../rv_*.csv) for their primary-component RVs.
+        sb2_ids = set(cat.loc[cat["_status"].isin(("SB2", "Higher-order")),
+                              "_key"])
+        # Build the spectral-type lookup table: catalog stars that have
+        # a valid mass_bloem entry and a parseable spectral type.
+        sp_table = []
+        for _, crow in cat.iterrows():
+            ckey = crow["_key"]
+            sub, lum = crow["_sp_parsed"]
+            if sub is None or ckey not in massdf_indexed.index:
                 continue
+            M_b = float(massdf_indexed.loc[ckey, "Mspec"])
+            R_b = float(massdf_indexed.loc[ckey, "R_star"])
+            if M_b < 5 or M_b > 120 or R_b < 2 or R_b > 30:
+                continue
+            sp_table.append({"key": ckey, "subclass": sub, "lum": lum,
+                             "M": M_b, "R": R_b})
+        iter_keys = list(cat["_key"])
+        sp_by_key = dict(zip(cat["_key"], cat["_sp_parsed"]))
+    else:
+        sb2_ids = set()
+        sp_table = []
+        sp_by_key = {}
+        iter_keys = list(massdf["_key"])
 
-        # Match stars to fields by closest MJD array
-        for star, info in rv_info.items():
-            try:
-                df = pd.read_csv(rv_files_by_key[star])
-                star_mjds = df["MJD"].values
-                best_field = 0
-                best_overlap = 0
-                for fi, fld_mjds in enumerate(BLOEM_MJD_ARRAYS):
-                    overlap = sum(1 for m in star_mjds
-                                 if any(abs(m - fm) < 0.5
-                                        for fm in fld_mjds))
-                    if overlap > best_overlap:
-                        best_overlap = overlap
-                        best_field = fi
-                info["field"] = best_field
-            except Exception:
-                info["field"] = 0
+    rows = []
+    n_median = 0
+    n_sp_match = 0
+    n_mass_hit = 0
+    n_ccf = 0
+    n_sb2 = 0
+    for star_key in iter_keys:
+        rv_err = None
+        gamma_val = None
+        field_val = None
+        source = None
 
-        # Sample medians used as fallback when an individual star's
-        # spectroscopic mass fit is clearly broken (M1 ~ hundreds of M_sun
-        # or R1 outside O-star range). Median is robust to those outliers,
-        # so it represents a "typical O-star" prior for the broken entries.
-        # This keeps every observed star in the population (consistent
-        # binomial denominator) while preventing nonsense K1 injections.
-        M1_med = float(massdf["Mspec"].median())
-        R1_med = float(massdf["R_star"].median())
+        # SB2 stars: pull from sb2_analysis (primary component).
+        if star_key in sb2_ids and sb2_analysis_dir:
+            info = _load_sb2_rv_from_analysis_dir(sb2_analysis_dir, star_key)
+            if info is not None:
+                rv_err = info["rv_err"]
+                gamma_val = info["gamma"]
+                field_val = _field_from_mjds(info["mjds"])
+                source = info["source"]
+                n_sb2 += 1
+            else:
+                logger.warning("load_star_properties: SB2 star %s flagged "
+                               "in catalog but no usable "
+                               "rv_final_for_mcmc.csv / rv_corrected.csv / "
+                               "rv_extracted.csv under %s", star_key, sb2_analysis_dir)
 
-        # Merge
-        rows = []
-        n_fallback = 0
-        for _, mrow in massdf.iterrows():
-            sid = mrow["ID"]
-            # Try matching by BLOeM ID (e.g. "1-023")
-            star_key = sid.replace("BLOeM_", "") if "BLOeM_" in sid else sid
-            if star_key in rv_info:
-                M1_val = mrow["Mspec"]
-                R1_val = mrow["R_star"]
-                if M1_val < 5 or M1_val > 120 or R1_val < 2 or R1_val > 30:
-                    logger.debug("load_star_properties: %s mass-fit out of "
-                                 "range (M1=%.1f R1=%.1f) -> using sample "
-                                 "median (M1=%.1f R1=%.1f)",
-                                 star_key, M1_val, R1_val, M1_med, R1_med)
-                    M1_val = M1_med
-                    R1_val = R1_med
-                    n_fallback += 1
-                ri = rv_info[star_key]
-                rows.append({
-                    "ID": star_key,
-                    "Mspec": float(M1_val),
-                    "R_star": float(R1_val),
-                    "field": ri["field"],
-                    "rv_err": ri["rv_err"],
-                    "gamma": ri["gamma"],
-                })
+        # Non-SB2 (or SB2 with no analysis dir): CCF RVs.
+        if rv_err is None and star_key in rv_info:
+            ri = rv_info[star_key]
+            rv_err = ri["rv_err"]
+            gamma_val = ri["gamma"]
+            field_val = ri["field"]
+            source = "ccf"
+            n_ccf += 1
 
-        if not rows:
-            raise RuntimeError(
-                "No stars matched between %s and CSV files in %s. "
-                "Check that rv_dir actually contains *_CCF_RVs.csv files "
-                "(e.g. /Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/"
-                "CCF/dr5_neb_div_from_coadded/)." % (mass_file, rv_dir))
-        result = pd.DataFrame(rows)
-        logger.info("load_star_properties: %d stars loaded "
-                    "(%d with median-mass fallback)",
-                     len(result), n_fallback)
-        return result
+        # Last resort: a non-SB2 star may still have an sb2_analysis dir
+        # with rv_corrected.csv (e.g. Higher-order systems analysed with
+        # the SB2 pipeline). Try that before giving up.
+        if rv_err is None and sb2_analysis_dir:
+            info = _load_sb2_rv_from_analysis_dir(sb2_analysis_dir, star_key)
+            if info is not None:
+                rv_err = info["rv_err"]
+                gamma_val = info["gamma"]
+                field_val = _field_from_mjds(info["mjds"])
+                source = info["source"]
+                n_sb2 += 1
 
-    raise RuntimeError(
-        "rv_dir is required so per-star MJDs/rv_err/gamma are loaded "
-        "from real CCF outputs. Pass --rv-dir <path>.")
+        if rv_err is None:
+            # No RV data anywhere — can't simulate this star.
+            continue
+
+        # Mass / radius: prefer mass_bloem, then nearest spectral type,
+        # then sample median.
+        mass_source = None
+        if star_key in massdf_indexed.index:
+            M_val = float(massdf_indexed.loc[star_key, "Mspec"])
+            R_val = float(massdf_indexed.loc[star_key, "R_star"])
+            if 5 <= M_val <= 120 and 2 <= R_val <= 30:
+                mass_source = "mass_bloem"
+                n_mass_hit += 1
+            else:
+                # Broken fit — try spectral-type match before median.
+                target_sp = sp_by_key.get(star_key, (None, None))
+                M_sp, R_sp, match_key = _nearest_spectral_type_mass(
+                    target_sp, sp_table)
+                if M_sp is not None:
+                    M_val, R_val = M_sp, R_sp
+                    mass_source = "spectral_type"
+                    n_sp_match += 1
+                    logger.debug("load_star_properties: %s mass-fit broken "
+                                 "-> spectral-type match %s "
+                                 "(M=%.1f R=%.1f)",
+                                 star_key, match_key, M_val, R_val)
+                else:
+                    M_val, R_val = M1_med, R1_med
+                    mass_source = "median"
+                    n_median += 1
+        else:
+            # Not in mass_bloem at all — spectral-type match.
+            target_sp = sp_by_key.get(star_key, (None, None))
+            M_sp, R_sp, match_key = _nearest_spectral_type_mass(
+                target_sp, sp_table)
+            if M_sp is not None:
+                M_val, R_val = M_sp, R_sp
+                mass_source = "spectral_type"
+                n_sp_match += 1
+                logger.info("load_star_properties: %s not in mass_bloem "
+                            "-> spectral-type match %s (M=%.1f R=%.1f)",
+                            star_key, match_key, M_val, R_val)
+            else:
+                M_val, R_val = M1_med, R1_med
+                mass_source = "median"
+                n_median += 1
+
+        rows.append({
+            "ID": star_key,
+            "Mspec": float(M_val),
+            "R_star": float(R_val),
+            "field": field_val,
+            "rv_err": rv_err,
+            "gamma": gamma_val,
+            "source": source,
+            "mass_source": mass_source,
+        })
+
+    if not rows:
+        raise RuntimeError(
+            "No stars resolved. Check rv_dir (%s), sb2_analysis_dir (%s), "
+            "and ostar_catalog (%s)." %
+            (rv_dir, sb2_analysis_dir, ostar_catalog))
+    result = pd.DataFrame(rows)
+    logger.info("load_star_properties: %d stars loaded "
+                "(%d CCF, %d SB2-analysis); "
+                "mass source: %d mass_bloem, %d spectral-type, %d median",
+                len(result), n_ccf, n_sb2,
+                n_mass_hit, n_sp_match, n_median)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2834,56 +3231,16 @@ def load_star_properties(mass_file, rv_dir=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Bias correction grid search (Sana+2012 style).",
+        description="Bias correction grid search (Sana+2012 style). "
+                    "All bias-grid input parameters are read from the "
+                    "'bias_grid' section of the YAML config; only "
+                    "execution / SLURM-task control remains as CLI.",
     )
     parser.add_argument(
         "--config", default="params_bias.yaml",
         help="Path to pipeline config YAML. Default: params_bias.yaml",
     )
-    parser.add_argument(
-        "--output-dir", default=None,
-        help="Output directory for results and plots. If omitted, "
-             "defaults to <base_dir>/bias_grid_results/<preset>/.",
-    )
-    parser.add_argument(
-        "--preset", choices=sorted(GRID_PRESETS.keys()), default="D",
-        help="Named grid preset from bias_config.GRID_PRESETS. "
-             "Default: D (minimum scientifically defensible run).",
-    )
-    parser.add_argument(
-        "--quick", action="store_true",
-        help="Deprecated alias for --preset quick.",
-    )
-    parser.add_argument(
-        "--n-inject", type=int, default=None,
-        help="Override n_inject_per_star for the selected preset.",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42,
-        help="Random seed.",
-    )
-    parser.add_argument(
-        "--sb1-tex", default=None,
-        help="Path to sb1_solutions.tex.",
-    )
-    parser.add_argument(
-        "--sb2-tex", default=None,
-        help="Path to sb2_solutions.tex.",
-    )
-    parser.add_argument(
-        "--mass-file", default=None,
-        help="Path to mass_bloem.csv.",
-    )
-    parser.add_argument(
-        "--rv-dir", default=None,
-        help="Directory with *_CCF_RVs.csv files for per-star RV errors.",
-    )
-    parser.add_argument(
-        "--n-workers", type=int, default=None,
-        help="Parallel workers for per-star inner loop. "
-             "Default: cpu_count - 2.",
-    )
-    # --- SLURM array job support ---
+    # --- SLURM array job support (execution control, not config) ---
     parser.add_argument(
         "--grid-start", type=int, default=None,
         help="First grid-point step index (inclusive) for this SLURM task.",
@@ -2897,31 +3254,7 @@ def main():
         help="Path to directory containing task_*/ subdirs to aggregate. "
              "Skips computation; merges partial results and plots.",
     )
-    parser.add_argument(
-        "--detect-method", choices=sorted(DETECTION_METHODS.keys()),
-        default="pipeline",
-        help="Detection function to use. 'pipeline' = full periodogram + "
-             "lmfit + BICc (slow). 'rv_threshold' = pairwise delta-RV "
-             "significance (fast). Default: pipeline.",
-    )
-    parser.add_argument(
-        "--parallel-grid", action="store_true",
-        help="Parallelize over grid points (one per CPU) instead of "
-             "over stars within each grid point. Useful when each grid "
-             "point is fast (e.g. rv_threshold detection).",
-    )
-    parser.add_argument(
-        "--n-stars-sample", type=int, default=None,
-        help="Override n_stars_sample (binomial denominator). For closure "
-             "tests this must equal the synthetic catalog's n_stars in "
-             "truth_params.yaml. If unset, uses cfg['n_stars_sample'] "
-             "(default 134, the published BLOeM O-star sample).",
-    )
     cli = parser.parse_args()
-
-    # --quick is a deprecated alias for --preset quick
-    if cli.quick:
-        cli.preset = "quick"
 
     # --- Aggregate mode: merge partial SLURM task results and exit ---
     if cli.aggregate:
@@ -2931,18 +3264,51 @@ def main():
         aggregate_tasks(agg_dir)
         return
 
-    # Load pipeline config
+    # Load pipeline config + bias-grid block
     args_dict = load_args(cli.config)
+    bg_cfg = args_dict.get("bias_grid", {}) or {}
 
-    # Load bias config
+    def _bg(key):
+        """Read a bias-grid setting from YAML, falling back to defaults."""
+        if key in bg_cfg and bg_cfg[key] is not None:
+            return bg_cfg[key]
+        return DEFAULT_BIAS_CFG.get(key)
+
+    # Validate preset early so we can fail fast on a bad YAML value.
+    preset_name = _bg("preset")
+    if preset_name not in GRID_PRESETS:
+        raise ValueError(
+            "Unknown preset %r in bias_grid.preset; valid: %s" %
+            (preset_name, sorted(GRID_PRESETS.keys())))
+
+    detect_method = _bg("detect_method")
+    if detect_method not in DETECTION_METHODS:
+        raise ValueError(
+            "Unknown detect_method %r in bias_grid; valid: %s" %
+            (detect_method, sorted(DETECTION_METHODS.keys())))
+
+    e_score_mode_cfg = _bg("e_score_mode")
+    if e_score_mode_cfg not in ("combined", "split", "eccentric_only"):
+        raise ValueError(
+            "Unknown e_score_mode %r in bias_grid; valid: "
+            "combined | split | eccentric_only" % (e_score_mode_cfg,))
+
+    # Load bias config (defaults + YAML overrides for the scoring-related keys).
     cfg = copy.deepcopy(DEFAULT_BIAS_CFG)
+    cfg["e_score_mode"] = e_score_mode_cfg
+    # Drop the legacy boolean so _resolve_e_score_mode uses the new
+    # explicit key without ambiguity.
+    cfg.pop("split_e_circular", None)
 
     # Paths
-    sb1_tex = cli.sb1_tex or cfg["sb1_tex"]
-    sb2_tex = cli.sb2_tex or cfg["sb2_tex"]
-    mass_file = cli.mass_file or cfg["mass_file"]
-    output_dir = cli.output_dir or os.path.join(
-        args_dict.get("base_dir", "."), "bias_grid_results", cli.preset)
+    sb1_tex = _bg("sb1_tex")
+    sb2_tex = _bg("sb2_tex")
+    mass_file = _bg("mass_file")
+    rv_dir = _bg("rv_dir")
+    sb2_analysis_dir = _bg("sb2_analysis_dir")
+    ostar_catalog = _bg("ostar_catalog")
+    output_dir = _bg("output_dir") or os.path.join(
+        args_dict.get("base_dir", "."), "bias_grid_results", preset_name)
 
     # SLURM task mode: per-task subdirectory
     is_task_mode = cli.grid_start is not None
@@ -2963,9 +3329,14 @@ def main():
 
     # 2) Load star properties — use the full O-star catalog (134 stars)
     # so the injection sample represents the entire population, not just
-    # the detected binaries.
+    # the detected binaries. SB2 stars (per ostar_catalog) pull from
+    # rv_final_for_mcmc.csv; everyone else uses *_CCF_RVs.csv.
     logger.info("Loading full star sample from mass catalog...")
-    star_df = load_star_properties(mass_file, cli.rv_dir)
+    star_df = load_star_properties(
+        mass_file, rv_dir,
+        sb2_analysis_dir=sb2_analysis_dir,
+        ostar_catalog=ostar_catalog,
+    )
     logger.info("  %d stars in injection sample", len(star_df))
 
     field_arr = star_df["field"].values
@@ -2982,28 +3353,33 @@ def main():
 
     # n_stars_sample for the binomial denominator. Defaults to the actual
     # number of stars realized in the injection sample (so the binomial is
-    # self-consistent with the population the simulator runs over). CLI
-    # --n-stars-sample overrides for special cases.
-    if cli.n_stars_sample is not None:
-        cfg["n_stars_sample"] = int(cli.n_stars_sample)
+    # self-consistent with the population the simulator runs over). YAML
+    # bias_grid.n_stars_sample overrides for closure tests.
+    n_stars_sample_cfg = bg_cfg.get("n_stars_sample")
+    if n_stars_sample_cfg is not None:
+        cfg["n_stars_sample"] = int(n_stars_sample_cfg)
     else:
         cfg["n_stars_sample"] = len(star_df)
     logger.info("  n_stars_sample for binomial: %d (injection sample: %d)",
                 cfg["n_stars_sample"], len(star_df))
+    logger.info("  e_score_mode: %s", cfg["e_score_mode"])
 
     # 3) Setup grids from the selected preset
-    preset = GRID_PRESETS[cli.preset]
+    preset = GRID_PRESETS[preset_name]
     pi_grid = np.asarray(preset["pi"])
     kappa_grid = np.asarray(preset["kappa"])
     eta_grid = np.asarray(preset["eta"])
     fbin_grid = np.asarray(preset["fbin"])
-    n_inject = cli.n_inject or preset["n_inject_per_star"]
+    n_inject = _bg("n_inject") or preset["n_inject_per_star"]
+    seed = _bg("seed")
+    parallel_grid = bool(_bg("parallel_grid"))
+    n_workers_cfg = _bg("n_workers")
 
     total = len(pi_grid) * len(kappa_grid) * len(eta_grid) * len(fbin_grid)
 
     logger.info("=" * 60)
     logger.info("  Bias Correction Grid Search")
-    logger.info("  Preset: %s", cli.preset)
+    logger.info("  Preset: %s", preset_name)
     logger.info("  Grid: %d×%d×%d×%d = %d points",
                 len(pi_grid), len(kappa_grid), len(eta_grid),
                 len(fbin_grid), total)
@@ -3011,15 +3387,33 @@ def main():
     logger.info("  Stars: %d", len(star_df))
     logger.info("  Observed detections: %d", len(obs['logP']))
     logger.info("  Output: %s", output_dir)
-    logger.info("  Detection method: %s", cli.detect_method)
+    logger.info("  Detection method: %s", detect_method)
     logger.info("=" * 60)
 
     # 3b) Dump the resolved run config to YAML for reproducibility.
-    # Includes the chosen preset (resolved n_inject + grid arrays) and the
-    # full bias_cfg as actually used (defaults + any CLI overrides).
+    # Captures the bias_grid block as actually resolved (YAML + defaults)
+    # plus the selected preset arrays.
     os.makedirs(output_dir, exist_ok=True)
+    resolved_bg = {
+        "sb1_tex": sb1_tex,
+        "sb2_tex": sb2_tex,
+        "mass_file": mass_file,
+        "rv_dir": rv_dir,
+        "sb2_analysis_dir": sb2_analysis_dir,
+        "ostar_catalog": ostar_catalog,
+        "output_dir": output_dir,
+        "preset": preset_name,
+        "n_inject": int(n_inject),
+        "seed": seed,
+        "n_stars_sample": cfg["n_stars_sample"],
+        "e_score_mode": cfg["e_score_mode"],
+        "detect_method": detect_method,
+        "n_workers": n_workers_cfg,
+        "parallel_grid": parallel_grid,
+    }
     run_cfg_yaml = {
-        "preset_name": cli.preset,
+        "config_path": cli.config,
+        "preset_name": preset_name,
         "preset": {
             "n_inject_per_star": int(n_inject),
             "pi": pi_grid.tolist(),
@@ -3027,21 +3421,12 @@ def main():
             "eta": eta_grid.tolist(),
             "fbin": fbin_grid.tolist(),
         },
+        "bias_grid": resolved_bg,
         "bias_cfg": {
             k: (v.tolist() if isinstance(v, np.ndarray) else v)
             for k, v in cfg.items()
         },
-        "cli_overrides": {
-            "config": cli.config,
-            "seed": cli.seed,
-            "sb1_tex": sb1_tex,
-            "sb2_tex": sb2_tex,
-            "mass_file": mass_file,
-            "rv_dir": cli.rv_dir,
-            "detect_method": cli.detect_method,
-            "parallel_grid": bool(cli.parallel_grid),
-            "n_workers": cli.n_workers,
-            "n_inject": cli.n_inject,
+        "slurm": {
             "grid_start": cli.grid_start,
             "grid_end": cli.grid_end,
         },
@@ -3063,18 +3448,18 @@ def main():
         args_dict=args_dict,
         cfg=cfg,
     )
-    engine.detect_method = cli.detect_method
+    engine.detect_method = detect_method
 
-    if cli.parallel_grid:
+    if parallel_grid:
         # In parallel-grid mode, default to cpu_count - 2 workers
         # (each worker handles one grid point).
-        n_workers = cli.n_workers or max(1, os.cpu_count() - 2)
-    elif cli.detect_method != "pipeline" and cli.n_workers is None:
+        n_workers = n_workers_cfg or max(1, os.cpu_count() - 2)
+    elif detect_method != "pipeline" and n_workers_cfg is None:
         n_workers = 1
     else:
-        n_workers = cli.n_workers or max(1, os.cpu_count() - 2)
+        n_workers = n_workers_cfg or max(1, os.cpu_count() - 2)
     logger.info("  Workers: %d (parallel_grid=%s)",
-                n_workers, cli.parallel_grid)
+                n_workers, parallel_grid)
 
     grid_start = cli.grid_start or 0
     grid_end_val = cli.grid_end  # None means all
@@ -3087,13 +3472,13 @@ def main():
         pi_grid, kappa_grid, eta_grid, fbin_grid,
         obs["logP"], obs["e"], obs["K1"],
         n_inject_per_star=n_inject,
-        seed=cli.seed,
+        seed=seed,
         checkpoint_dir=output_dir,
-        preset_name=cli.preset,
+        preset_name=preset_name,
         n_workers=n_workers,
         grid_start=grid_start,
         grid_end=grid_end_val,
-        parallel_grid=cli.parallel_grid,
+        parallel_grid=parallel_grid,
     )
 
     if is_task_mode:
@@ -3113,6 +3498,8 @@ def main():
         eta_grid=eta_grid,
         fbin_grid=fbin_grid,
     )
+    if "e_score_mode" in results:
+        save_kw_cubes["e_score_mode"] = np.array(results["e_score_mode"])
     # All tests
     if "gmf_cubes" in results:
         for tname in _ALL_TESTS:

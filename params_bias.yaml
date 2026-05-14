@@ -1,0 +1,101 @@
+# =============================================================================
+# params_bias.yaml — Lightweight pipeline config for bias correction grid search
+#
+# Reduced settings for fast injection-recovery:
+#   - n_sig_periods: 1 (only top period candidate)
+#   - window_iterations: 10 (fewer permutation iterations)
+#   - n_bootsraps: 50 (fewer bootstraps)
+#   - plot: false (no output plots)
+#   - manual_candidate_periods: [] (no manual periods)
+#
+# Usage:
+#   python -m simulations.bias_grid --config params_bias.yaml
+# =============================================================================
+
+plot: false
+plot_style: "paper"
+random_seed: 562
+manual_candidate_periods: []
+
+# RV-threshold detection (used by bias_grid + closure-generator).
+drv_threshold: 10.0
+significance_threshold: 4.0
+
+# ---- I/O paths (not used directly by bias grid, but needed by pipeline internals) ----
+base_dir:      "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded"
+lmfit_subdir:  &lmfit_subdir  "second_pdc"
+mcmc_subdir:   &mcmc_subdir   "mcmc_out"
+
+pipeline_io:
+  object_list: []
+  mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"
+  use_fwhm: true
+
+# ---- Bias-grid input parameters ----
+# All inputs to `python -m simulations.bias_grid` live here. The only
+# remaining CLI flags are --config, --grid-start, --grid-end, --aggregate
+# (SLURM/orchestration). Defaults come from simulations.bias_config; null
+# means "fall back to default".
+bias_grid:
+  # paths
+  sb1_tex: "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb1_solutions.tex"
+  sb2_tex: "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb2_solutions.tex"
+  mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"
+  rv_dir: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded/"
+  sb2_analysis_dir: "/Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR5.0_Combined_perStar_sb2"
+  ostar_catalog: "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/ostar_catalog.csv"
+  output_dir: null   # null -> <base_dir>/bias_grid_results/<preset>/
+
+  # run shape
+  preset: D
+  n_inject: null            # null -> preset default n_inject_per_star
+  seed: 42
+  n_stars_sample: null      # null -> len(star_df)
+  e_score_mode: split       # combined | split | eccentric_only
+  detect_method: pipeline   # pipeline | rv_threshold
+
+  # parallelism
+  n_workers: null           # null -> cpu_count - 2
+  parallel_grid: false
+
+# ---- Periodogram settings (reduced for speed) ----
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 50
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10
+  run_permutations_ls: true
+  run_permutations_pdc: true
+
+# ---- lmfit search region ----
+lmfit_params:
+  minimization_method: "differential_evolution"
+  search_region:
+    Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
+    GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
+    K1:           {init_value: 200.0,   min_value: 0.0,    max_value: 400.0,   vary: true}
+    OMEGA_rad:    {init_value: 3.14,    min_value: 0.0,    max_value: 6.4,     vary: true}
+    Eccentricity: {init_value: 0.0,     min_value: 0.0,    max_value: 0.9999,  vary: true}
+    T0:           {init_value: 0.0,     min_value: 0.0,    max_value: 0.0,     vary: true}
+    ln_sigmaJ:    {init_value: 0.0,     min_value: -2,     max_value: 4.5,     vary: true}
+
+# ---- MCMC (not used in bias grid, but kept for config loading compatibility) ----
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+  filter_expression: ""
+  field_to_check: "bicc"
+  take_min: true
