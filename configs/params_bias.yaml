@@ -9,7 +9,7 @@
 #   - manual_candidate_periods: [] (no manual periods)
 #
 # Usage:
-#   python -m simulations.bias_grid --config params_bias.yaml
+#   python -m simulations.bias_grid --config configs/params_bias.yaml
 # =============================================================================
 
 plot: false
@@ -52,6 +52,12 @@ bias_grid:
   seed: 42
   n_stars_sample: null      # null -> len(star_df)
   e_score_mode: split       # combined | split | eccentric_only
+  # Drop short-period systems likely depleted by mergers from the period
+  # CDF goodness-of-fit. Diagnostic (simulations.logP_inflection_check)
+  # placed the elbow at logP ≈ 0.54 (P ≈ 3.5 d) for the current sample.
+  logP_cutoff_mode: none           # none | numerical | manual
+  logP_cutoff_value: null          # used iff mode == "manual"
+  logP_cutoff_smooth_sigma: 0.15   # used iff mode == "numerical"
   detect_method: pipeline   # pipeline | rv_threshold
 
   # parallelism

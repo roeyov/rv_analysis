@@ -1,0 +1,100 @@
+# =============================================================================
+# params_bias_astro3.yaml — Pipeline config for bias_grid on astro3.tau.ac.il
+#
+# Mirrors params_bias.yaml but with absolute paths under /jonathan_storage/roeyovadia/.
+# Tilde paths are NOT expanded by bias_grid.py — use absolute paths only.
+#
+# Usage on astro3 (inside the tau_binary env):
+#   cd ~/Scripts
+#   python -m simulations.bias_grid --config configs/params_bias_astro3.yaml
+# =============================================================================
+
+plot: false
+plot_style: "paper"
+random_seed: 562
+manual_candidate_periods: []
+
+# RV-threshold detection (used by bias_grid + closure-generator).
+drv_threshold: 10.0
+significance_threshold: 4.0
+
+# ---- I/O paths (astro3) ----
+base_dir:      "/jonathan_storage/roeyovadia/bias_grid_results"
+lmfit_subdir:  &lmfit_subdir  "second_pdc"
+mcmc_subdir:   &mcmc_subdir   "mcmc_out"
+
+pipeline_io:
+  object_list: []
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  use_fwhm: true
+
+# ---- Bias-grid input parameters ----
+bias_grid:
+  # paths (synced from local via sync_astro3.sh)
+  sb1_tex: "/jonathan_storage/roeyovadia/tables/sb1_solutions.tex"
+  sb2_tex: "/jonathan_storage/roeyovadia/tables/sb2_solutions.tex"
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  rv_dir: "/jonathan_storage/roeyovadia/data/rv_csvs/"
+  sb2_analysis_dir: "/jonathan_storage/roeyovadia/data/sb2_per_star"
+  ostar_catalog: "/jonathan_storage/roeyovadia/tables/ostar_catalog.csv"
+  output_dir: "/jonathan_storage/roeyovadia/bias_grid_results/final3_2hr/"
+
+  # run shape
+  preset: final3_2hr
+  n_inject: null
+  seed: 42
+  n_stars_sample: null
+  e_score_mode: eccentric_only              # combined | split | eccentric_only
+  # Drop short-period mergers from the period CDF goodness-of-fit.
+  # Diagnostic places the elbow at logP ≈ 0.54 (P ≈ 3.5 d) for this sample.
+  logP_cutoff_mode: none           # none | numerical | manual
+  logP_cutoff_value: null          # used iff mode == "manual"
+  logP_cutoff_smooth_sigma: 0.15   # used iff mode == "numerical"
+  detect_method: rv_threshold
+
+  # parallelism — null lets bias_grid pick cpu_count - 2.
+  # On a shared box, set this explicitly to a polite fraction of `nproc`.
+  n_workers: null
+  parallel_grid: true
+
+# ---- Periodogram settings (reduced for speed) ----
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 50
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10
+  run_permutations_ls: true
+  run_permutations_pdc: true
+
+# ---- lmfit search region ----
+lmfit_params:
+  minimization_method: "differential_evolution"
+  search_region:
+    Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
+    GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
+    K1:           {init_value: 200.0,   min_value: 0.0,    max_value: 400.0,   vary: true}
+    OMEGA_rad:    {init_value: 3.14,    min_value: 0.0,    max_value: 6.4,     vary: true}
+    Eccentricity: {init_value: 0.0,     min_value: 0.0,    max_value: 0.9999,  vary: true}
+    T0:           {init_value: 0.0,     min_value: 0.0,    max_value: 0.0,     vary: true}
+    ln_sigmaJ:    {init_value: 0.0,     min_value: -2,     max_value: 4.5,     vary: true}
+
+# ---- MCMC (not used in bias grid, kept for config loading compatibility) ----
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+  filter_expression: ""
+  field_to_check: "bicc"
+  take_min: true

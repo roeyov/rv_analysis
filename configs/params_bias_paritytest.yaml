@@ -1,0 +1,60 @@
+# Parity smoke-test config — 3x3x3x3 = 81 points, n_inject=2.
+# Used to validate the worker-side scoring refactor.
+# Output goes to a temp dir under $SCRIPTS_OUT.
+plot: false
+plot_style: "paper"
+random_seed: 562
+manual_candidate_periods: []
+
+drv_threshold: 10.0
+significance_threshold: 4.0
+
+base_dir:      "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded"
+lmfit_subdir:  "second_pdc"
+mcmc_subdir:   "mcmc_out"
+
+pipeline_io:
+  object_list: []
+  mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"
+  use_fwhm: true
+
+bias_grid:
+  sb1_tex: "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb1_solutions.tex"
+  sb2_tex: "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb2_solutions.tex"
+  mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"
+  rv_dir: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded/"
+  sb2_analysis_dir: "/Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR5.0_Combined_perStar_sb2"
+  ostar_catalog: "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/ostar_catalog.csv"
+  output_dir: "/tmp/bias_grid_parity_test/run"
+
+  preset: quick             # 3x3x3x3 = 81 points, n_inject_per_star=2
+  n_inject: null
+  seed: 42
+  n_stars_sample: 30        # small subset for speed
+  e_score_mode: split
+  logP_cutoff_mode: none           # none | numerical | manual
+  logP_cutoff_value: null
+  logP_cutoff_smooth_sigma: 0.15
+  detect_method: rv_threshold
+
+  n_workers: 4
+  parallel_grid: true
+
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 50
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10
+  run_permutations_ls: true
+  run_permutations_pdc: true
+
+lmfit_params:
+  minimization_method: "differential_evolution"

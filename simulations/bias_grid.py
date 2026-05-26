@@ -6,8 +6,8 @@ and power-law shape parameters by comparing simulated detected populations
 to the observed SB1+SB2 sample.
 
 Usage:
-    python -m simulations.bias_grid --config params_bias.yaml
-    python -m simulations.bias_grid --config params_bias.yaml --quick   # 3x3x3x3 test
+    python -m simulations.bias_grid --config configs/params_bias.yaml
+    python -m simulations.bias_grid --config configs/params_bias.yaml --quick   # 3x3x3x3 test
 """
 
 import os
@@ -22,6 +22,7 @@ import yaml
 import numpy as np
 import pandas as pd
 from scipy.stats import ks_2samp, anderson_ksamp, cramervonmises_2samp, binom
+from scipy.ndimage import gaussian_filter1d
 
 # numpy 2.x renamed trapz -> trapezoid
 _trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
@@ -161,6 +162,80 @@ _ALL_TESTS = {"ks": _ks_pvalue, "ad": _ad_pvalue, "cvm": _cvm_pvalue}
 
 
 _E_SCORE_MODES = ("combined", "split", "eccentric_only")
+_LOGP_CUTOFF_MODES = ("none", "numerical", "manual")
+
+
+def _resolve_logP_cutoff_mode(cfg):
+    """Pick the logP cutoff mode from a config dict; default 'none'."""
+    mode = cfg.get("logP_cutoff_mode", "none")
+    if mode not in _LOGP_CUTOFF_MODES:
+        raise ValueError("logP_cutoff_mode must be one of %s, got %r"
+                         % (_LOGP_CUTOFF_MODES, mode))
+    return mode
+
+
+def _numerical_logP_cutoff(obs_logP, smooth_sigma=0.15, n_grid=2000):
+    """First positive→negative zero-crossing of the smoothed CDF's 2nd derivative.
+
+    Builds the empirical CDF of ``obs_logP``, interpolates it onto a
+    uniform grid, applies a Gaussian smoother with width ``smooth_sigma``
+    (in dex of logP), and returns the leftmost logP where
+    ``d^2 CDF / d(logP)^2`` crosses from positive to negative. This is
+    the "elbow" of the CDF — below it the model is contaminated by
+    short-period attrition (mergers / common envelope) that the
+    power-law model does not describe.
+
+    Returns 0.0 if no positive→negative crossing is found, so callers
+    can use the return value as a drop-in lower bound for ``clip_range``.
+    """
+    xs = np.sort(np.asarray(obs_logP, dtype=float))
+    if len(xs) < 4:
+        return 0.0
+    ys = np.arange(1, len(xs) + 1) / len(xs)
+    x_grid = np.linspace(xs.min(), xs.max(), n_grid)
+    cdf_interp = np.interp(x_grid, xs, ys)
+    dx = x_grid[1] - x_grid[0]
+    sigma_pix = smooth_sigma / dx
+    smoothed = gaussian_filter1d(cdf_interp, sigma=sigma_pix, mode="nearest")
+    d1 = np.gradient(smoothed, dx)
+    d2 = np.gradient(d1, dx)
+    sign = np.sign(d2)
+    transitions = np.where((sign[:-1] > 0) & (sign[1:] <= 0))[0]
+    if len(transitions) == 0:
+        return 0.0
+    idx = transitions[0]
+    a, b = d2[idx], d2[idx + 1]
+    frac = a / (a - b) if (a - b) != 0 else 0.0
+    return float(x_grid[idx] + frac * dx)
+
+
+def _compute_logP_cutoff(obs_logP, mode, *, smooth_sigma=0.15,
+                         manual_value=None):
+    """Resolve the lower-bound logP cutoff for the CDF goodness-of-fit.
+
+    Returns 0.0 for ``mode == 'none'`` (preserves backward-compat
+    behavior since 0.0 is also the lower edge of the historical
+    ``clip_range['logP']``). Negative or non-finite cutoffs fall back
+    to 0.0 with a warning — useful when the elbow detector fails on a
+    near-linear CDF.
+    """
+    if mode == "none":
+        return 0.0
+    if mode == "manual":
+        if manual_value is None or not np.isfinite(manual_value):
+            raise ValueError(
+                "logP_cutoff_mode='manual' requires a finite "
+                "logP_cutoff_value in cfg")
+        return float(manual_value)
+    if mode == "numerical":
+        cutoff = _numerical_logP_cutoff(obs_logP, smooth_sigma=smooth_sigma)
+        if not np.isfinite(cutoff) or cutoff <= 0.0:
+            logger.warning(
+                "logP_cutoff_mode='numerical' returned %r (no usable "
+                "elbow at σ=%.2f); falling back to 0.0", cutoff, smooth_sigma)
+            return 0.0
+        return float(cutoff)
+    raise ValueError("Unknown logP_cutoff_mode %r" % mode)
 
 
 def _resolve_e_score_mode(cfg):
@@ -227,14 +302,21 @@ def _compute_scores(res, ctx):
 
     No mutation, no I/O — safe to call from any process.
     """
-    p_det = res["p_det"]
     sim_clipped = {
         "logP": _clip_to_range(res["logP_det"], *ctx["clip_range"]["logP"]),
         "e": _clip_to_range(res["e_det"], *ctx["clip_range"]["e"]),
         "K1": _clip_to_range(res["K1_det"], *ctx["clip_range"]["K1"]),
     }
 
+    # The binomial uses the FULL detection count: p_det is the per-realization
+    # detection probability across all logP, and N_det_obs is the full observed
+    # binary count. The logP cutoff is scoped to the period CDF goodness-of-fit
+    # only (see clip_range["logP"] and ctx["obs_logP"]) — it must not leak into
+    # the count metric, otherwise f_bin gets inflated to compensate for the
+    # below-cutoff binaries that were drawn but never compared.
     n_total_sim = res["n_physical"]
+    p_det = res["p_det"]
+
     if n_total_sim > 0 and p_det > 0:
         p_binom = float(binom.pmf(ctx["N_det_obs"],
                                   ctx["N_stars"],
@@ -1252,6 +1334,8 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
                      all_results,
                      n_inject_per_star, seed, preset_name,
                      e_score_mode,
+                     logP_cutoff_mode="none",
+                     logP_cutoff=0.0,
                      global_hists=None):
     """Save intermediate results so a killed run can be resumed.
 
@@ -1271,6 +1355,8 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
         seed=np.array(seed),
         preset_name=np.array(preset_name),
         e_score_mode=np.array(e_score_mode),
+        logP_cutoff_mode=np.array(logP_cutoff_mode),
+        logP_cutoff=np.array(logP_cutoff),
     )
     # All tests
     for tname in _ALL_TESTS:
@@ -1537,6 +1623,36 @@ class GridSearchEngine:
 
         e_score_mode = _resolve_e_score_mode(self.cfg)
 
+        # Resolve the low-period cutoff before sizing N_det_obs. The cutoff
+        # truncates BOTH observed and simulated period arrays to a common
+        # window so the KS/AD/CvM tests compare conditional CDFs given
+        # P >= 10^cutoff (the regime where the power-law model is valid;
+        # below it the obs sample is contaminated by short-period attrition
+        # that the model does not describe).
+        logP_cutoff_mode = _resolve_logP_cutoff_mode(self.cfg)
+        logP_cutoff = _compute_logP_cutoff(
+            obs_logP, logP_cutoff_mode,
+            smooth_sigma=self.cfg.get("logP_cutoff_smooth_sigma", 0.15),
+            manual_value=self.cfg.get("logP_cutoff_value"),
+        )
+        # The cutoff is scoped to the logP CDF goodness-of-fit only. All
+        # other quantities (binomial on total detection count, KS tests on
+        # e and K1, the e_score_mode circular-fraction counts) consume the
+        # full obs sample. So we build a separate above-cutoff view of
+        # obs_logP for the period test and leave obs_e / obs_K1 / N_det_obs
+        # untouched.
+        if logP_cutoff > 0.0:
+            obs_logP_above = obs_logP[obs_logP >= logP_cutoff]
+            logger.info(
+                "logP_cutoff_mode=%s, cutoff=%.3f (P=%.2f d); logP CDF test "
+                "uses %d/%d obs (binomial + e/K1 tests use all %d)",
+                logP_cutoff_mode, logP_cutoff, 10 ** logP_cutoff,
+                len(obs_logP_above), len(obs_logP), len(obs_logP))
+        else:
+            obs_logP_above = obs_logP
+            logger.info("logP_cutoff_mode=%s, cutoff=0.0 (no truncation)",
+                        logP_cutoff_mode)
+
         N_det_obs = len(obs_logP)
         N_stars = self.cfg.get("n_stars_sample", len(self.M1_arr))
 
@@ -1571,9 +1687,11 @@ class GridSearchEngine:
 
         # Survey-sensitivity bounds for clipping simulated detected arrays.
         # Based on the highest observed detection (not the survey baseline),
-        # so we compare CDFs only where we have constraining power.
+        # so we compare CDFs only where we have constraining power. The
+        # logP lower bound is the inflection cutoff resolved above (0.0
+        # when logP_cutoff_mode='none').
         clip_range = {
-            "logP": (0.0, obs_logP.max()),
+            "logP": (logP_cutoff, obs_logP.max()),
             "e": (0.0, 1.0),
             "K1": (0.0, obs_K1.max()),
         }
@@ -1694,6 +1812,25 @@ class GridSearchEngine:
                         "e_score_mode: stored=%s current=%s" % (
                             stored_mode, e_score_mode))
 
+                # Recover the stored logP cutoff — checkpoints written
+                # before this feature lack both keys; treat that as
+                # "none / 0.0" so old runs remain resumable.
+                stored_logP_mode = (str(ckpt["logP_cutoff_mode"])
+                                    if "logP_cutoff_mode" in ckpt.files
+                                    else "none")
+                stored_logP_cutoff = (float(ckpt["logP_cutoff"])
+                                      if "logP_cutoff" in ckpt.files
+                                      else 0.0)
+                if stored_logP_mode != logP_cutoff_mode:
+                    mismatches.append(
+                        "logP_cutoff_mode: stored=%s current=%s" % (
+                            stored_logP_mode, logP_cutoff_mode))
+                elif not np.isclose(stored_logP_cutoff, logP_cutoff,
+                                    atol=1e-6):
+                    mismatches.append(
+                        "logP_cutoff: stored=%.6f current=%.6f" % (
+                            stored_logP_cutoff, logP_cutoff))
+
                 if mismatches:
                     raise RuntimeError(
                         "Checkpoint in %s is incompatible with the current "
@@ -1768,8 +1905,12 @@ class GridSearchEngine:
         # Build the per-run scoring context once. Both the local
         # _score_and_accumulate (forward path) and the resume re-score
         # workers consume this through _compute_scores.
+        # obs_logP_above is the above-cutoff view; the period KS test
+        # consumes it via ctx["obs_logP"]. obs_e and obs_K1 are the full
+        # observed arrays so their KS tests and the binomial use the
+        # complete 70-system sample.
         scoring_ctx = _make_scoring_ctx(
-            obs_logP=obs_logP, obs_e=obs_e, obs_K1=obs_K1,
+            obs_logP=obs_logP_above, obs_e=obs_e, obs_K1=obs_K1,
             clip_range=clip_range,
             e_score_mode=e_score_mode,
             obs_e_cont=obs_e_cont,
@@ -1979,6 +2120,8 @@ class GridSearchEngine:
                     seed=seed,
                     preset_name=preset_name,
                     e_score_mode=e_score_mode,
+                    logP_cutoff_mode=logP_cutoff_mode,
+                    logP_cutoff=logP_cutoff,
                     global_hists={
                         "total": global_hist_total,
                         "det": global_hist_det,
@@ -2081,6 +2224,8 @@ class GridSearchEngine:
                                 seed=seed,
                                 preset_name=preset_name,
                                 e_score_mode=e_score_mode,
+                                logP_cutoff_mode=logP_cutoff_mode,
+                                logP_cutoff=logP_cutoff,
                                 global_hists={
                                     "total": global_hist_total,
                                     "det": global_hist_det,
@@ -2108,6 +2253,8 @@ class GridSearchEngine:
                     seed=seed,
                     preset_name=preset_name,
                     e_score_mode=e_score_mode,
+                    logP_cutoff_mode=logP_cutoff_mode,
+                    logP_cutoff=logP_cutoff,
                     global_hists={
                         "total": global_hist_total,
                         "det": global_hist_det,
@@ -2165,6 +2312,8 @@ class GridSearchEngine:
                         seed=seed,
                         preset_name=preset_name,
                         e_score_mode=e_score_mode,
+                        logP_cutoff_mode=logP_cutoff_mode,
+                        logP_cutoff=logP_cutoff,
                         global_hists={
                             "total": global_hist_total,
                             "det": global_hist_det,
@@ -2214,6 +2363,8 @@ class GridSearchEngine:
             "step_to_ijkl": step_to_ijkl,
             "checkpoint_dir": checkpoint_dir,
             "e_score_mode": e_score_mode,
+            "logP_cutoff_mode": logP_cutoff_mode,
+            "logP_cutoff": logP_cutoff,
             "global_hists": {
                 "total": global_hist_total,
                 "det": global_hist_det,
@@ -2365,15 +2516,26 @@ def plot_grid_results(results, output_dir=None, obs_logP=None, obs_e=None,
     if best_res is not None and len(best_res["logP_det"]) >= 2:
         fig_cdf, axes_cdf = plt.subplots(1, 3, figsize=(16, 5))
 
+        logP_cutoff = float(results.get("logP_cutoff", 0.0) or 0.0)
+        logP_cutoff_mode = results.get("logP_cutoff_mode", "none")
+
         param_pairs = [
-            ("logP_det", obs_logP, r"$\log_{10}(P/\mathrm{d})$", "#4393c3"),
-            ("e_det", obs_e, "$e$", "#d6604d"),
-            ("K1_det", obs_K1, "$K_1$ [km/s]", "#5aae61"),
+            ("logP_det", obs_logP, r"$\log_{10}(P/\mathrm{d})$", "#4393c3",
+             logP_cutoff),
+            ("e_det", obs_e, "$e$", "#d6604d", 0.0),
+            ("K1_det", obs_K1, "$K_1$ [km/s]", "#5aae61", 0.0),
         ]
 
-        for ax, (key, obs_arr, xlabel, color) in zip(axes_cdf, param_pairs):
-            sim = np.sort(best_res[key])
-            obs_s = np.sort(obs_arr)
+        for ax, (key, obs_arr, xlabel, color, lo) in zip(axes_cdf,
+                                                          param_pairs):
+            # When a lower cutoff is active (only logP), restrict both obs
+            # and sim arrays before building the empirical CDF. ks_2samp
+            # already renormalizes from the truncated samples, so this is
+            # the same conditional view the scorer compared.
+            sim_raw = np.asarray(best_res[key])
+            obs_raw = np.asarray(obs_arr)
+            sim = np.sort(sim_raw[sim_raw >= lo]) if lo > 0 else np.sort(sim_raw)
+            obs_s = np.sort(obs_raw[obs_raw >= lo]) if lo > 0 else np.sort(obs_raw)
 
             # Empirical CDF
             sim_cdf = np.arange(1, len(sim) + 1) / len(sim)
@@ -2384,6 +2546,10 @@ def plot_grid_results(results, output_dir=None, obs_logP=None, obs_e=None,
             ax.step(sim, sim_cdf, where="post", color=color, lw=2,
                     ls="--",
                     label=f"Simulated (n={len(sim)})")
+
+            if lo > 0:
+                ax.axvline(lo, color="0.4", lw=1.2, ls=":",
+                           label=f"cutoff = {lo:.3f}\n({logP_cutoff_mode})")
 
             # KS p-value annotation
             ks_key = {"logP_det": "ks_p_logP", "e_det": "ks_p_e",
@@ -2513,6 +2679,8 @@ def aggregate_tasks(base_dir, output_dir=None):
                        for pair in _HIST_PAIRS}
     has_detected = False
     merged_e_score_mode = None
+    merged_logP_cutoff_mode = None
+    merged_logP_cutoff = None
 
     for td in task_dirs:
         npz_path = os.path.join(td, "checkpoint_cubes.npz")
@@ -2537,6 +2705,24 @@ def aggregate_tasks(base_dir, output_dir=None):
             logger.warning(
                 "Task %s e_score_mode=%s differs from %s; merge may be "
                 "inconsistent", td, this_mode, merged_e_score_mode)
+
+        # Same check for the logP cutoff. Pre-feature checkpoints lack
+        # both keys → treat as "none" / 0.0.
+        this_logP_mode = (str(ckpt["logP_cutoff_mode"])
+                          if "logP_cutoff_mode" in ckpt.files else "none")
+        this_logP_cutoff = (float(ckpt["logP_cutoff"])
+                            if "logP_cutoff" in ckpt.files else 0.0)
+        if merged_logP_cutoff_mode is None:
+            merged_logP_cutoff_mode = this_logP_mode
+            merged_logP_cutoff = this_logP_cutoff
+        elif (this_logP_mode != merged_logP_cutoff_mode
+              or not np.isclose(this_logP_cutoff, merged_logP_cutoff,
+                                atol=1e-6)):
+            logger.warning(
+                "Task %s logP_cutoff_mode=%s, cutoff=%.4f differs from "
+                "%s, %.4f; merge may be inconsistent",
+                td, this_logP_mode, this_logP_cutoff,
+                merged_logP_cutoff_mode, merged_logP_cutoff)
 
         # Merge cubes: each task only fills its own cells.
         pdet_cube += ckpt["pdet_cube"]
@@ -2676,6 +2862,9 @@ def aggregate_tasks(base_dir, output_dir=None):
         eta_grid=eta_grid,
         fbin_grid=fbin_grid,
         e_score_mode=np.array(merged_e_score_mode or "combined"),
+        logP_cutoff_mode=np.array(merged_logP_cutoff_mode or "none"),
+        logP_cutoff=np.array(merged_logP_cutoff
+                             if merged_logP_cutoff is not None else 0.0),
     )
     for tname in _ALL_TESTS:
         save_kw_cubes["gmf_%s_cube" % tname] = gmf_cubes_agg[tname]
@@ -3251,8 +3440,8 @@ def main():
                     "execution / SLURM-task control remains as CLI.",
     )
     parser.add_argument(
-        "--config", default="params_bias.yaml",
-        help="Path to pipeline config YAML. Default: params_bias.yaml",
+        "--config", default="configs/params_bias.yaml",
+        help="Path to pipeline config YAML. Default: configs/params_bias.yaml",
     )
     # --- SLURM array job support (execution control, not config) ---
     parser.add_argument(
@@ -3307,9 +3496,22 @@ def main():
             "Unknown e_score_mode %r in bias_grid; valid: "
             "combined | split | eccentric_only" % (e_score_mode_cfg,))
 
+    logP_cutoff_mode_cfg = _bg("logP_cutoff_mode")
+    if logP_cutoff_mode_cfg not in _LOGP_CUTOFF_MODES:
+        raise ValueError(
+            "Unknown logP_cutoff_mode %r in bias_grid; valid: %s"
+            % (logP_cutoff_mode_cfg, " | ".join(_LOGP_CUTOFF_MODES)))
+    if logP_cutoff_mode_cfg == "manual" and _bg("logP_cutoff_value") is None:
+        raise ValueError(
+            "logP_cutoff_mode='manual' requires bias_grid.logP_cutoff_value "
+            "to be set in the YAML config")
+
     # Load bias config (defaults + YAML overrides for the scoring-related keys).
     cfg = copy.deepcopy(DEFAULT_BIAS_CFG)
     cfg["e_score_mode"] = e_score_mode_cfg
+    cfg["logP_cutoff_mode"] = logP_cutoff_mode_cfg
+    cfg["logP_cutoff_value"] = _bg("logP_cutoff_value")
+    cfg["logP_cutoff_smooth_sigma"] = _bg("logP_cutoff_smooth_sigma")
     # Drop the legacy boolean so _resolve_e_score_mode uses the new
     # explicit key without ambiguity.
     cfg.pop("split_e_circular", None)
@@ -3377,6 +3579,10 @@ def main():
     logger.info("  n_stars_sample for binomial: %d (injection sample: %d)",
                 cfg["n_stars_sample"], len(star_df))
     logger.info("  e_score_mode: %s", cfg["e_score_mode"])
+    logger.info("  logP_cutoff_mode: %s (value=%s, smooth_sigma=%.3f)",
+                cfg["logP_cutoff_mode"],
+                cfg.get("logP_cutoff_value"),
+                cfg.get("logP_cutoff_smooth_sigma", 0.15))
 
     # 3) Setup grids from the selected preset
     preset = GRID_PRESETS[preset_name]
@@ -3514,6 +3720,10 @@ def main():
     )
     if "e_score_mode" in results:
         save_kw_cubes["e_score_mode"] = np.array(results["e_score_mode"])
+    if "logP_cutoff_mode" in results:
+        save_kw_cubes["logP_cutoff_mode"] = np.array(
+            results["logP_cutoff_mode"])
+        save_kw_cubes["logP_cutoff"] = np.array(results["logP_cutoff"])
     # All tests
     if "gmf_cubes" in results:
         for tname in _ALL_TESTS:

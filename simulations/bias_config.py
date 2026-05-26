@@ -22,6 +22,17 @@ DEFAULT_BIAS_CFG = {
     #   "eccentric_only" — 2-sample test on e>0 only; circular fraction ignored
     "e_score_mode": "split",
 
+    # logP cutoff mode (3-way). Drops short-period systems (expected
+    # merger / common-envelope attrition) so the power-law model is fit
+    # only to the surviving conditional distribution P >= 10^cutoff.
+    #   "none"      — no cutoff; score on the full observed range
+    #   "numerical" — locate the first elbow of the smoothed obs CDF via
+    #                 a Gaussian-smoothed 2nd derivative
+    #   "manual"    — use the explicit value in `logP_cutoff_value`
+    "logP_cutoff_mode": "none",
+    "logP_cutoff_value": None,        # used iff mode == "manual"
+    "logP_cutoff_smooth_sigma": 0.15, # Gaussian σ (dex) for "numerical"
+
     # Grid search
     "n_inject_per_star": 100,
     "per_star_mode": True,
@@ -164,16 +175,53 @@ GRID_PRESETS = {
         "fbin":  np.linspace(0.40, 1.00, 13),    # extend past hit lower edge; brackets Sana 0.69
         "n_inject_per_star": 100,
     },
+    "final3_1min3": {  # 16×14×10×7 = 15,680 pts, ~2 min on astro3 post-refactor
+        "pi":    np.linspace(-0.80, 0.50, 16),   # extend past hit upper edge; covers Sana -0.55
+        "kappa": np.linspace(-1.50, 0.70, 14),   # slight widen vs 10min2; Sana -0.10 well inside
+        "eta":   np.linspace(-0.60, 0.20, 10),   # narrow around constrained mode ~-0.24; Sana -0.45 inside
+        "fbin":  np.linspace(0.40, 1.00, 7),     # extend past hit lower edge; brackets Sana 0.69
+        "n_inject_per_star": 100,
+    },
     # Same axis bounds as final3_10min3 but uniform ~0.03 step and kappa
     # lower bound pushed to -1.50 (captures equal-mass-biased priors).
     "final3_2hr": {  # 44×74×28×21 = 1,914,528 pts, ~2 hr on astro3 post-refactor
-        "pi":    np.linspace(-0.80, 0.50, 44),   # step 0.030
-        "kappa": np.linspace(-1.50, 0.70, 74),   # step 0.030; lower edge widened from -0.50
-        "eta":   np.linspace(-0.60, 0.20, 28),   # step 0.030
+        "pi":    np.linspace(-0.95, 0.20, 44),   # step 0.030
+        "kappa": np.linspace(-2.50, 0.10, 74),   # step 0.030; lower edge widened from -0.50
+        "eta":   np.linspace(-0.80, 0.00, 28),   # step 0.030
         "fbin":  np.linspace(0.40, 1.00, 21),    # step 0.030
         "n_inject_per_star": 100,
     },
 
+    "final3_5min": {
+        "pi":    np.linspace(-0.95, 0.20, 20),   # step 0.030
+        "kappa": np.linspace(-2.50, 0.10, 33),   # step 0.030; lower edge widened from -0.50
+        "eta":   np.linspace(-0.80, 0.00, 13),   # step 0.030
+        "fbin":  np.linspace(0.40, 1.00, 10),    # step 0.030
+        "n_inject_per_star": 100,
+    },
+    # Per-truth closure presets — each 21×21×13×13 = 74,529 pts, centered on
+    # its truth with ≥6 cells of margin from every edge.
+    "final3_5min_truthA": {  # Sana 2012 (pi=-0.55, kappa=-0.10, eta=-0.45, fbin=0.69)
+        "pi":    np.linspace(-0.95,  0.20, 21),
+        "kappa": np.linspace(-1.10,  0.90, 21),
+        "eta":   np.linspace(-0.80,  0.00, 13),
+        "fbin":  np.linspace( 0.40,  1.00, 13),
+        "n_inject_per_star": 100,
+    },
+    "final3_5min_truthB": {  # novel (pi=+1.00, kappa=0.00, eta=-0.30, fbin=0.90)
+        "pi":    np.linspace( 0.30,  1.70, 21),
+        "kappa": np.linspace(-1.00,  1.00, 21),
+        "eta":   np.linspace(-0.80,  0.20, 13),
+        "fbin":  np.linspace( 0.50,  1.00, 13),
+        "n_inject_per_star": 100,
+    },
+    "final3_5min_truthC": {  # novel (pi=-0.50, kappa=+0.50, eta=+0.50, fbin=0.40)
+        "pi":    np.linspace(-0.95,  0.20, 21),
+        "kappa": np.linspace(-0.50,  1.50, 21),
+        "eta":   np.linspace(-0.30,  1.30, 13),
+        "fbin":  np.linspace( 0.10,  0.70, 13),
+        "n_inject_per_star": 100,
+    },
     "final3_3hr": {  # serious analysis — 30×30×20×15 = 270,000 pts, ~3 hr
         "pi":    np.linspace(-0.80, -0.10, 30),
         "kappa": np.linspace(-2.10, 0.20, 30),
