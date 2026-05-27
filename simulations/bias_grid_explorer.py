@@ -40,6 +40,11 @@ def parse_args():
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--sb1-tex", default=None)
     parser.add_argument("--sb2-tex", default=None)
+    parser.add_argument(
+        "--apply-lucy-sweeny-e", choices=["true", "false"], default=None,
+        help="Override the Lucy-Sweeney handling stored in the cubes. "
+             "Useful for older runs that did not persist the flag.",
+    )
     args, _ = parser.parse_known_args()
     return args
 
@@ -129,6 +134,24 @@ def load_grid_data(output_dir):
                          for t in test_pval_cubes)
         data["e_score_mode"] = "split" if has_e_circ else "combined"
 
+    # logP cutoff metadata (added when bias_grid started persisting it).
+    # Older cube files omit these keys — default to a no-op.
+    if "logP_cutoff" in cubes.files:
+        data["logP_cutoff"] = float(cubes["logP_cutoff"])
+    else:
+        data["logP_cutoff"] = 0.0
+    if "logP_cutoff_mode" in cubes.files:
+        data["logP_cutoff_mode"] = str(cubes["logP_cutoff_mode"])
+    else:
+        data["logP_cutoff_mode"] = "none"
+
+    # Lucy-Sweeney handling — old cubes pre-date the flag; default True
+    # to match the historical behavior they were produced under.
+    if "apply_lucy_sweeny_e" in cubes.files:
+        data["apply_lucy_sweeny_e"] = bool(cubes["apply_lucy_sweeny_e"])
+    else:
+        data["apply_lucy_sweeny_e"] = True
+
     # Default gmf_cube / best_fit (KS for backward compat)
     default_test = available_tests[0] if available_tests else "ks"
     data["gmf_cube"] = gmf_cubes.get(default_test, cubes.get("gmf_cube"))
@@ -199,8 +222,9 @@ def load_grid_data(output_dir):
 
 
 @st.cache_data
-def load_observed(sb1_tex, sb2_tex):
-    return load_observed_from_tex(sb1_tex, sb2_tex)
+def load_observed(sb1_tex, sb2_tex, apply_lucy_sweeny_e=True):
+    return load_observed_from_tex(
+        sb1_tex, sb2_tex, apply_lucy_sweeny_e=apply_lucy_sweeny_e)
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +459,8 @@ def plot_corner(prob, grids, best_fit, current_vals, smooth=True):
 
 
 def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
-              use_empirical=False, p_det=None, e_score_mode="combined"):
+              use_empirical=False, p_det=None, e_score_mode="combined",
+              logP_cutoff=0.0, restrict_e_to_positive=True):
     """Plot CDF + PDF comparison: observed vs synthetic detected vs intrinsic.
 
     Layout: 2 rows x 4 cols.
@@ -454,6 +479,21 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
     cfg = DEFAULT_BIAS_CFG
     pi_val, kappa_val, eta_val, fbin_val = current_vals
 
+    # When the "Apply logP cutoff" checkbox is on, the e and K1 obs panels
+    # should show the conditional distribution given P >= 10^cutoff —
+    # i.e. drop the same 15 short-period systems that the logP panel
+    # already drops. The cutoff is the system-level filter (same obs
+    # row dropped from every column), matching the runtime "exclude"
+    # scope. We jointly mask obs_logP / obs_e / obs_K1 here once.
+    if logP_cutoff > 0.0:
+        obs_logP_arr = np.asarray(obs.get("logP")) if obs is not None else None
+        if obs_logP_arr is not None and obs_logP_arr.size:
+            keep = obs_logP_arr >= logP_cutoff
+            obs = {k: (np.asarray(v)[keep]
+                       if isinstance(v, (list, np.ndarray))
+                          and len(v) == len(obs_logP_arr) else v)
+                   for k, v in obs.items()}
+
     # Build empirical "all injected" arrays when requested
     empirical_all = {}
     if use_empirical and det_params is not None:
@@ -464,20 +504,37 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             if len(det_arr) or len(nondet_arr):
                 empirical_all[key] = np.concatenate([det_arr, nondet_arr])
 
-    # Only eccentric_only ignores circular systems entirely. 'split' still
-    # scores them via the separate circular-fraction binomial, so they
-    # belong in the CDF visualization.
+    # Eccentric_only ALWAYS ignores e=0 on the simulated side — that's
+    # what the fit did. The checkbox only affects how we *display* the
+    # obs side and the y-axis of sim/intrinsic CDFs:
+    #   restrict_e_to_positive=True  → hide e=0 from obs too (scored view)
+    #   restrict_e_to_positive=False → show the obs e=0 spike and shift
+    #     sim/intrinsic CDFs upward by f_circ_obs so they start where the
+    #     obs CDF resumes after the spike.
     obs_e_arr = obs.get("e")
-    if e_score_mode == "eccentric_only" and obs_e_arr is not None:
+    f_circ_obs = 0.0
+    if obs_e_arr is not None:
         obs_e_arr = np.asarray(obs_e_arr)
-        obs_e_arr = obs_e_arr[obs_e_arr > 0]
-        if "e" in empirical_all:
-            empirical_all["e"] = empirical_all["e"][empirical_all["e"] > 0]
+        if len(obs_e_arr):
+            f_circ_obs = float(np.sum(obs_e_arr == 0) / len(obs_e_arr))
+        if e_score_mode == "eccentric_only" and restrict_e_to_positive:
+            obs_e_arr = obs_e_arr[obs_e_arr > 0]
+    # In eccentric_only the simulated e=0 systems are always discarded
+    # (matching the fit), independent of the display checkbox.
+    if e_score_mode == "eccentric_only" and "e" in empirical_all:
+        empirical_all["e"] = empirical_all["e"][empirical_all["e"] > 0]
+
+    # When the e>0 restriction is off in eccentric_only mode, shift sim
+    # and intrinsic CDFs upward so they start at y = f_circ_obs and the
+    # obs e=0 spike sits below the resumed CDF.
+    shift_e_to_full = (e_score_mode == "eccentric_only"
+                       and not restrict_e_to_positive
+                       and f_circ_obs > 0.0)
 
     # (key, obs_array_or_None, xlabel, color, alpha, xmin, xmax, n_bins)
     param_configs = [
         ("logP", obs["logP"], "log\u2081\u2080(P/d)", "#4393c3",
-         pi_val, cfg["log_p_min"], cfg["log_p_max"], 15),
+         pi_val, max(cfg["log_p_min"], logP_cutoff), cfg["log_p_max"], 15),
         ("e", obs_e_arr, "e", "#d6604d",
          eta_val, 1e-6, cfg["e_max"], 15),
         ("K1", obs["K1"], "K\u2081 [km/s]", "#5aae61",
@@ -507,15 +564,32 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             obs_s = None
 
         if key == "e":
-            # Only eccentric_only mode excludes the circular spike from
-            # sim/empirical CDFs and histograms.
-            clip_lo = 1e-12 if e_score_mode == "eccentric_only" else 0.0
+            # In eccentric_only the fit always filtered sim/empirical e=0
+            # out — keep that floor on the sim side regardless of the
+            # display checkbox. The obs-side window is handled separately
+            # below so the obs e=0 spike can still show through.
+            if e_score_mode == "eccentric_only":
+                clip_lo = 1e-12
+            else:
+                clip_lo = 0.0
             clip_hi = 1.0
+        elif key == "logP" and has_obs:
+            clip_lo = max(0.0, logP_cutoff)
+            clip_hi = float(obs_s[-1])
         elif has_obs:
             clip_lo, clip_hi = 0.0, float(obs_s[-1])
         else:
             clip_lo = xmin if xmin is not None else 0.0
             clip_hi = xmax if xmax is not None else 1.0
+
+        # Obs-side window: filter obs_s only when we want to *hide* the
+        # below-window region from the display. For logP-cutoff and the
+        # "restricted" eccentric_only view (shift_e_to_full=False) we
+        # filter; when shift_e_to_full we keep obs zeros so the spike
+        # is visible.
+        if has_obs and clip_lo > 0.0 and not shift_e_to_full:
+            obs_s = obs_s[(obs_s >= clip_lo) & (obs_s <= clip_hi)]
+            has_obs = len(obs_s) >= 2
 
         # ===================== Row 1: CDF =====================
 
@@ -529,17 +603,18 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             all_vals = empirical_all[key]
             n_all = len(all_vals)
             if n_all > 0 and det_params is not None:
-                det_vals = det_params.get(key, np.array([]))
-                if key == "e" and e_score_mode == "eccentric_only":
-                    all_vals_subset = all_vals[all_vals > 0]
-                    det_vals_subset = (
-                        np.asarray(det_vals)[np.asarray(det_vals) > 0]
+                det_vals = np.asarray(det_params.get(key, np.array([])))
+                # Match bias_grid scoring: when a window is active (logP
+                # cutoff, or e>0 for eccentric_only-restricted) the
+                # detection rate is computed within that window.
+                if clip_lo > 0.0 or clip_hi < np.inf:
+                    all_in = all_vals[(all_vals >= clip_lo)
+                                      & (all_vals <= clip_hi)]
+                    det_in = det_vals[(det_vals >= clip_lo)
+                                      & (det_vals <= clip_hi)] \
                         if len(det_vals) else det_vals
-                    )
-                    n_all_sub = len(all_vals_subset)
-                    n_det_sub = len(det_vals_subset)
-                    if n_all_sub > 0:
-                        completeness = n_det_sub / n_all_sub
+                    if len(all_in) > 0:
+                        completeness = len(det_in) / len(all_in)
                 else:
                     completeness = len(det_vals) / n_all
         elif p_det is not None and p_det < 1.0:
@@ -563,8 +638,14 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             sim = np.sort(sim_raw)
             if len(sim) >= 2:
                 sim_cdf = np.arange(1, len(sim) + 1) / len(sim)
+                sim_y = sim_cdf * completeness
+                if key == "e" and shift_e_to_full:
+                    # Lift conditional sim CDF onto the full e axis:
+                    # starts at f_circ_obs*completeness, ends at completeness.
+                    sim_y = completeness * (
+                        f_circ_obs + (1.0 - f_circ_obs) * sim_cdf)
                 fig.add_trace(go.Scatter(
-                    x=sim, y=sim_cdf * completeness, mode="lines",
+                    x=sim, y=sim_y, mode="lines",
                     line=dict(color=color, width=2, dash="dash", shape="hv"),
                     name="Sim. detected (n=%d)" % len(sim),
                     showlegend=(col_idx == 0),
@@ -579,8 +660,11 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             all_s = np.sort(all_vals)
             if len(all_s) >= 2:
                 all_cdf = np.arange(1, len(all_s) + 1) / len(all_s)
+                all_y = all_cdf
+                if key == "e" and shift_e_to_full:
+                    all_y = f_circ_obs + (1.0 - f_circ_obs) * all_cdf
                 fig.add_trace(go.Scatter(
-                    x=all_s, y=all_cdf, mode="lines",
+                    x=all_s, y=all_y, mode="lines",
                     line=dict(color="gray", width=2, dash="dot", shape="hv"),
                     name="Sim. all (n=%d)" % len(all_s),
                     showlegend=(col_idx == 0),
@@ -591,6 +675,13 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             x_hi_cdf = clip_hi if key == "logP" and has_obs else xmax
             x_intr = np.linspace(xmin, x_hi_cdf, 200)
             y_intr = powerlaw_cdf(x_intr, alpha, xmin, x_hi_cdf)
+            # Eccentric_only was fit to e>0 only. If the user is viewing
+            # the full distribution, shift the power-law upward by the
+            # observed circular fraction and prepend a vertical jump.
+            if key == "e" and shift_e_to_full:
+                y_intr = f_circ_obs + (1.0 - f_circ_obs) * y_intr
+                x_intr = np.concatenate([[0.0, xmin], x_intr])
+                y_intr = np.concatenate([[0.0, f_circ_obs], y_intr])
             fig.add_trace(go.Scatter(
                 x=x_intr, y=y_intr, mode="lines",
                 line=dict(color="gray", width=2, dash="dot"),
@@ -628,13 +719,24 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
 
         # ===================== Row 2: PDF (histogram) =====================
 
-        bin_lo = clip_lo if has_obs else xmin
+        # When showing the lifted eccentric_only view, extend bins down
+        # to 0 so the obs e=0 spike is captured in the first bin.
+        if key == "e" and shift_e_to_full:
+            bin_lo = 0.0
+        elif has_obs:
+            bin_lo = clip_lo
+        else:
+            bin_lo = xmin
         bin_hi = clip_hi if has_obs else xmax
         bins = np.linspace(bin_lo, bin_hi, n_bins + 1)
         bw = float(bins[1] - bins[0])
         pdf_peak = 0.0  # track tallest bar for intrinsic scaling
         density_sim_arr = None
         density_all_arr = None
+        # Conditional-to-unconditional scaling for sim/intrinsic PDFs
+        # when lifting the eccentric_only view onto the full e axis.
+        e_pdf_scale = (1.0 - f_circ_obs) if (
+            key == "e" and shift_e_to_full) else 1.0
 
         # Observed PDF (scaled by completeness so gap vs intrinsic is visible)
         if has_obs:
@@ -657,7 +759,8 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             sim_clipped = sim_raw[(sim_raw >= clip_lo) & (sim_raw <= clip_hi)]
             if len(sim_clipped) >= 2:
                 counts_sim, _ = np.histogram(sim_clipped, bins=bins)
-                density_sim = counts_sim / (counts_sim.sum() * bw) * completeness
+                density_sim = (counts_sim / (counts_sim.sum() * bw)
+                               * completeness * e_pdf_scale)
                 density_sim_arr = density_sim
                 pdf_peak = max(pdf_peak, float(density_sim.max()))
                 bin_centers = ((bins[:-1] + bins[1:]) / 2).tolist()
@@ -678,7 +781,8 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             all_vals = all_vals[(all_vals >= clip_lo) & (all_vals <= clip_hi)]
             if len(all_vals) >= 2:
                 counts_all, _ = np.histogram(all_vals, bins=bins)
-                density_all = counts_all / (counts_all.sum() * bw)
+                density_all = (counts_all / (counts_all.sum() * bw)
+                               * e_pdf_scale)
                 density_all_arr = density_all
                 bin_centers = ((bins[:-1] + bins[1:]) / 2).tolist()
                 fig.add_trace(go.Scatter(
@@ -698,6 +802,9 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
                 y_pdf = 1.0 / (x_pdf * np.log(xmax / xmin))
             else:
                 y_pdf = a * x_pdf**alpha / (xmax**a - xmin**a)
+            shift_pl_e_pdf = key == "e" and shift_e_to_full
+            if shift_pl_e_pdf:
+                y_pdf = y_pdf * (1.0 - f_circ_obs)
             if pdf_peak > 0:
                 y_pdf = np.minimum(y_pdf, pdf_peak)
             fig.add_trace(go.Scatter(
@@ -707,6 +814,18 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
                 showlegend=False,
                 legendgroup="intr",
             ), row=2, col=col)
+            if shift_pl_e_pdf:
+                # Delta-spike representation of the circular fraction:
+                # a tall bar at e=0 with area = f_circ_obs.
+                fig.add_trace(go.Bar(
+                    x=[float(bins[0] + bw / 2)],
+                    y=[f_circ_obs / bw],
+                    width=bw * 0.95,
+                    marker_color="gray", opacity=0.4,
+                    name="Intrinsic e=0",
+                    showlegend=False,
+                    legendgroup="intr",
+                ), row=2, col=col)
 
         fig.update_xaxes(title_text="", row=2, col=col)
         fig.update_yaxes(
@@ -828,12 +947,18 @@ def main():
     # Load data
     data = load_grid_data(output_dir)
 
-    # Load observed distributions
+    # Load observed distributions. CLI flag overrides the cube-persisted
+    # value, so users can re-inspect older runs that did not store it.
     sb1 = args.sb1_tex or DEFAULT_BIAS_CFG.get("sb1_tex", "")
     sb2 = args.sb2_tex or DEFAULT_BIAS_CFG.get("sb2_tex", "")
+    if args.apply_lucy_sweeny_e is not None:
+        apply_lucy = (args.apply_lucy_sweeny_e == "true")
+    else:
+        apply_lucy = bool(data.get("apply_lucy_sweeny_e", True))
+    data["apply_lucy_sweeny_e"] = apply_lucy
     obs = None
     if sb1 and sb2 and os.path.exists(sb1) and os.path.exists(sb2):
-        obs = load_observed(sb1, sb2)
+        obs = load_observed(sb1, sb2, apply_lucy_sweeny_e=apply_lucy)
 
     pi_grid = data["pi_grid"]
     kappa_grid = data["kappa_grid"]
@@ -896,6 +1021,8 @@ def main():
     st.sidebar.subheader("Current Grid Point Stats")
     st.sidebar.caption("e_score_mode: %s" %
                        data.get("e_score_mode", "combined"))
+    st.sidebar.caption("apply_lucy_sweeny_e: %s" %
+                       data.get("apply_lucy_sweeny_e", True))
     st.sidebar.metric("p_det", "%.4f" % data["pdet_cube"][i, j, k, l])
     gmf_val = gmf_cube[i, j, k, l]
     st.sidebar.metric("log GMF (%s)" % test_label,
@@ -952,6 +1079,34 @@ def main():
             "Use empirical intrinsic (det + nondet) instead of power-law",
             value=True, key="use_empirical",
         )
+
+        # "As scored" toggles: match the filtering used to compute the
+        # KS/AD/CvM p-values stored in the cubes.
+        e_mode_data = data.get("e_score_mode", "combined")
+        logP_cutoff_data = float(data.get("logP_cutoff", 0.0))
+        logP_cutoff_mode = data.get("logP_cutoff_mode", "none")
+        cutoff_active = logP_cutoff_data > 0.0
+
+        col_cb1, col_cb2 = st.columns(2)
+        apply_logP_cutoff = col_cb1.checkbox(
+            "Apply logP cutoff to obs P / e / K1 panels: "
+            "cutoff=%.3f (mode=%s)" % (logP_cutoff_data, logP_cutoff_mode),
+            value=cutoff_active,
+            disabled=(not cutoff_active),
+            key="apply_logP_cutoff",
+            help="Drop obs systems with logP < cutoff from all three "
+                 "observational CDF panels (P, e, K1). Mirrors the "
+                 "'exclude' scope runtime behavior.",
+        )
+        if e_mode_data == "eccentric_only":
+            restrict_e_to_positive = col_cb2.checkbox(
+                "Restrict eccentricity to e>0 (as scored)",
+                value=True,
+                key="restrict_e_to_positive",
+            )
+        else:
+            restrict_e_to_positive = True
+
         det_params = get_detected_for_point(data, i, j, k, l)
         ks_pvals = {}
         if pval_cubes:
@@ -967,12 +1122,15 @@ def main():
                 ks_pvals["ks_e_circ"] = pval_cubes["e_circ"][i, j, k, l]
         if det_params is not None and len(det_params["logP"]) >= 2:
             p_det = float(data["pdet_cube"][i, j, k, l])
-            fig_cdf = plot_cdfs(det_params, obs, current_vals, ks_pvals,
-                                test_label=test_label,
-                                use_empirical=use_empirical,
-                                p_det=p_det,
-                                e_score_mode=data.get(
-                                    "e_score_mode", "combined"))
+            fig_cdf = plot_cdfs(
+                det_params, obs, current_vals, ks_pvals,
+                test_label=test_label,
+                use_empirical=use_empirical,
+                p_det=p_det,
+                e_score_mode=e_mode_data,
+                logP_cutoff=(logP_cutoff_data if apply_logP_cutoff else 0.0),
+                restrict_e_to_positive=restrict_e_to_positive,
+            )
             st.plotly_chart(fig_cdf, use_container_width=True)
         else:
             st.info("No detected systems for this grid point "

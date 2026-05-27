@@ -22,6 +22,13 @@ DEFAULT_BIAS_CFG = {
     #   "eccentric_only" — 2-sample test on e>0 only; circular fraction ignored
     "e_score_mode": "split",
 
+    # Lucy-Sweeney handling for observed eccentricity upper limits.
+    # True  — rows reported as "\leq 0.0X" in the tex tables are treated
+    #         as circular (e = 0). Matches the historical behavior.
+    # False — rows reported as "\leq 0.0X" keep the limit value as e
+    #         (e = 0.0X). Use for sensitivity tests against e_score_mode.
+    "apply_lucy_sweeny_e": True,
+
     # logP cutoff mode (3-way). Drops short-period systems (expected
     # merger / common-envelope attrition) so the power-law model is fit
     # only to the surviving conditional distribution P >= 10^cutoff.
@@ -32,6 +39,23 @@ DEFAULT_BIAS_CFG = {
     "logP_cutoff_mode": "none",
     "logP_cutoff_value": None,        # used iff mode == "manual"
     "logP_cutoff_smooth_sigma": 0.15, # Gaussian σ (dex) for "numerical"
+
+    # logP cutoff scope (2-way). Controls HOW the cutoff (found by
+    # logP_cutoff_mode) is APPLIED.
+    #   "period_only" — cutoff filters only the period CDF KS/AD/CvM
+    #                   test. Obs e/K1, N_det_obs, N_stars, intrinsic
+    #                   sim draws all unchanged. Recovered f_bin is
+    #                   the TOTAL binary fraction over [log_p_min,
+    #                   log_p_max].
+    #   "exclude"     — below-cutoff systems are removed everywhere:
+    #                   obs P/e/K1 CDFs (filter obs_logP/e/K1),
+    #                   binomial numerator (N_det_obs ← 70 - n_dropped),
+    #                   binomial denominator (N_stars ← original -
+    #                   n_dropped), AND intrinsic sim draws (via
+    #                   log_p_min override → [cutoff, log_p_max]).
+    #                   Recovered f_bin becomes the ABOVE-CUTOFF
+    #                   binary fraction.
+    "logP_cutoff_scope": "period_only",
 
     # Grid search
     "n_inject_per_star": 100,

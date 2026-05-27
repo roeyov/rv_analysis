@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from utils.constants import (
     TIME_STAMPS, RADIAL_VELS, ERRORS,
-    LMFIT_PARAMS, SEARCH_REGION, MINI_METHOD,
+    LMFIT_PARAMS, SEARCH_REGION, MINI_METHOD, MAX_NFEV,
     PERIOD, GAMMA, K1_STR, OMEGA, ECC, T,
     LN_SIGMA_JITTER, INIT_VAL, MIN_VAL, MAX_VAL, VARY,
 )
@@ -231,6 +231,7 @@ def lmfit_on_sample(args_dict, data, null_hyp=False, use_jitter=False):
     errv1s  = np.abs(data[ERRORS])
     lmfit_params_dict = args_dict[LMFIT_PARAMS]
     mini_method       = lmfit_params_dict[MINI_METHOD]
+    max_nfev          = int(lmfit_params_dict.get(MAX_NFEV, 200000))
     params            = lmfit.Parameters()
     search_params     = lmfit_params_dict[SEARCH_REGION]
 
@@ -250,7 +251,7 @@ def lmfit_on_sample(args_dict, data, null_hyp=False, use_jitter=False):
                          RADIAL_VELS: v1s,
                          ERRORS: errv1s}
             )
-            result = mini.minimize(method=mini_method, max_nfev=200000)
+            result = mini.minimize(method=mini_method, max_nfev=max_nfev)
             return result
         else:
             gamma0   = get_rv_weighted_mean(data)
@@ -283,7 +284,7 @@ def lmfit_on_sample(args_dict, data, null_hyp=False, use_jitter=False):
                      RADIAL_VELS: v1s,
                      ERRORS: errv1s}
         )
-    result = mini.minimize(method=mini_method, max_nfev=200000)
+    result = mini.minimize(method=mini_method, max_nfev=max_nfev)
     return result
 
 

@@ -13,7 +13,7 @@ Environment variables (set by the batch job script):
     RUN_ID       : str — unique run identifier (timestamp or user-supplied)
     N_FIELDS     : int — number of BLOeM MJD fields (8)
     GCS_OUTPUT_DIR : gs:// prefix for uploading everything
-    CONFIG_PATH  : (optional) path to params YAML, default /app/params_cloud.yaml
+    CONFIG_PATH  : (optional) path to params YAML, default /app/configs/params_cloud.yaml
 
 Seed & field logic:
     seed      = sha256(run_id + task_index) % 2^31  (unique per run × task)
@@ -186,7 +186,7 @@ def main():
     run_id = os.environ.get("RUN_ID", "unknown")
     n_fields = int(os.environ.get("N_FIELDS", str(len(BLOEM_MJD_ARRAYS))))
     gcs_output = os.environ.get("GCS_OUTPUT_DIR")
-    config_path = os.environ.get("CONFIG_PATH", "/app/params_cloud.yaml")
+    config_path = os.environ.get("CONFIG_PATH", "/app/configs/params_cloud.yaml")
 
     if not gcs_output:
         print("ERROR: GCS_OUTPUT_DIR must be set", file=sys.stderr)

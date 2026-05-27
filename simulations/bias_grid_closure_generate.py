@@ -14,14 +14,14 @@ Usage (single truth point):
     python -m simulations.bias_grid_closure_generate \
         --truth-pi -0.55 --truth-kappa -0.10 --truth-eta -0.45 \
         --truth-fbin 0.69 --seed 42 \
-        --config params_bias.yaml \
+        --config configs/params_bias.yaml \
         --output-dir $SCRIPTS_OUT/simulation_pipeline/bias_grid_closure/sana2012/
 
 Real-sample paths (mass_file, rv_dir, sb2_analysis_dir, ostar_catalog) are
 read from the bias_grid: section of the YAML, matching bias_grid.py and
 audit_sample.py. Then run bias_grid against the synthesized tables:
 
-    python -m simulations.bias_grid --config params_bias.yaml
+    python -m simulations.bias_grid --config configs/params_bias.yaml
 """
 
 import argparse
@@ -293,7 +293,7 @@ def _build_parser():
                     help="Truth value for f_bin (intrinsic binary fraction).")
     ap.add_argument("--seed", type=int, default=42,
                     help="Base RNG seed.")
-    ap.add_argument("--config", type=str, default="params_bias.yaml",
+    ap.add_argument("--config", type=str, default="configs/params_bias.yaml",
                     help="Pipeline config YAML. Sample paths are read from "
                          "its bias_grid: section.")
     ap.add_argument("--output-dir", type=str, required=True,

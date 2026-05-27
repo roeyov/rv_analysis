@@ -1240,7 +1240,7 @@ def append_manual_candidate_solution(
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point:  python -m pipeline.evaluator --config params.yaml
+# CLI entry point:  python -m pipeline.evaluator --config configs/params.yaml
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -1251,7 +1251,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--config", default=PARAM_FILE,
-        help="Path to params.yaml (or .json). Default: %(default)s",
+        help="Path to params YAML (or .json). Default: %(default)s",
     )
     cli = parser.parse_args()
 

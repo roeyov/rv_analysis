@@ -42,6 +42,7 @@ bias_grid:
   logP_cutoff_mode: numerical
   logP_cutoff_value: null
   logP_cutoff_smooth_sigma: 0.15
+  logP_cutoff_scope: period_only   # period_only | exclude
   detect_method: rv_threshold
 
   n_workers: null

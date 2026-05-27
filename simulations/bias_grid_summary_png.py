@@ -108,6 +108,11 @@ def load_grid_data(output_dir):
     data["test_pval_cubes"] = test_pval_cubes
     data["best_fits"] = best_fits
 
+    if "logP_cutoff_scope" in cubes.files:
+        data["logP_cutoff_scope"] = str(cubes["logP_cutoff_scope"])
+    else:
+        data["logP_cutoff_scope"] = "period_only"
+
     if "logP_cutoff_mode" in cubes.files:
         data["logP_cutoff_mode"] = str(cubes["logP_cutoff_mode"])
         data["logP_cutoff"] = float(cubes["logP_cutoff"])
@@ -413,7 +418,8 @@ def _draw_cdf_pdf_rows(axes_cdf, axes_pdf, det_params, obs, best_fit,
 
 
 def make_summary_figure(data, obs, test_name, e_score_mode,
-                        logP_cutoff=0.0, logP_cutoff_mode="none"):
+                        logP_cutoff=0.0, logP_cutoff_mode="none",
+                        logP_cutoff_scope="period_only"):
     gmf_cube = data["gmf_cubes"][test_name]
     best_fit = data["best_fits"][test_name]
     grids = [data["pi_grid"], data["kappa_grid"],
@@ -450,7 +456,9 @@ def make_summary_figure(data, obs, test_name, e_score_mode,
                            logP_cutoff_mode=logP_cutoff_mode)
 
     p_det_val = float(data["pdet_cube"][i, j, k, l])
-    cutoff_str = (", logP_cutoff=%.3f (%s)" % (logP_cutoff, logP_cutoff_mode)
+    cutoff_str = (", logP_cutoff=%.3f (%s/%s)" % (logP_cutoff,
+                                                   logP_cutoff_mode,
+                                                   logP_cutoff_scope)
                   if logP_cutoff > 0 else "")
     title = ("%s — best fit: pi=%.2f, kappa=%.2f, eta=%.2f, f_bin=%.2f "
              "  (p_det=%.3f, e_score_mode=%s%s)" % (
@@ -495,8 +503,14 @@ def main():
     e_mode = data.get("e_score_mode", "combined")
     logP_cutoff = float(data.get("logP_cutoff", 0.0) or 0.0)
     logP_cutoff_mode = data.get("logP_cutoff_mode", "none")
+    logP_cutoff_scope = data.get("logP_cutoff_scope", "period_only")
 
-    if logP_cutoff > 0.0 and obs is not None:
+    # Only filter obs arrays here when scope=="exclude" (below-cutoff
+    # systems are removed everywhere, mirroring the runtime behavior).
+    # In "period_only" scope, _draw_cdf_pdf_rows handles the per-panel
+    # logP filtering and leaves obs_e/obs_K1 untouched.
+    if (logP_cutoff > 0.0 and logP_cutoff_scope == "exclude"
+            and obs is not None):
         obs_logP = np.asarray(obs.get("logP"))
         if obs_logP is not None and obs_logP.size:
             keep = obs_logP >= logP_cutoff
@@ -508,7 +522,8 @@ def main():
     for test_name in data["available_tests"]:
         fig = make_summary_figure(data, obs, test_name, e_mode,
                                   logP_cutoff=logP_cutoff,
-                                  logP_cutoff_mode=logP_cutoff_mode)
+                                  logP_cutoff_mode=logP_cutoff_mode,
+                                  logP_cutoff_scope=logP_cutoff_scope)
         out_path = os.path.join(out_png_dir, "summary_%s.png" % test_name)
         fig.savefig(out_path, dpi=args.dpi, bbox_inches="tight")
         plt.close(fig)

@@ -149,7 +149,7 @@ export TASK_INDEX=$BATCH_TASK_INDEX
 export RUN_ID="{run_id}"
 export N_FIELDS={n_fields}
 export GCS_OUTPUT_DIR="{gcs_output}"
-export CONFIG_PATH="/app/params_cloud.yaml"
+export CONFIG_PATH="/app/configs/params_cloud.yaml"
 echo "Task $TASK_INDEX: run_id={run_id}, field=$((TASK_INDEX % N_FIELDS))"
 python -m cloud.worker
 """
@@ -346,7 +346,7 @@ Examples:
     # --- Local execution path ---
     if args.local_run:
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_path = os.path.join(repo_root, "params_cloud.yaml")
+        config_path = os.path.join(repo_root, "configs", "params_cloud.yaml")
         run_local(n_tasks, N_FIELDS, run_id, config_path)
         return
 

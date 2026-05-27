@@ -16,7 +16,8 @@ from utils.constants import (
     PERIODOGRAM_PARAMS, PERI_MIN_PERIOD, PERI_MAX_PERIOD,
     PERI_LS_NORM, PERI_LS_METHOD, PERI_LS_FA_METHOD,
     PERI_RANDOM_STATE, N_SIG_PERIODS, MIN_SEP, WINDOW_ITERATIONS,
-    PERI_PDC_SAMPLES_PER_PEAK, PERI_RUN_PERMUTATIONS_LS,PERI_RUN_PERMUTATIONS_PDC, PLOT_STYLE,
+    PERI_PDC_SAMPLES_PER_PEAK, PERI_RUN_PERMUTATIONS_LS,PERI_RUN_PERMUTATIONS_PDC,
+    PERI_SHOW_PERM_PROGRESS, PLOT_STYLE,
 )
 from period_search.periodogram import ls, pdc_opt, plot_periodogram_plotly
 from period_search.permutation import ls_permutation_max_powers_mp, pdc_permutation_max_powers
@@ -268,6 +269,7 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
     n_iter = peri_params[WINDOW_ITERATIONS]
     # n_iter = 100_000  # hardcoded for FAP convergence investigation
 
+    show_perm_progress = peri_params.get(PERI_SHOW_PERM_PROGRESS, True)
     run_perms = peri_params.get(PERI_RUN_PERMUTATIONS_LS, False)
     if run_perms:
         ls_iterations = ls_permutation_max_powers_mp(
@@ -282,7 +284,7 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
             fa_method=peri_params[PERI_LS_FA_METHOD],
             center_data=True,
             random_state=peri_params[PERI_RANDOM_STATE],
-            show_progress=True,
+            show_progress=show_perm_progress,
         )
     else:
         ls_iterations = []
@@ -298,7 +300,7 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
             pmax=pmax,
             probabilities=(0.5, 0.01, 0.001),
             random_state=peri_params[PERI_RANDOM_STATE],
-            show_progress=True,
+            show_progress=show_perm_progress,
             samples_per_peak=pdc_spp,
         )
     else:

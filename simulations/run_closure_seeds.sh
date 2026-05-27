@@ -10,7 +10,7 @@
 #           seeds 42..51, E_SCORE_MODE=split.
 # Outputs land outside the repo (see CLAUDE.md "Outputs Convention").
 #
-# bias_grid.py is YAML-only — this script copies params_bias.yaml per seed
+# bias_grid.py is YAML-only — this script copies configs/params_bias.yaml per seed
 # and patches the bias_grid: block with per-seed knobs (seed, output_dir,
 # sb1/sb2 paths, e_score_mode, parallelism). closure_generate reads the
 # same patched YAML so it pulls the 134-star sample.
@@ -23,19 +23,21 @@ SEED_START="${2:-42}"
 SEED_END="${3:-51}"
 E_SCORE_MODE="${4:-split}"
 
-CONFIG_BASE="params_bias.yaml"
-TRUTH_PI=-0.55
-TRUTH_KAPPA=-0.10
-TRUTH_ETA=-0.45
-TRUTH_FBIN=0.69
-PRESET="final3_10min2"
-DETECT_METHOD="rv_threshold"
-N_WORKERS=8
+CONFIG_BASE="${CONFIG_BASE:-configs/params_bias.yaml}"
+TRUTH_PI="${TRUTH_PI:--0.55}"
+TRUTH_KAPPA="${TRUTH_KAPPA:--0.10}"
+TRUTH_ETA="${TRUTH_ETA:--0.45}"
+TRUTH_FBIN="${TRUTH_FBIN:-0.69}"
+PRESET="${PRESET:-final3_10min2}"
+DETECT_METHOD="${DETECT_METHOD:-rv_threshold}"
+N_WORKERS="${N_WORKERS:-8}"
 
 mkdir -p "$BASE_DIR"
 MASTER_LOG="$BASE_DIR/run.log"
 echo "=== Closure 10-seed sweep starting $(date) ===" | tee -a "$MASTER_LOG"
 echo "BASE_DIR=$BASE_DIR  seeds=$SEED_START..$SEED_END  preset=$PRESET  e_score_mode=$E_SCORE_MODE" | tee -a "$MASTER_LOG"
+echo "CONFIG_BASE=$CONFIG_BASE  detect=$DETECT_METHOD  n_workers=$N_WORKERS" | tee -a "$MASTER_LOG"
+echo "TRUTH: pi=$TRUTH_PI kappa=$TRUTH_KAPPA eta=$TRUTH_ETA fbin=$TRUTH_FBIN" | tee -a "$MASTER_LOG"
 
 for SEED in $(seq "$SEED_START" "$SEED_END"); do
     SEED_DIR="$BASE_DIR/seed_$SEED"

@@ -50,6 +50,7 @@ bias_grid:
   logP_cutoff_mode: none           # none | numerical | manual
   logP_cutoff_value: null          # used iff mode == "manual"
   logP_cutoff_smooth_sigma: 0.15   # used iff mode == "numerical"
+  logP_cutoff_scope: period_only   # period_only | exclude
   detect_method: rv_threshold
 
   # parallelism — null lets bias_grid pick cpu_count - 2.

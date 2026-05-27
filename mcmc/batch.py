@@ -2,7 +2,7 @@
 mcmc.batch — Batch MCMC runner over a directory of lmfit results.
 
 Usage:
-    python -m mcmc.batch --config params.yaml
+    python -m mcmc.batch --config configs/params.yaml
 """
 
 import os
@@ -311,7 +311,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--config", default=PARAM_FILE,
-        help="Path to params.yaml (or .json). Default: %(default)s",
+        help="Path to params YAML (or .json). Default: %(default)s",
     )
     cli = parser.parse_args()
 

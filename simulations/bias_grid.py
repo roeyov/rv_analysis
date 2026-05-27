@@ -163,6 +163,7 @@ _ALL_TESTS = {"ks": _ks_pvalue, "ad": _ad_pvalue, "cvm": _cvm_pvalue}
 
 _E_SCORE_MODES = ("combined", "split", "eccentric_only")
 _LOGP_CUTOFF_MODES = ("none", "numerical", "manual")
+_LOGP_CUTOFF_SCOPES = ("period_only", "exclude")
 
 
 def _resolve_logP_cutoff_mode(cfg):
@@ -172,6 +173,19 @@ def _resolve_logP_cutoff_mode(cfg):
         raise ValueError("logP_cutoff_mode must be one of %s, got %r"
                          % (_LOGP_CUTOFF_MODES, mode))
     return mode
+
+
+def _resolve_logP_cutoff_scope(cfg):
+    """Pick the logP cutoff *scope* from a config dict; default 'period_only'.
+
+    Orthogonal to ``logP_cutoff_mode``: the mode is *how* to find the
+    cutoff value; the scope is *how* to apply it once found.
+    """
+    scope = cfg.get("logP_cutoff_scope", "period_only")
+    if scope not in _LOGP_CUTOFF_SCOPES:
+        raise ValueError("logP_cutoff_scope must be one of %s, got %r"
+                         % (_LOGP_CUTOFF_SCOPES, scope))
+    return scope
 
 
 def _numerical_logP_cutoff(obs_logP, smooth_sigma=0.15, n_grid=2000):
@@ -515,9 +529,17 @@ def _parse_val_with_errors(s):
     return np.nan
 
 
-def load_observed_from_tex(sb1_path, sb2_path):
+def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
     """
     Parse SB1 and SB2 LaTeX solution tables and return observed distributions.
+
+    Parameters
+    ----------
+    apply_lucy_sweeny_e : bool, default True
+        Controls how rows whose eccentricity is reported as a Lucy-Sweeney
+        upper limit ("\\leq 0.0X") are folded into ``obs['e']``.
+        True  — collapse to e = 0 (circular).
+        False — keep the limit value itself as e.
 
     Returns
     -------
@@ -570,9 +592,14 @@ def load_observed_from_tex(sb1_path, sb2_path):
             continue
 
         all_logP.append(np.log10(P_val))
-        # Circular orbit (Lucy-Sweeney upper limit) → e = 0
         e_is_upper_limit = r"\leq" in cols[5]
-        all_e.append(0.0 if (np.isnan(e_val) or e_is_upper_limit) else e_val)
+        if np.isnan(e_val):
+            e_to_append = 0.0
+        elif e_is_upper_limit:
+            e_to_append = 0.0 if apply_lucy_sweeny_e else e_val
+        else:
+            e_to_append = e_val
+        all_e.append(e_to_append)
         all_K1.append(K1_val)
 
     n_sb1 = len(all_logP)
@@ -611,9 +638,14 @@ def load_observed_from_tex(sb1_path, sb2_path):
             continue
 
         all_logP.append(np.log10(P_val))
-        # Circular orbit (Lucy-Sweeney upper limit) → e = 0
         e_is_upper_limit = r"\leq" in cols[5]
-        all_e.append(0.0 if (np.isnan(e_val) or e_is_upper_limit) else e_val)
+        if np.isnan(e_val):
+            e_to_append = 0.0
+        elif e_is_upper_limit:
+            e_to_append = 0.0 if apply_lucy_sweeny_e else e_val
+        else:
+            e_to_append = e_val
+        all_e.append(e_to_append)
         all_K1.append(K1_val)
         sb2_q.append(q_val if not np.isnan(q_val) else np.nan)
 
@@ -627,8 +659,9 @@ def load_observed_from_tex(sb1_path, sb2_path):
         "n_sb1": n_sb1,
         "n_sb2": n_sb2,
     }
-    logger.info("load_observed_from_tex: SB1=%d SB2=%d total=%d",
-                n_sb1, n_sb2, len(all_logP))
+    logger.info("load_observed_from_tex: SB1=%d SB2=%d total=%d "
+                "(apply_lucy_sweeny_e=%s)",
+                n_sb1, n_sb2, len(all_logP), apply_lucy_sweeny_e)
     return obs
 
 
@@ -1336,6 +1369,8 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
                      e_score_mode,
                      logP_cutoff_mode="none",
                      logP_cutoff=0.0,
+                     logP_cutoff_scope="period_only",
+                     apply_lucy_sweeny_e=True,
                      global_hists=None):
     """Save intermediate results so a killed run can be resumed.
 
@@ -1357,6 +1392,8 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
         e_score_mode=np.array(e_score_mode),
         logP_cutoff_mode=np.array(logP_cutoff_mode),
         logP_cutoff=np.array(logP_cutoff),
+        logP_cutoff_scope=np.array(logP_cutoff_scope),
+        apply_lucy_sweeny_e=np.array(bool(apply_lucy_sweeny_e)),
     )
     # All tests
     for tname in _ALL_TESTS:
@@ -1622,6 +1659,7 @@ class GridSearchEngine:
             n_inject_per_star = self.cfg.get("n_inject_per_star", 100)
 
         e_score_mode = _resolve_e_score_mode(self.cfg)
+        apply_lucy_sweeny_e = bool(self.cfg.get("apply_lucy_sweeny_e", True))
 
         # Resolve the low-period cutoff before sizing N_det_obs. The cutoff
         # truncates BOTH observed and simulated period arrays to a common
@@ -1630,31 +1668,62 @@ class GridSearchEngine:
         # below it the obs sample is contaminated by short-period attrition
         # that the model does not describe).
         logP_cutoff_mode = _resolve_logP_cutoff_mode(self.cfg)
+        logP_cutoff_scope = _resolve_logP_cutoff_scope(self.cfg)
         logP_cutoff = _compute_logP_cutoff(
             obs_logP, logP_cutoff_mode,
             smooth_sigma=self.cfg.get("logP_cutoff_smooth_sigma", 0.15),
             manual_value=self.cfg.get("logP_cutoff_value"),
         )
-        # The cutoff is scoped to the logP CDF goodness-of-fit only. All
-        # other quantities (binomial on total detection count, KS tests on
-        # e and K1, the e_score_mode circular-fraction counts) consume the
-        # full obs sample. So we build a separate above-cutoff view of
-        # obs_logP for the period test and leave obs_e / obs_K1 / N_det_obs
-        # untouched.
-        if logP_cutoff > 0.0:
-            obs_logP_above = obs_logP[obs_logP >= logP_cutoff]
+
+        original_N_stars = self.cfg.get(
+            "n_stars_sample", len(self.M1_arr))
+        n_dropped_obs = (int(np.sum(obs_logP < logP_cutoff))
+                         if logP_cutoff > 0.0 else 0)
+
+        if logP_cutoff_scope == "exclude" and logP_cutoff > 0.0:
+            # Drop below-cutoff systems from EVERY downstream consumer:
+            # obs P/e/K1 CDFs, N_det_obs, N_stars, and the intrinsic sim
+            # draws. The intrinsic truncation is a one-liner: the workers
+            # call powerlaw_draw(..., cfg["log_p_min"], cfg["log_p_max"]),
+            # so overriding log_p_min restricts the modeled population to
+            # logP >= cutoff with no further plumbing.
+            keep = obs_logP >= logP_cutoff
+            obs_logP = obs_logP[keep]
+            obs_e = obs_e[keep]
+            obs_K1 = obs_K1[keep]
+            obs_logP_above = obs_logP                       # already filtered
+            N_stars_eff = original_N_stars - n_dropped_obs
+            self.cfg["log_p_min"] = float(logP_cutoff)
             logger.info(
-                "logP_cutoff_mode=%s, cutoff=%.3f (P=%.2f d); logP CDF test "
-                "uses %d/%d obs (binomial + e/K1 tests use all %d)",
+                "logP_cutoff_scope=exclude, mode=%s, cutoff=%.3f (P=%.2f d): "
+                "dropped %d/%d obs binaries AND %d stars from binomial "
+                "(N_stars: %d → %d); intrinsic logP draws truncated to "
+                "[%.3f, %.3f]",
+                logP_cutoff_mode, logP_cutoff, 10 ** logP_cutoff,
+                n_dropped_obs, len(obs_logP) + n_dropped_obs,
+                n_dropped_obs, original_N_stars, N_stars_eff,
+                logP_cutoff, self.cfg["log_p_max"])
+        elif logP_cutoff > 0.0:
+            # period_only (default): cutoff scoped to the logP CDF KS test
+            # only. obs e/K1 stay full, binomial stays full, intrinsic
+            # draws stay full.
+            obs_logP_above = obs_logP[obs_logP >= logP_cutoff]
+            N_stars_eff = original_N_stars
+            logger.info(
+                "logP_cutoff_scope=period_only, mode=%s, cutoff=%.3f "
+                "(P=%.2f d); logP CDF test uses %d/%d obs (binomial + "
+                "e/K1 tests use all %d)",
                 logP_cutoff_mode, logP_cutoff, 10 ** logP_cutoff,
                 len(obs_logP_above), len(obs_logP), len(obs_logP))
         else:
             obs_logP_above = obs_logP
-            logger.info("logP_cutoff_mode=%s, cutoff=0.0 (no truncation)",
-                        logP_cutoff_mode)
+            N_stars_eff = original_N_stars
+            logger.info(
+                "logP_cutoff_mode=%s, scope=%s, cutoff=0.0 (no truncation)",
+                logP_cutoff_mode, logP_cutoff_scope)
 
         N_det_obs = len(obs_logP)
-        N_stars = self.cfg.get("n_stars_sample", len(self.M1_arr))
+        N_stars = N_stars_eff
 
         n_pi = len(pi_grid)
         n_kappa = len(kappa_grid)
@@ -1821,6 +1890,9 @@ class GridSearchEngine:
                 stored_logP_cutoff = (float(ckpt["logP_cutoff"])
                                       if "logP_cutoff" in ckpt.files
                                       else 0.0)
+                stored_logP_scope = (str(ckpt["logP_cutoff_scope"])
+                                     if "logP_cutoff_scope" in ckpt.files
+                                     else "period_only")
                 if stored_logP_mode != logP_cutoff_mode:
                     mismatches.append(
                         "logP_cutoff_mode: stored=%s current=%s" % (
@@ -1830,6 +1902,10 @@ class GridSearchEngine:
                     mismatches.append(
                         "logP_cutoff: stored=%.6f current=%.6f" % (
                             stored_logP_cutoff, logP_cutoff))
+                if stored_logP_scope != logP_cutoff_scope:
+                    mismatches.append(
+                        "logP_cutoff_scope: stored=%s current=%s" % (
+                            stored_logP_scope, logP_cutoff_scope))
 
                 if mismatches:
                     raise RuntimeError(
@@ -2122,6 +2198,8 @@ class GridSearchEngine:
                     e_score_mode=e_score_mode,
                     logP_cutoff_mode=logP_cutoff_mode,
                     logP_cutoff=logP_cutoff,
+                    logP_cutoff_scope=logP_cutoff_scope,
+                    apply_lucy_sweeny_e=apply_lucy_sweeny_e,
                     global_hists={
                         "total": global_hist_total,
                         "det": global_hist_det,
@@ -2226,6 +2304,8 @@ class GridSearchEngine:
                                 e_score_mode=e_score_mode,
                                 logP_cutoff_mode=logP_cutoff_mode,
                                 logP_cutoff=logP_cutoff,
+                                logP_cutoff_scope=logP_cutoff_scope,
+                                apply_lucy_sweeny_e=apply_lucy_sweeny_e,
                                 global_hists={
                                     "total": global_hist_total,
                                     "det": global_hist_det,
@@ -2255,6 +2335,8 @@ class GridSearchEngine:
                     e_score_mode=e_score_mode,
                     logP_cutoff_mode=logP_cutoff_mode,
                     logP_cutoff=logP_cutoff,
+                    logP_cutoff_scope=logP_cutoff_scope,
+                    apply_lucy_sweeny_e=apply_lucy_sweeny_e,
                     global_hists={
                         "total": global_hist_total,
                         "det": global_hist_det,
@@ -2314,6 +2396,8 @@ class GridSearchEngine:
                         e_score_mode=e_score_mode,
                         logP_cutoff_mode=logP_cutoff_mode,
                         logP_cutoff=logP_cutoff,
+                        logP_cutoff_scope=logP_cutoff_scope,
+                        apply_lucy_sweeny_e=apply_lucy_sweeny_e,
                         global_hists={
                             "total": global_hist_total,
                             "det": global_hist_det,
@@ -2358,13 +2442,14 @@ class GridSearchEngine:
             "ks_logP_cube": ks_logP_cube,
             "ks_e_cube": ks_e_cube,
             "ks_K1_cube": ks_K1_cube,
-            "N_stars": self.cfg.get("n_stars_sample", len(self.M1_arr)),
+            "N_stars": N_stars,
             "N_det_obs": len(obs_logP),
             "step_to_ijkl": step_to_ijkl,
             "checkpoint_dir": checkpoint_dir,
             "e_score_mode": e_score_mode,
             "logP_cutoff_mode": logP_cutoff_mode,
             "logP_cutoff": logP_cutoff,
+            "logP_cutoff_scope": logP_cutoff_scope,
             "global_hists": {
                 "total": global_hist_total,
                 "det": global_hist_det,
@@ -2681,6 +2766,8 @@ def aggregate_tasks(base_dir, output_dir=None):
     merged_e_score_mode = None
     merged_logP_cutoff_mode = None
     merged_logP_cutoff = None
+    merged_logP_cutoff_scope = None
+    merged_apply_lucy_sweeny_e = None
 
     for td in task_dirs:
         npz_path = os.path.join(td, "checkpoint_cubes.npz")
@@ -2707,22 +2794,39 @@ def aggregate_tasks(base_dir, output_dir=None):
                 "inconsistent", td, this_mode, merged_e_score_mode)
 
         # Same check for the logP cutoff. Pre-feature checkpoints lack
-        # both keys → treat as "none" / 0.0.
+        # the keys → treat as "none" / 0.0 / "period_only".
         this_logP_mode = (str(ckpt["logP_cutoff_mode"])
                           if "logP_cutoff_mode" in ckpt.files else "none")
         this_logP_cutoff = (float(ckpt["logP_cutoff"])
                             if "logP_cutoff" in ckpt.files else 0.0)
+        this_logP_scope = (str(ckpt["logP_cutoff_scope"])
+                           if "logP_cutoff_scope" in ckpt.files
+                           else "period_only")
         if merged_logP_cutoff_mode is None:
             merged_logP_cutoff_mode = this_logP_mode
             merged_logP_cutoff = this_logP_cutoff
+            merged_logP_cutoff_scope = this_logP_scope
         elif (this_logP_mode != merged_logP_cutoff_mode
               or not np.isclose(this_logP_cutoff, merged_logP_cutoff,
-                                atol=1e-6)):
+                                atol=1e-6)
+              or this_logP_scope != merged_logP_cutoff_scope):
             logger.warning(
-                "Task %s logP_cutoff_mode=%s, cutoff=%.4f differs from "
-                "%s, %.4f; merge may be inconsistent",
-                td, this_logP_mode, this_logP_cutoff,
-                merged_logP_cutoff_mode, merged_logP_cutoff)
+                "Task %s logP_cutoff_mode=%s, cutoff=%.4f, scope=%s differs "
+                "from %s, %.4f, %s; merge may be inconsistent",
+                td, this_logP_mode, this_logP_cutoff, this_logP_scope,
+                merged_logP_cutoff_mode, merged_logP_cutoff,
+                merged_logP_cutoff_scope)
+
+        # Lucy-Sweeney handling — same cross-task consistency check.
+        this_lucy = (bool(ckpt["apply_lucy_sweeny_e"])
+                     if "apply_lucy_sweeny_e" in ckpt.files else True)
+        if merged_apply_lucy_sweeny_e is None:
+            merged_apply_lucy_sweeny_e = this_lucy
+        elif this_lucy != merged_apply_lucy_sweeny_e:
+            logger.warning(
+                "Task %s apply_lucy_sweeny_e=%s differs from %s; merge "
+                "may be inconsistent", td, this_lucy,
+                merged_apply_lucy_sweeny_e)
 
         # Merge cubes: each task only fills its own cells.
         pdet_cube += ckpt["pdet_cube"]
@@ -2850,6 +2954,9 @@ def aggregate_tasks(base_dir, output_dir=None):
         "ks_e_cube": test_cubes_agg["ks"]["e"],
         "ks_K1_cube": test_cubes_agg["ks"]["K1"],
         "e_score_mode": merged_e_score_mode or "combined",
+        "logP_cutoff_mode": merged_logP_cutoff_mode or "none",
+        "logP_cutoff": merged_logP_cutoff if merged_logP_cutoff is not None else 0.0,
+        "logP_cutoff_scope": merged_logP_cutoff_scope or "period_only",
     }
 
     # Save merged output.
@@ -2865,6 +2972,10 @@ def aggregate_tasks(base_dir, output_dir=None):
         logP_cutoff_mode=np.array(merged_logP_cutoff_mode or "none"),
         logP_cutoff=np.array(merged_logP_cutoff
                              if merged_logP_cutoff is not None else 0.0),
+        logP_cutoff_scope=np.array(merged_logP_cutoff_scope or "period_only"),
+        apply_lucy_sweeny_e=np.array(
+            bool(merged_apply_lucy_sweeny_e)
+            if merged_apply_lucy_sweeny_e is not None else True),
     )
     for tname in _ALL_TESTS:
         save_kw_cubes["gmf_%s_cube" % tname] = gmf_cubes_agg[tname]
@@ -3506,12 +3617,19 @@ def main():
             "logP_cutoff_mode='manual' requires bias_grid.logP_cutoff_value "
             "to be set in the YAML config")
 
+    logP_cutoff_scope_cfg = _bg("logP_cutoff_scope")
+    if logP_cutoff_scope_cfg not in _LOGP_CUTOFF_SCOPES:
+        raise ValueError(
+            "Unknown logP_cutoff_scope %r in bias_grid; valid: %s"
+            % (logP_cutoff_scope_cfg, " | ".join(_LOGP_CUTOFF_SCOPES)))
+
     # Load bias config (defaults + YAML overrides for the scoring-related keys).
     cfg = copy.deepcopy(DEFAULT_BIAS_CFG)
     cfg["e_score_mode"] = e_score_mode_cfg
     cfg["logP_cutoff_mode"] = logP_cutoff_mode_cfg
     cfg["logP_cutoff_value"] = _bg("logP_cutoff_value")
     cfg["logP_cutoff_smooth_sigma"] = _bg("logP_cutoff_smooth_sigma")
+    cfg["logP_cutoff_scope"] = logP_cutoff_scope_cfg
     # Drop the legacy boolean so _resolve_e_score_mode uses the new
     # explicit key without ambiguity.
     cfg.pop("split_e_circular", None)
@@ -3537,8 +3655,12 @@ def main():
     setup_logging(output_dir)
 
     # 1) Load observed distributions
-    logger.info("Loading observed distributions from LaTeX tables...")
-    obs = load_observed_from_tex(sb1_tex, sb2_tex)
+    apply_lucy_sweeny_e = bool(_bg("apply_lucy_sweeny_e"))
+    cfg["apply_lucy_sweeny_e"] = apply_lucy_sweeny_e
+    logger.info("Loading observed distributions from LaTeX tables "
+                "(apply_lucy_sweeny_e=%s)...", apply_lucy_sweeny_e)
+    obs = load_observed_from_tex(sb1_tex, sb2_tex,
+                                 apply_lucy_sweeny_e=apply_lucy_sweeny_e)
     logger.info("  SB1: %d, SB2: %d, Total: %d",
                 obs['n_sb1'], obs['n_sb2'], len(obs['logP']))
     cfg["n_det_obs"] = len(obs["logP"])
@@ -3583,6 +3705,7 @@ def main():
                 cfg["logP_cutoff_mode"],
                 cfg.get("logP_cutoff_value"),
                 cfg.get("logP_cutoff_smooth_sigma", 0.15))
+    logger.info("  logP_cutoff_scope: %s", cfg["logP_cutoff_scope"])
 
     # 3) Setup grids from the selected preset
     preset = GRID_PRESETS[preset_name]
@@ -3627,6 +3750,7 @@ def main():
         "seed": seed,
         "n_stars_sample": cfg["n_stars_sample"],
         "e_score_mode": cfg["e_score_mode"],
+        "apply_lucy_sweeny_e": apply_lucy_sweeny_e,
         "detect_method": detect_method,
         "n_workers": n_workers_cfg,
         "parallel_grid": parallel_grid,
@@ -3724,6 +3848,8 @@ def main():
         save_kw_cubes["logP_cutoff_mode"] = np.array(
             results["logP_cutoff_mode"])
         save_kw_cubes["logP_cutoff"] = np.array(results["logP_cutoff"])
+        save_kw_cubes["logP_cutoff_scope"] = np.array(
+            results.get("logP_cutoff_scope", "period_only"))
     # All tests
     if "gmf_cubes" in results:
         for tname in _ALL_TESTS:

@@ -39,7 +39,7 @@ from orbital.plotting import (
 
 LOCAL_OUTPUT = "/tmp/cloud_results"
 DEFAULT_YAML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "params_cloud.yaml")
+                            "configs", "params_cloud.yaml")
 
 
 def load_results(run_dir):

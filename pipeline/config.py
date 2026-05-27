@@ -16,8 +16,8 @@ from utils.constants import (
 # Resolve default config relative to the repository root (two levels up).
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Prefer params.yaml; fall back to params.json for backward compat.
-PARAM_FILE = os.path.join(_REPO_ROOT, "params.yaml")
+# Prefer configs/params.yaml; fall back to params.json for backward compat.
+PARAM_FILE = os.path.join(_REPO_ROOT, "configs", "params.yaml")
 if not os.path.exists(PARAM_FILE):
     PARAM_FILE = os.path.join(_REPO_ROOT, "params.json")
 

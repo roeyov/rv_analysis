@@ -2,8 +2,8 @@
 # params.yaml — Pipeline configuration
 #
 # Shared by all stages:
-#   Stage 2:  python -m pipeline.evaluator --config params.yaml
-#   Stage 4:  python -m MCMC.batch         --config params.yaml
+#   Stage 2:  python -m pipeline.evaluator --config configs/params.yaml
+#   Stage 4:  python -m MCMC.batch         --config configs/params.yaml
 # =============================================================================
 
 plot: true
@@ -14,12 +14,12 @@ manual_candidate_periods: [30]
 # ---- Stage 2: pipeline I/O paths ----
 # All *_dir values in pipeline_io / mcmc_params that are relative
 # are resolved against base_dir by load_args().
-base_dir:      "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded"
-lmfit_subdir:  &lmfit_subdir  "second_pdc"             # stage 2 writes, stage 4 reads
+base_dir:      "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_reruns2_from_coadded"
+lmfit_subdir:  &lmfit_subdir  "third_pdc"             # stage 2 writes, stage 4 reads
 mcmc_subdir:   &mcmc_subdir   "mcmc_out2"            # stage 4 writes (nested under lmfit_subdir)
 
 pipeline_io:
-  object_list: ['8-031']          # empty list = process all stars
+  object_list: ['3-042']          # empty list = process all stars
   mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"            # path to mass_bloem.csv, empty = skip
   use_fwhm: true
 

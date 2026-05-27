@@ -58,6 +58,7 @@ bias_grid:
   logP_cutoff_mode: none           # none | numerical | manual
   logP_cutoff_value: null          # used iff mode == "manual"
   logP_cutoff_smooth_sigma: 0.15   # used iff mode == "numerical"
+  logP_cutoff_scope: period_only   # period_only | exclude
   detect_method: pipeline   # pipeline | rv_threshold
 
   # parallelism

@@ -13,8 +13,8 @@ For each detected binary with observed (P, e, K1, gamma):
 Then:  f_bin = (1/N_stars) × Σ (1/p_det_i)
 
 Usage:
-    python -m simulations.horvitz_thompson --config params_bias.yaml
-    python -m simulations.horvitz_thompson --config params_bias.yaml --n-trials 10 --subset 5
+    python -m simulations.horvitz_thompson --config configs/params_bias.yaml
+    python -m simulations.horvitz_thompson --config configs/params_bias.yaml --n-trials 10 --subset 5
 """
 
 import argparse
@@ -302,7 +302,7 @@ def horvitz_thompson_fbin(p_det_arr, N_stars, n_bootstrap=10000, seed=42):
 def main():
     parser = argparse.ArgumentParser(
         description="Horvitz-Thompson intrinsic binary fraction estimator.")
-    parser.add_argument("--config", default="params_bias.yaml",
+    parser.add_argument("--config", default="configs/params_bias.yaml",
                         help="Pipeline config YAML.")
     parser.add_argument("--n-trials", type=int, default=100,
                         help="Injection-recovery trials per binary (default: 100).")
