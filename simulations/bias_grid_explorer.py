@@ -26,8 +26,9 @@ from plotly.subplots import make_subplots
 
 from simulations.bias_config import DEFAULT_BIAS_CFG
 from simulations.bias_grid import (
-    load_observed_from_tex, _HIST_BINS, _HIST_PAIRS, _HIST_NBINS,
+    _HIST_BINS, _HIST_PAIRS, _HIST_NBINS,
     _DET_SHARDS_DIR, _load_det_shard,
+    CUBE_SCHEMA_VERSION,
 )
 
 
@@ -38,15 +39,23 @@ from simulations.bias_grid import (
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=str, default=None)
-    parser.add_argument("--sb1-tex", default=None)
-    parser.add_argument("--sb2-tex", default=None)
-    parser.add_argument(
-        "--apply-lucy-sweeny-e", choices=["true", "false"], default=None,
-        help="Override the Lucy-Sweeney handling stored in the cubes. "
-             "Useful for older runs that did not persist the flag.",
-    )
     args, _ = parser.parse_known_args()
     return args
+
+
+def _obs_e_from_cube(e_value, e_is_upper_limit, apply_lucy_sweeny_e):
+    """Apply Lucy-Sweeney convention to raw cube obs e.
+
+    Collapses upper-limit rows to e=0 when ``apply_lucy_sweeny_e`` is True;
+    otherwise keeps the reported limit value. Mirrors the inline logic in
+    ``bias_grid.load_observed_from_tex`` so explorer renders match what the
+    runtime scored.
+    """
+    e = np.asarray(e_value, dtype=float).copy()
+    mask = np.asarray(e_is_upper_limit, dtype=bool)
+    if apply_lucy_sweeny_e:
+        e[mask] = 0.0
+    return e
 
 
 # ---------------------------------------------------------------------------
@@ -55,14 +64,31 @@ def parse_args():
 
 @st.cache_data
 def load_grid_data(output_dir):
-    """Load grid_cubes.npz and optionally grid_detected.npz."""
-    # Try grid_cubes.npz first, fall back to checkpoint_cubes.npz
+    """Load grid_cubes.npz (or checkpoint_cubes.npz) plus shard metadata.
+
+    Enforces ``cube_schema_version >= CUBE_SCHEMA_VERSION``: older cubes
+    don't carry the obs arrays the explorer now requires, so re-rendering
+    them would silently fall back to outdated paths. Hard-fail instead.
+    """
     cubes_path = os.path.join(output_dir, "grid_cubes.npz")
     if not os.path.exists(cubes_path):
         cubes_path = os.path.join(output_dir, "checkpoint_cubes.npz")
     cubes = np.load(cubes_path, allow_pickle=True)
 
+    stored_version = (int(cubes["cube_schema_version"])
+                      if "cube_schema_version" in cubes.files else 0)
+    if stored_version < CUBE_SCHEMA_VERSION:
+        st.error(
+            "Cube schema mismatch: %s reports version %d, explorer "
+            "requires >= %d. Re-run bias_grid.py on this output dir to "
+            "regenerate the cubes with the obs arrays and extra "
+            "metadata the explorer now needs."
+            % (cubes_path, stored_version, CUBE_SCHEMA_VERSION)
+        )
+        st.stop()
+
     data = {
+        "cube_schema_version": stored_version,
         "pdet_cube": cubes["pdet_cube"],
         "pi_grid": cubes["pi_grid"],
         "kappa_grid": cubes["kappa_grid"],
@@ -134,23 +160,39 @@ def load_grid_data(output_dir):
                          for t in test_pval_cubes)
         data["e_score_mode"] = "split" if has_e_circ else "combined"
 
-    # logP cutoff metadata (added when bias_grid started persisting it).
-    # Older cube files omit these keys — default to a no-op.
-    if "logP_cutoff" in cubes.files:
-        data["logP_cutoff"] = float(cubes["logP_cutoff"])
-    else:
-        data["logP_cutoff"] = 0.0
-    if "logP_cutoff_mode" in cubes.files:
-        data["logP_cutoff_mode"] = str(cubes["logP_cutoff_mode"])
-    else:
-        data["logP_cutoff_mode"] = "none"
+    # logP cutoff metadata. Schema v2+ guarantees the mode/value keys;
+    # smooth_sigma is best-effort (only present for newly-rerun cubes).
+    data["logP_cutoff"] = float(cubes["logP_cutoff"]) \
+        if "logP_cutoff" in cubes.files else 0.0
+    data["logP_cutoff_mode"] = str(cubes["logP_cutoff_mode"]) \
+        if "logP_cutoff_mode" in cubes.files else "none"
+    data["logP_cutoff_scope"] = str(cubes["logP_cutoff_scope"]) \
+        if "logP_cutoff_scope" in cubes.files else "period_only"
+    data["logP_cutoff_smooth_sigma"] = (
+        float(cubes["logP_cutoff_smooth_sigma"])
+        if "logP_cutoff_smooth_sigma" in cubes.files else float("nan"))
 
-    # Lucy-Sweeney handling — old cubes pre-date the flag; default True
-    # to match the historical behavior they were produced under.
-    if "apply_lucy_sweeny_e" in cubes.files:
-        data["apply_lucy_sweeny_e"] = bool(cubes["apply_lucy_sweeny_e"])
-    else:
-        data["apply_lucy_sweeny_e"] = True
+    data["apply_lucy_sweeny_e"] = bool(cubes["apply_lucy_sweeny_e"]) \
+        if "apply_lucy_sweeny_e" in cubes.files else True
+
+    # Source tex paths — purely informational, surfaced as captions.
+    data["sb1_tex"] = str(cubes["sb1_tex"]) \
+        if "sb1_tex" in cubes.files else ""
+    data["sb2_tex"] = str(cubes["sb2_tex"]) \
+        if "sb2_tex" in cubes.files else ""
+
+    # Observed distributions. Stored as raw e_value + is_upper_limit mask
+    # so the explorer can re-render under either Lucy-Sweeney convention.
+    data["obs"] = {
+        "logP": np.asarray(cubes["obs_logP"]),
+        "e_value": np.asarray(cubes["obs_e_value"]),
+        "e_is_upper_limit": np.asarray(cubes["obs_e_is_upper_limit"],
+                                       dtype=bool),
+        "K1": np.asarray(cubes["obs_K1"]),
+        "q_sb2": np.asarray(cubes["obs_q_sb2"]),
+        "n_sb1": int(cubes["obs_n_sb1"]),
+        "n_sb2": int(cubes["obs_n_sb2"]),
+    }
 
     # Default gmf_cube / best_fit (KS for backward compat)
     default_test = available_tests[0] if available_tests else "ks"
@@ -219,12 +261,6 @@ def load_grid_data(output_dir):
         data["has_detected"] = False
 
     return data
-
-
-@st.cache_data
-def load_observed(sb1_tex, sb2_tex, apply_lucy_sweeny_e=True):
-    return load_observed_from_tex(
-        sb1_tex, sb2_tex, apply_lucy_sweeny_e=apply_lucy_sweeny_e)
 
 
 # ---------------------------------------------------------------------------
@@ -479,20 +515,10 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
     cfg = DEFAULT_BIAS_CFG
     pi_val, kappa_val, eta_val, fbin_val = current_vals
 
-    # When the "Apply logP cutoff" checkbox is on, the e and K1 obs panels
-    # should show the conditional distribution given P >= 10^cutoff —
-    # i.e. drop the same 15 short-period systems that the logP panel
-    # already drops. The cutoff is the system-level filter (same obs
-    # row dropped from every column), matching the runtime "exclude"
-    # scope. We jointly mask obs_logP / obs_e / obs_K1 here once.
-    if logP_cutoff > 0.0:
-        obs_logP_arr = np.asarray(obs.get("logP")) if obs is not None else None
-        if obs_logP_arr is not None and obs_logP_arr.size:
-            keep = obs_logP_arr >= logP_cutoff
-            obs = {k: (np.asarray(v)[keep]
-                       if isinstance(v, (list, np.ndarray))
-                          and len(v) == len(obs_logP_arr) else v)
-                   for k, v in obs.items()}
+    # The caller is responsible for any scope-aware obs filtering: under
+    # 'exclude' it pre-masks P/e/K1 jointly; under 'period_only' it masks
+    # only obs['logP']. Here we treat ``logP_cutoff`` as the *axis* clip
+    # value for the logP panel only — it sets clip_lo for the P CDF.
 
     # Build empirical "all injected" arrays when requested
     empirical_all = {}
@@ -944,21 +970,10 @@ def main():
 
     st.caption(os.path.basename(output_dir.rstrip("/")))
 
-    # Load data
+    # Load data. Obs lives in the cube now (schema v2+); apply Lucy-Sweeney
+    # at display time per cube flag, with an in-page toggle to override.
     data = load_grid_data(output_dir)
-
-    # Load observed distributions. CLI flag overrides the cube-persisted
-    # value, so users can re-inspect older runs that did not store it.
-    sb1 = args.sb1_tex or DEFAULT_BIAS_CFG.get("sb1_tex", "")
-    sb2 = args.sb2_tex or DEFAULT_BIAS_CFG.get("sb2_tex", "")
-    if args.apply_lucy_sweeny_e is not None:
-        apply_lucy = (args.apply_lucy_sweeny_e == "true")
-    else:
-        apply_lucy = bool(data.get("apply_lucy_sweeny_e", True))
-    data["apply_lucy_sweeny_e"] = apply_lucy
-    obs = None
-    if sb1 and sb2 and os.path.exists(sb1) and os.path.exists(sb2):
-        obs = load_observed(sb1, sb2, apply_lucy_sweeny_e=apply_lucy)
+    obs_cube = data["obs"]
 
     pi_grid = data["pi_grid"]
     kappa_grid = data["kappa_grid"]
@@ -1023,6 +1038,21 @@ def main():
                        data.get("e_score_mode", "combined"))
     st.sidebar.caption("apply_lucy_sweeny_e: %s" %
                        data.get("apply_lucy_sweeny_e", True))
+    st.sidebar.caption("logP_cutoff_mode: %s" %
+                       data.get("logP_cutoff_mode", "none"))
+    st.sidebar.caption("logP_cutoff_scope: %s" %
+                       data.get("logP_cutoff_scope", "period_only"))
+    _cut_val = float(data.get("logP_cutoff", 0.0))
+    st.sidebar.caption("logP_cutoff: %.3f" % _cut_val)
+    _smooth_sigma = data.get("logP_cutoff_smooth_sigma", float("nan"))
+    if np.isfinite(_smooth_sigma):
+        st.sidebar.caption("logP_cutoff_smooth_sigma: %.3f" % _smooth_sigma)
+    if data.get("sb1_tex"):
+        st.sidebar.caption("sb1_tex: %s" %
+                           os.path.basename(data["sb1_tex"]))
+    if data.get("sb2_tex"):
+        st.sidebar.caption("sb2_tex: %s" %
+                           os.path.basename(data["sb2_tex"]))
     st.sidebar.metric("p_det", "%.4f" % data["pdet_cube"][i, j, k, l])
     gmf_val = gmf_cube[i, j, k, l]
     st.sidebar.metric("log GMF (%s)" % test_label,
@@ -1073,30 +1103,42 @@ def main():
     st.plotly_chart(fig_corner, use_container_width=True)
 
     # Section 3: CDF Comparison
-    if data["has_detected"] and obs is not None:
+    if data["has_detected"]:
         st.header("CDF Comparison")
         use_empirical = st.checkbox(
             "Use empirical intrinsic (det + nondet) instead of power-law",
             value=True, key="use_empirical",
         )
 
-        # "As scored" toggles: match the filtering used to compute the
+        # "As scored" toggles match the filtering used to compute the
         # KS/AD/CvM p-values stored in the cubes.
         e_mode_data = data.get("e_score_mode", "combined")
         logP_cutoff_data = float(data.get("logP_cutoff", 0.0))
         logP_cutoff_mode = data.get("logP_cutoff_mode", "none")
+        logP_cutoff_scope = data.get("logP_cutoff_scope", "period_only")
         cutoff_active = logP_cutoff_data > 0.0
+        cube_lucy = bool(data.get("apply_lucy_sweeny_e", True))
 
-        col_cb1, col_cb2 = st.columns(2)
+        col_cb1, col_cb2, col_cb3 = st.columns(3)
+
+        if logP_cutoff_scope == "period_only":
+            cutoff_help = (
+                "Drop obs systems with logP < cutoff from the P panel "
+                "only — mirrors the runtime 'period_only' scope: e/K1 "
+                "obs and sim/intrinsic distributions are unaffected.")
+        else:
+            cutoff_help = (
+                "Drop obs systems with logP < cutoff jointly from the "
+                "P/e/K1 panels — mirrors the runtime 'exclude' scope. "
+                "Sim/intrinsic are already population-restricted by "
+                "log_p_min override at scoring time.")
         apply_logP_cutoff = col_cb1.checkbox(
-            "Apply logP cutoff to obs P / e / K1 panels: "
-            "cutoff=%.3f (mode=%s)" % (logP_cutoff_data, logP_cutoff_mode),
+            "Apply logP cutoff (scope=%s, value=%.3f, mode=%s)" % (
+                logP_cutoff_scope, logP_cutoff_data, logP_cutoff_mode),
             value=cutoff_active,
             disabled=(not cutoff_active),
             key="apply_logP_cutoff",
-            help="Drop obs systems with logP < cutoff from all three "
-                 "observational CDF panels (P, e, K1). Mirrors the "
-                 "'exclude' scope runtime behavior.",
+            help=cutoff_help,
         )
         if e_mode_data == "eccentric_only":
             restrict_e_to_positive = col_cb2.checkbox(
@@ -1106,6 +1148,50 @@ def main():
             )
         else:
             restrict_e_to_positive = True
+
+        display_lucy = col_cb3.checkbox(
+            "Apply Lucy-Sweeney (cube=%s)" % cube_lucy,
+            value=cube_lucy,
+            key="display_lucy",
+            help="Collapse e upper-limit rows to e=0 (cube convention) vs "
+                 "keep the reported limit value. Off-default diverges from "
+                 "the persisted p-values.",
+        )
+        if display_lucy != cube_lucy:
+            st.warning(
+                "Display-only override: persisted p-values were computed "
+                "with apply_lucy_sweeny_e=%s. CDFs below use %s." % (
+                    cube_lucy, display_lucy))
+
+        # Build the obs dict the rest of the section consumes: apply
+        # display-time Lucy-Sweeney, then (if requested) the scope-aware
+        # logP cutoff filter.
+        obs = {
+            "logP": np.asarray(obs_cube["logP"]),
+            "e": _obs_e_from_cube(obs_cube["e_value"],
+                                  obs_cube["e_is_upper_limit"],
+                                  display_lucy),
+            "K1": np.asarray(obs_cube["K1"]),
+            "q_sb2": np.asarray(obs_cube["q_sb2"]),
+            "n_sb1": obs_cube["n_sb1"],
+            "n_sb2": obs_cube["n_sb2"],
+        }
+        if apply_logP_cutoff and cutoff_active:
+            keep = obs["logP"] >= logP_cutoff_data
+            if logP_cutoff_scope == "exclude":
+                # Joint mask: drop the same rows from P, e, K1 — matches
+                # bias_grid.py:1733-1735 under scope='exclude'.
+                obs = {
+                    "logP": obs["logP"][keep],
+                    "e": obs["e"][keep],
+                    "K1": obs["K1"][keep],
+                    "q_sb2": obs["q_sb2"],
+                    "n_sb1": obs["n_sb1"],
+                    "n_sb2": obs["n_sb2"],
+                }
+            else:
+                # period_only: filter only the P panel; e/K1 stay full.
+                obs["logP"] = obs["logP"][keep]
 
         det_params = get_detected_for_point(data, i, j, k, l)
         ks_pvals = {}
@@ -1135,12 +1221,9 @@ def main():
         else:
             st.info("No detected systems for this grid point "
                     "(or fewer than 2 detections).")
-    elif not data["has_detected"]:
-        st.info("CDF comparison unavailable: grid_detected.npz not found. "
-                "Re-run bias_grid with the updated code to generate it.")
-    elif obs is None:
-        st.info("CDF comparison unavailable: could not load observed "
-                "distributions from LaTeX tables. Check --sb1-tex / --sb2-tex.")
+    else:
+        st.info("CDF comparison unavailable: detected arrays missing. "
+                "Re-run bias_grid to generate per-grid-point shards.")
 
     # Section 4: 2D Detection Probability Maps
     if data["has_detected"] and data.get("hist_total"):

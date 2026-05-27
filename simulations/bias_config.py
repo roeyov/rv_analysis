@@ -20,14 +20,14 @@ DEFAULT_BIAS_CFG = {
     #   "combined"       — single 2-sample test on full e (zeros + nonzeros)
     #   "split"          — 2-sample test on e>0 + binomial on circular fraction
     #   "eccentric_only" — 2-sample test on e>0 only; circular fraction ignored
-    "e_score_mode": "split",
+    "e_score_mode": "combined",
 
     # Lucy-Sweeney handling for observed eccentricity upper limits.
     # True  — rows reported as "\leq 0.0X" in the tex tables are treated
     #         as circular (e = 0). Matches the historical behavior.
     # False — rows reported as "\leq 0.0X" keep the limit value as e
     #         (e = 0.0X). Use for sensitivity tests against e_score_mode.
-    "apply_lucy_sweeny_e": True,
+    "apply_lucy_sweeny_e": False,
 
     # logP cutoff mode (3-way). Drops short-period systems (expected
     # merger / common-envelope attrition) so the power-law model is fit
@@ -36,7 +36,7 @@ DEFAULT_BIAS_CFG = {
     #   "numerical" — locate the first elbow of the smoothed obs CDF via
     #                 a Gaussian-smoothed 2nd derivative
     #   "manual"    — use the explicit value in `logP_cutoff_value`
-    "logP_cutoff_mode": "none",
+    "logP_cutoff_mode": "numerical",
     "logP_cutoff_value": None,        # used iff mode == "manual"
     "logP_cutoff_smooth_sigma": 0.15, # Gaussian σ (dex) for "numerical"
 
@@ -55,7 +55,7 @@ DEFAULT_BIAS_CFG = {
     #                   log_p_min override → [cutoff, log_p_max]).
     #                   Recovered f_bin becomes the ABOVE-CUTOFF
     #                   binary fraction.
-    "logP_cutoff_scope": "period_only",
+    "logP_cutoff_scope": "exclude",
 
     # Grid search
     "n_inject_per_star": 100,
@@ -79,16 +79,16 @@ DEFAULT_BIAS_CFG = {
     "output_dir": None,           # None -> <base_dir>/bias_grid_results/<preset>/
 
     # Run shape (former CLI flags)
-    "preset": "D",
+    "preset": "final3_5min",
     "n_inject": None,             # None -> preset default
     "seed": 42,
     # n_stars_sample (above) doubles as the override: when None at runtime
     # the loader sets it to len(star_df).
-    "detect_method": "pipeline",  # pipeline | rv_threshold
+    "detect_method": "rv_threshold",  # pipeline | rv_threshold
 
     # Parallelism (former CLI flags)
     "n_workers": None,            # None -> cpu_count - 2
-    "parallel_grid": False,
+    "parallel_grid": True,
 }
 
 # =============================================================================

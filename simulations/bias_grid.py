@@ -165,6 +165,13 @@ _E_SCORE_MODES = ("combined", "split", "eccentric_only")
 _LOGP_CUTOFF_MODES = ("none", "numerical", "manual")
 _LOGP_CUTOFF_SCOPES = ("period_only", "exclude")
 
+# Bumped whenever the persisted-cube schema grows new required keys. The
+# explorer hard-errors below this version (see bias_grid_explorer.py).
+#   v2 (2026-05): adds obs_logP/obs_e_value/obs_e_is_upper_limit/obs_K1/
+#                 obs_q_sb2/obs_n_sb1/obs_n_sb2, plus logP_cutoff_smooth_sigma,
+#                 sb1_tex, sb2_tex.
+CUBE_SCHEMA_VERSION = 2
+
 
 def _resolve_logP_cutoff_mode(cfg):
     """Pick the logP cutoff mode from a config dict; default 'none'."""
@@ -544,15 +551,20 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
     Returns
     -------
     obs : dict with keys:
-        'logP'  : array of log10(P/days)
-        'e'     : array of eccentricities
-        'K1'    : array of K1 [km/s]
-        'q_sb2' : array of mass ratios (SB2 only)
-        'n_sb1' : number of usable SB1 systems
-        'n_sb2' : number of SB2 systems
+        'logP'             : array of log10(P/days)
+        'e'                : array of eccentricities, post-Lucy-Sweeney
+        'e_value'          : raw eccentricity per row (NaN→0 only); upper
+                             limits retain their reported value here
+        'e_is_upper_limit' : boolean mask, True for Lucy-Sweeney rows
+        'K1'               : array of K1 [km/s]
+        'q_sb2'            : array of mass ratios (SB2 only)
+        'n_sb1'            : number of usable SB1 systems
+        'n_sb2'            : number of SB2 systems
     """
     all_logP = []
     all_e = []
+    all_e_value = []
+    all_e_upper = []
     all_K1 = []
     sb2_q = []
 
@@ -595,11 +607,16 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         e_is_upper_limit = r"\leq" in cols[5]
         if np.isnan(e_val):
             e_to_append = 0.0
+            e_raw = 0.0
         elif e_is_upper_limit:
             e_to_append = 0.0 if apply_lucy_sweeny_e else e_val
+            e_raw = e_val
         else:
             e_to_append = e_val
+            e_raw = e_val
         all_e.append(e_to_append)
+        all_e_value.append(e_raw)
+        all_e_upper.append(bool(e_is_upper_limit and not np.isnan(e_val)))
         all_K1.append(K1_val)
 
     n_sb1 = len(all_logP)
@@ -641,11 +658,16 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         e_is_upper_limit = r"\leq" in cols[5]
         if np.isnan(e_val):
             e_to_append = 0.0
+            e_raw = 0.0
         elif e_is_upper_limit:
             e_to_append = 0.0 if apply_lucy_sweeny_e else e_val
+            e_raw = e_val
         else:
             e_to_append = e_val
+            e_raw = e_val
         all_e.append(e_to_append)
+        all_e_value.append(e_raw)
+        all_e_upper.append(bool(e_is_upper_limit and not np.isnan(e_val)))
         all_K1.append(K1_val)
         sb2_q.append(q_val if not np.isnan(q_val) else np.nan)
 
@@ -654,6 +676,8 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
     obs = {
         "logP": np.array(all_logP),
         "e": np.array(all_e),
+        "e_value": np.array(all_e_value),
+        "e_is_upper_limit": np.array(all_e_upper, dtype=bool),
         "K1": np.array(all_K1),
         "q_sb2": np.array(sb2_q),
         "n_sb1": n_sb1,
@@ -1371,6 +1395,10 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
                      logP_cutoff=0.0,
                      logP_cutoff_scope="period_only",
                      apply_lucy_sweeny_e=True,
+                     logP_cutoff_smooth_sigma=0.15,
+                     sb1_tex="",
+                     sb2_tex="",
+                     obs=None,
                      global_hists=None):
     """Save intermediate results so a killed run can be resumed.
 
@@ -1380,6 +1408,7 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
     """
     logger.debug("_save_checkpoint: step %d", completed_steps)
     save_kw = dict(
+        cube_schema_version=np.array(CUBE_SCHEMA_VERSION),
         pdet_cube=pdet_cube,
         pi_grid=pi_grid,
         kappa_grid=kappa_grid,
@@ -1394,7 +1423,20 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
         logP_cutoff=np.array(logP_cutoff),
         logP_cutoff_scope=np.array(logP_cutoff_scope),
         apply_lucy_sweeny_e=np.array(bool(apply_lucy_sweeny_e)),
+        logP_cutoff_smooth_sigma=np.array(float(logP_cutoff_smooth_sigma)),
+        sb1_tex=np.array(str(sb1_tex)),
+        sb2_tex=np.array(str(sb2_tex)),
     )
+    if obs is not None:
+        save_kw.update(
+            obs_logP=np.asarray(obs["logP"]),
+            obs_e_value=np.asarray(obs["e_value"]),
+            obs_e_is_upper_limit=np.asarray(obs["e_is_upper_limit"], dtype=bool),
+            obs_K1=np.asarray(obs["K1"]),
+            obs_q_sb2=np.asarray(obs["q_sb2"]),
+            obs_n_sb1=np.array(int(obs["n_sb1"])),
+            obs_n_sb2=np.array(int(obs["n_sb2"])),
+        )
     # All tests
     for tname in _ALL_TESTS:
         save_kw["gmf_%s_cube" % tname] = gmf_cubes[tname]
@@ -1616,7 +1658,8 @@ class GridSearchEngine:
             checkpoint_dir=None, preset_name="custom",
             n_workers=1,
             grid_start=0, grid_end=None,
-            parallel_grid=False):
+            parallel_grid=False,
+            obs=None, sb1_tex="", sb2_tex=""):
         """
         Run the full 4D grid search.
 
@@ -1724,6 +1767,17 @@ class GridSearchEngine:
 
         N_det_obs = len(obs_logP)
         N_stars = N_stars_eff
+
+        # Bundle the extra scoring-context kwargs once so every
+        # _save_checkpoint call (4 sites: pre-resume, periodic, parallel
+        # final, sequential) records them consistently.
+        _ckpt_extra = dict(
+            logP_cutoff_smooth_sigma=float(
+                self.cfg.get("logP_cutoff_smooth_sigma", 0.15)),
+            sb1_tex=sb1_tex,
+            sb2_tex=sb2_tex,
+            obs=obs,
+        )
 
         n_pi = len(pi_grid)
         n_kappa = len(kappa_grid)
@@ -2204,6 +2258,7 @@ class GridSearchEngine:
                         "total": global_hist_total,
                         "det": global_hist_det,
                     },
+                    **_ckpt_extra,
                 )
                 _save_det_index(checkpoint_dir, step_to_ijkl)
 
@@ -2310,6 +2365,7 @@ class GridSearchEngine:
                                     "total": global_hist_total,
                                     "det": global_hist_det,
                                 },
+                                **_ckpt_extra,
                             )
                             _save_det_index(checkpoint_dir, step_to_ijkl)
                             logger.info("Checkpoint saved at %d steps done",
@@ -2341,6 +2397,7 @@ class GridSearchEngine:
                         "total": global_hist_total,
                         "det": global_hist_det,
                     },
+                    **_ckpt_extra,
                 )
                 _save_det_index(checkpoint_dir, step_to_ijkl)
 
@@ -2402,6 +2459,7 @@ class GridSearchEngine:
                             "total": global_hist_total,
                             "det": global_hist_det,
                         },
+                        **_ckpt_extra,
                     )
                     _save_det_index(checkpoint_dir, step_to_ijkl)
 
@@ -2963,6 +3021,7 @@ def aggregate_tasks(base_dir, output_dir=None):
     os.makedirs(output_dir, exist_ok=True)
 
     save_kw_cubes = dict(
+        cube_schema_version=np.array(CUBE_SCHEMA_VERSION),
         pdet_cube=pdet_cube,
         pi_grid=pi_grid,
         kappa_grid=kappa_grid,
@@ -2977,6 +3036,20 @@ def aggregate_tasks(base_dir, output_dir=None):
             bool(merged_apply_lucy_sweeny_e)
             if merged_apply_lucy_sweeny_e is not None else True),
     )
+    # Forward the obs arrays + extra metadata from the first task's
+    # checkpoint (they're identical across tasks — same obs is loaded
+    # in every worker). The keys are required by the explorer; aggregate
+    # runs that consumed pre-schema-v2 task checkpoints will lack them.
+    for k in ("logP_cutoff_smooth_sigma", "sb1_tex", "sb2_tex",
+              "obs_logP", "obs_e_value", "obs_e_is_upper_limit",
+              "obs_K1", "obs_q_sb2", "obs_n_sb1", "obs_n_sb2"):
+        if k in first_npz.files:
+            save_kw_cubes[k] = first_npz[k]
+        else:
+            logger.warning(
+                "aggregate_tasks: task checkpoints lack %s — merged cube "
+                "will fail the explorer's schema check. Re-run tasks with "
+                "the updated bias_grid.py.", k)
     for tname in _ALL_TESTS:
         save_kw_cubes["gmf_%s_cube" % tname] = gmf_cubes_agg[tname]
         for par in ("logP", "e", "K1"):
@@ -3823,6 +3896,9 @@ def main():
         grid_start=grid_start,
         grid_end=grid_end_val,
         parallel_grid=parallel_grid,
+        obs=obs,
+        sb1_tex=sb1_tex,
+        sb2_tex=sb2_tex,
     )
 
     if is_task_mode:
@@ -3836,11 +3912,24 @@ def main():
 
     # Save cubes
     save_kw_cubes = dict(
+        cube_schema_version=np.array(CUBE_SCHEMA_VERSION),
         pdet_cube=results["pdet_cube"],
         pi_grid=pi_grid,
         kappa_grid=kappa_grid,
         eta_grid=eta_grid,
         fbin_grid=fbin_grid,
+        apply_lucy_sweeny_e=np.array(bool(apply_lucy_sweeny_e)),
+        logP_cutoff_smooth_sigma=np.array(
+            float(cfg.get("logP_cutoff_smooth_sigma", 0.15))),
+        sb1_tex=np.array(str(sb1_tex)),
+        sb2_tex=np.array(str(sb2_tex)),
+        obs_logP=np.asarray(obs["logP"]),
+        obs_e_value=np.asarray(obs["e_value"]),
+        obs_e_is_upper_limit=np.asarray(obs["e_is_upper_limit"], dtype=bool),
+        obs_K1=np.asarray(obs["K1"]),
+        obs_q_sb2=np.asarray(obs["q_sb2"]),
+        obs_n_sb1=np.array(int(obs["n_sb1"])),
+        obs_n_sb2=np.array(int(obs["n_sb2"])),
     )
     if "e_score_mode" in results:
         save_kw_cubes["e_score_mode"] = np.array(results["e_score_mode"])
