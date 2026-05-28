@@ -96,8 +96,10 @@ def load_grid_data(output_dir):
         "fbin_grid": cubes["fbin_grid"],
     }
 
-    # Load per-test GMF and p-value cubes
-    test_names = ["ks", "ad", "cvm"]
+    # Load per-test GMF and p-value cubes. Wasserstein stores raw
+    # distances in the *_p_* slots (the explorer surfaces the unit
+    # distinction in labels — see `test_labels` and the CDF annotation).
+    test_names = ["ks", "ad", "cvm", "wass"]
     available_tests = []
     gmf_cubes = {}
     test_pval_cubes = {}
@@ -175,11 +177,31 @@ def load_grid_data(output_dir):
     data["apply_lucy_sweeny_e"] = bool(cubes["apply_lucy_sweeny_e"]) \
         if "apply_lucy_sweeny_e" in cubes.files else True
 
+    # Per-channel Wasserstein normalization (MAD of obs). Only present
+    # on cubes built after the Wasserstein metric was added; older runs
+    # fall back to NaN and the sidebar omits the caption.
+    data["wass_sigma_logP"] = (float(cubes["wass_sigma_logP"])
+        if "wass_sigma_logP" in cubes.files else float("nan"))
+    data["wass_sigma_e"] = (float(cubes["wass_sigma_e"])
+        if "wass_sigma_e" in cubes.files else float("nan"))
+    data["wass_sigma_K1"] = (float(cubes["wass_sigma_K1"])
+        if "wass_sigma_K1" in cubes.files else float("nan"))
+
     # Source tex paths — purely informational, surfaced as captions.
     data["sb1_tex"] = str(cubes["sb1_tex"]) \
         if "sb1_tex" in cubes.files else ""
     data["sb2_tex"] = str(cubes["sb2_tex"]) \
         if "sb2_tex" in cubes.files else ""
+
+    # Catalog counts feeding the binomial under scope="exclude" (schema v3).
+    # Pre-v3 cubes lack these — the explorer's hard-error above already
+    # blocked load, so these reads are safe here.
+    data["obs_n_catalog_total"] = (int(cubes["obs_n_catalog_total"])
+        if "obs_n_catalog_total" in cubes.files else None)
+    data["obs_n_catalog_nonsingle"] = (int(cubes["obs_n_catalog_nonsingle"])
+        if "obs_n_catalog_nonsingle" in cubes.files else None)
+    data["ostar_catalog"] = (str(cubes["ostar_catalog"])
+        if "ostar_catalog" in cubes.files else "")
 
     # Observed distributions. Stored as raw e_value + is_upper_limit mask
     # so the explorer can re-render under either Lucy-Sweeney convention.
@@ -716,18 +738,31 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
                 legendgroup="intr",
             ), row=1, col=col)
 
-        # p-value annotation
+        # p-value (or, for Wasserstein, distance) annotation. The
+        # ks_pvals dict is generic — it holds whatever cube values were
+        # selected upstream — but the unit ("p" vs "W₁") depends on
+        # which test the user picked.
         ks_key = {"logP": "ks_logP", "e": "ks_e",
                   "K1": "ks_K1", "q": "ks_q"}.get(key)
         pval = ks_pvals.get(ks_key, np.nan) if ks_key else np.nan
+        is_wass = test_label.startswith("Wasserstein")
         if not np.isnan(pval):
             xref = "x domain" if col == 1 else "x%d domain" % col
             yref = "y domain" if col == 1 else "y%d domain" % col
             if key == "e" and e_score_mode == "split":
+                # f_circ is always a binomial pmf, even under Wasserstein.
                 p_e_circ = ks_pvals.get("ks_e_circ", np.nan)
-                ann_text = "p(e>0)=%.3f\np(f_circ)=%.3f" % (pval, p_e_circ)
+                if is_wass:
+                    ann_text = "W₁(e>0)=%.3f\np(f_circ)=%.3f" % (
+                        pval, p_e_circ)
+                else:
+                    ann_text = "p(e>0)=%.3f\np(f_circ)=%.3f" % (
+                        pval, p_e_circ)
             elif key == "e" and e_score_mode == "eccentric_only":
-                ann_text = "p(e>0) = %.3f" % pval
+                ann_text = (("W₁(e>0) = %.3f" if is_wass
+                             else "p(e>0) = %.3f") % pval)
+            elif is_wass:
+                ann_text = "W₁ = %.3f" % pval
             else:
                 ann_text = "%s p = %.3f" % (test_label, pval)
             fig.add_annotation(
@@ -986,12 +1021,14 @@ def main():
     st.sidebar.header("Scoring Metric")
     test_labels = {"ks": "Kolmogorov-Smirnov",
                    "ad": "Anderson-Darling",
-                   "cvm": "Cram\u00e9r-von Mises"}
+                   "cvm": "Cram\u00e9r-von Mises",
+                   "wass": "Wasserstein-1"}
     selected_test = st.sidebar.radio(
         "Select test",
         options=available_tests,
         format_func=lambda t: test_labels.get(t, t.upper()),
         index=0,
+        key="selected_test",
     )
 
     # Active GMF cube and best fit for selected test
@@ -1001,25 +1038,35 @@ def main():
 
     # --- Sidebar: parameter sliders ---
     st.sidebar.header("Grid Point Selection")
+    # Per-test slider keys: when the user switches tests we *want* the
+    # sliders to jump to that test's best fit (so they start at the
+    # peak of the new gmf cube), but we don't want them to reset on
+    # every rerun. Namespacing keys by selected_test gives each test
+    # its own persisted slider state.
+    _k = selected_test
     pi_val = st.sidebar.select_slider(
         "\u03c0 (period exponent)",
         options=[round(x, 3) for x in pi_grid.tolist()],
         value=round(float(best_fit[0]), 3),
+        key="pi_slider_%s" % _k,
     )
     kappa_val = st.sidebar.select_slider(
         "\u03ba (mass-ratio exponent)",
         options=[round(x, 3) for x in kappa_grid.tolist()],
         value=round(float(best_fit[1]), 3),
+        key="kappa_slider_%s" % _k,
     )
     eta_val = st.sidebar.select_slider(
         "\u03b7 (eccentricity exponent)",
         options=[round(x, 3) for x in eta_grid.tolist()],
         value=round(float(best_fit[2]), 3),
+        key="eta_slider_%s" % _k,
     )
     fbin_val = st.sidebar.select_slider(
         "f_bin (binary fraction)",
         options=[round(x, 3) for x in fbin_grid.tolist()],
         value=round(float(best_fit[3]), 3),
+        key="fbin_slider_%s" % _k,
     )
     current_vals = [pi_val, kappa_val, eta_val, fbin_val]
 
@@ -1053,27 +1100,123 @@ def main():
     if data.get("sb2_tex"):
         st.sidebar.caption("sb2_tex: %s" %
                            os.path.basename(data["sb2_tex"]))
+    if data.get("obs_n_catalog_total") is not None:
+        st.sidebar.caption(
+            "catalog binomial: %d non-single / %d total" % (
+                data["obs_n_catalog_nonsingle"],
+                data["obs_n_catalog_total"]))
+    if data.get("ostar_catalog"):
+        st.sidebar.caption("ostar_catalog: %s" %
+                           os.path.basename(data["ostar_catalog"]))
+    # Wasserstein normalization captions — only meaningful when the
+    # active test is Wasserstein. Skipped silently if the cube doesn't
+    # carry the σ metadata (pre-Wasserstein runs).
+    if selected_test == "wass":
+        _sig_logP = data.get("wass_sigma_logP", float("nan"))
+        _sig_e = data.get("wass_sigma_e", float("nan"))
+        _sig_K1 = data.get("wass_sigma_K1", float("nan"))
+        if all(np.isfinite([_sig_logP, _sig_e, _sig_K1])):
+            st.sidebar.caption(
+                "σ_logP=%.3f  σ_e=%.3f  σ_K1=%.2f" % (
+                    _sig_logP, _sig_e, _sig_K1))
     st.sidebar.metric("p_det", "%.4f" % data["pdet_cube"][i, j, k, l])
     gmf_val = gmf_cube[i, j, k, l]
     st.sidebar.metric("log GMF (%s)" % test_label,
                        "%.2f" % gmf_val if np.isfinite(gmf_val) else "-inf")
     if pval_cubes:
-        st.sidebar.metric("p(logP)", "%.4f" % pval_cubes.get(
-            "logP", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
+        # Per-channel cube values: for KS/AD/CvM these are p-values
+        # (4-decimal display); for Wasserstein they're raw distances
+        # (3-decimal display, "W₁(...)" labels).
+        is_wass = (selected_test == "wass")
+        unit_lbl = "W₁" if is_wass else "p"
+        val_fmt = "%.3f" if is_wass else "%.4f"
+        st.sidebar.metric(
+            "%s(logP)" % unit_lbl, val_fmt % pval_cubes.get(
+                "logP", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
         e_mode = data.get("e_score_mode", "combined")
         if e_mode == "split":
-            st.sidebar.metric("p(e>0)", "%.4f" % pval_cubes["e"][i, j, k, l])
+            st.sidebar.metric(
+                "%s(e>0)" % unit_lbl, val_fmt % pval_cubes["e"][i, j, k, l])
             if "e_circ" in pval_cubes:
+                # f_circ is always a binomial pmf, even under Wasserstein.
                 st.sidebar.metric(
                     "p(f_circ)", "%.4f" % pval_cubes["e_circ"][i, j, k, l])
         elif e_mode == "eccentric_only":
-            st.sidebar.metric("p(e>0)", "%.4f" % pval_cubes.get(
-                "e", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
+            st.sidebar.metric(
+                "%s(e>0)" % unit_lbl, val_fmt % pval_cubes.get(
+                    "e", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
         else:
-            st.sidebar.metric("p(e)", "%.4f" % pval_cubes.get(
-                "e", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
-        st.sidebar.metric("p(K1)", "%.4f" % pval_cubes.get(
+            st.sidebar.metric(
+                "%s(e)" % unit_lbl, val_fmt % pval_cubes.get(
+                    "e", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
+        st.sidebar.metric(
+            "%s(K1)" % unit_lbl, val_fmt % pval_cubes.get(
+                "K1", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
+
+        # Per-channel log contributions to log GMF. For KS/AD/CvM each
+        # term is log(p); for Wasserstein the logP/e/K1 terms are -d/σ
+        # (the cube stores raw d, σ lives in data["wass_sigma_*"]).
+        # p_binom isn't persisted as a cube, so back it out from the
+        # residual: log_gmf - Σ(known contributions).
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Contributions to log GMF")
+
+        def _safe_log(p):
+            return float(np.log(p)) if (p is not None and p > 0) \
+                else float("-inf")
+
+        contribs = []
+        v_logP = float(pval_cubes.get(
+            "logP", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
+        v_K1 = float(pval_cubes.get(
             "K1", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
+        v_e = float(pval_cubes.get(
+            "e", np.zeros_like(data["pdet_cube"]))[i, j, k, l])
+
+        if is_wass:
+            sig_logP = float(data.get("wass_sigma_logP", float("nan")))
+            sig_e = float(data.get("wass_sigma_e", float("nan")))
+            sig_K1 = float(data.get("wass_sigma_K1", float("nan")))
+            c_logP = -v_logP / sig_logP if np.isfinite(sig_logP) \
+                and sig_logP > 0 else float("nan")
+            c_K1 = -v_K1 / sig_K1 if np.isfinite(sig_K1) \
+                and sig_K1 > 0 else float("nan")
+            c_e = -v_e / sig_e if np.isfinite(sig_e) \
+                and sig_e > 0 else float("nan")
+            e_label = "-d(e>0)/σ" if e_mode != "combined" else "-d(e)/σ"
+            contribs.append(("-d(logP)/σ", c_logP))
+            contribs.append((e_label, c_e))
+            contribs.append(("-d(K1)/σ", c_K1))
+        else:
+            e_label = "log p(e>0)" if e_mode != "combined" else "log p(e)"
+            contribs.append(("log p(logP)", _safe_log(v_logP)))
+            contribs.append((e_label, _safe_log(v_e)))
+            contribs.append(("log p(K1)", _safe_log(v_K1)))
+
+        if e_mode == "split" and "e_circ" in pval_cubes:
+            v_ec = float(pval_cubes["e_circ"][i, j, k, l])
+            contribs.append(("log p(f_circ)", _safe_log(v_ec)))
+
+        # Residual = log p(binom). Only meaningful when all known
+        # contribs are finite and the total log GMF is finite.
+        known_sum = sum(c for _, c in contribs)
+        if np.isfinite(gmf_val) and np.isfinite(known_sum):
+            log_p_binom = gmf_val - known_sum
+            contribs.append(("log p(binom)", log_p_binom))
+        else:
+            contribs.append(("log p(binom)", float("nan")))
+
+        for name, val in contribs:
+            if np.isfinite(val):
+                st.sidebar.metric(name, "%.2f" % val)
+            else:
+                st.sidebar.metric(name, "-inf" if val == float("-inf")
+                                  else "n/a")
+        # Sanity check: sum should equal log GMF (display only when
+        # every contribution is finite).
+        total = sum(c for _, c in contribs)
+        if np.isfinite(total):
+            st.sidebar.caption("Σ contributions = %.2f" % total)
 
     # Best fit info
     st.sidebar.markdown("---")
@@ -1194,6 +1337,36 @@ def main():
                 obs["logP"] = obs["logP"][keep]
 
         det_params = get_detected_for_point(data, i, j, k, l)
+
+        # Mirror bias_grid._compute_scores' joint mask: under
+        # scope="exclude" with an active logP cutoff, sim e/K1 (and the
+        # empirical "all" intrinsic, built from det+nondet) are
+        # restricted to systems with sim_logP >= cutoff before the CDF
+        # tests run. Without applying the same mask here, short-period
+        # systems that were excluded from scoring leak into the
+        # displayed sim CDFs — making e/K1 panels look much worse than
+        # the persisted p/W₁ values.
+        if (det_params is not None
+                and apply_logP_cutoff and cutoff_active
+                and logP_cutoff_scope == "exclude"):
+            det_params = {**det_params}
+            det_logP = np.asarray(det_params.get("logP", np.array([])))
+            if len(det_logP):
+                keep_det = det_logP >= logP_cutoff_data
+                for _k in ("logP", "e", "K1", "q"):
+                    arr = det_params.get(_k)
+                    if arr is not None and len(arr) == len(det_logP):
+                        det_params[_k] = np.asarray(arr)[keep_det]
+            nondet_logP = np.asarray(
+                det_params.get("logP_nondet", np.array([])))
+            if len(nondet_logP):
+                keep_nondet = nondet_logP >= logP_cutoff_data
+                for _k in ("logP_nondet", "e_nondet",
+                           "K1_nondet", "q_nondet"):
+                    arr = det_params.get(_k)
+                    if arr is not None and len(arr) == len(nondet_logP):
+                        det_params[_k] = np.asarray(arr)[keep_nondet]
+
         ks_pvals = {}
         if pval_cubes:
             ks_pvals = {

@@ -21,7 +21,8 @@ import warnings
 import yaml
 import numpy as np
 import pandas as pd
-from scipy.stats import ks_2samp, anderson_ksamp, cramervonmises_2samp, binom
+from scipy.stats import (ks_2samp, anderson_ksamp, cramervonmises_2samp,
+                         wasserstein_distance, binom)
 from scipy.ndimage import gaussian_filter1d
 
 # numpy 2.x renamed trapz -> trapezoid
@@ -158,7 +159,41 @@ def _cvm_pvalue(obs, sim):
     return cramervonmises_2samp(obs, sim).pvalue
 
 
+def _wasserstein_distance(obs, sim):
+    return float(wasserstein_distance(obs, sim))
+
+
+def _safe_distance(dist_fn, obs, sim, min_samples=5):
+    """Compute a two-sample distance, returning np.inf on failure or
+    insufficient samples. Mirror of `_safe_pvalue` but for distance
+    metrics that should sort as "bigger = worse fit"."""
+    if len(sim) < min_samples:
+        return float("inf")
+    try:
+        return float(dist_fn(obs, sim))
+    except Exception:
+        return float("inf")
+
+
+def _mad(x, floor=1e-6):
+    """Median absolute deviation, with a lower floor to avoid div-by-zero
+    on near-degenerate samples (single value, or all-equal observations)."""
+    x = np.asarray(x, dtype=float)
+    if len(x) == 0:
+        return floor
+    return max(float(np.median(np.abs(x - np.median(x)))), floor)
+
+
+# p-value tests: combine via Σ log p, best = argmax.
 _ALL_TESTS = {"ks": _ks_pvalue, "ad": _ad_pvalue, "cvm": _cvm_pvalue}
+
+# Distance tests: combine via -Σ d_i/σ_i + log p_binom (+ log p_e_circ),
+# best = argmax (after sign flip). σ is set per-channel from obs MAD.
+_DIST_TESTS = {"wass": _wasserstein_distance}
+
+# Union for cube allocation, restoration, and save sites — order matters
+# for any logic that derives a default-test alias from the first entry.
+_SCORED_TESTS = tuple(list(_ALL_TESTS) + list(_DIST_TESTS))
 
 
 _E_SCORE_MODES = ("combined", "split", "eccentric_only")
@@ -170,7 +205,13 @@ _LOGP_CUTOFF_SCOPES = ("period_only", "exclude")
 #   v2 (2026-05): adds obs_logP/obs_e_value/obs_e_is_upper_limit/obs_K1/
 #                 obs_q_sb2/obs_n_sb1/obs_n_sb2, plus logP_cutoff_smooth_sigma,
 #                 sb1_tex, sb2_tex.
-CUBE_SCHEMA_VERSION = 2
+#   v3 (2026-05): catalog-based binomial under scope=exclude. Adds
+#                 obs_n_catalog_total, obs_n_catalog_nonsingle, ostar_catalog.
+#                 Scoring semantics change under scope=exclude: log_p_min no
+#                 longer overridden; sim-det e/K1 jointly masked by
+#                 sim_det_logP>=cutoff at scoring time; binomial uses catalog
+#                 counts (134 / 75 for the BLOeM O-star sample).
+CUBE_SCHEMA_VERSION = 3
 
 
 def _resolve_logP_cutoff_mode(cfg):
@@ -286,25 +327,53 @@ def _resolve_e_score_mode(cfg):
 def _make_scoring_ctx(obs_logP, obs_e, obs_K1, clip_range,
                       e_score_mode, obs_e_cont,
                       n_obs_circ, n_obs_e_total,
-                      N_det_obs, N_stars):
-    """Bundle the per-run constants that every grid-point score needs."""
+                      N_det_obs, N_stars,
+                      sim_logP_floor=0.0):
+    """Bundle the per-run constants that every grid-point score needs.
+
+    ``sim_logP_floor`` is the joint-mask threshold applied to the
+    sim-detected arrays before CDF tests under scope="exclude". It is
+    0 in every other scope, so the mask is a no-op there.
+    """
     if e_score_mode not in _E_SCORE_MODES:
         raise ValueError(
             "e_score_mode must be one of %s, got %r" %
             (_E_SCORE_MODES, e_score_mode))
+    obs_logP_arr = np.asarray(obs_logP)
+    obs_e_arr = np.asarray(obs_e)
+    obs_K1_arr = np.asarray(obs_K1)
+    obs_e_cont_arr = (np.asarray(obs_e_cont) if obs_e_cont is not None
+                      else None)
+    # Per-channel scale for Wasserstein normalization (MAD of obs), so
+    # the three dimensionful distances combine on a common scale. Match
+    # the e-side choice to what _compute_scores compares against: in
+    # split/eccentric_only the continuous (e>0) tail is what feeds the
+    # distance, so its MAD is the right scale; in combined mode the full
+    # obs_e is used. Stored in ctx and persisted to the cube npz so the
+    # explorer can surface it.
+    obs_e_for_wass = (obs_e_cont_arr
+                      if e_score_mode in ("split", "eccentric_only")
+                      and obs_e_cont_arr is not None
+                      else obs_e_arr)
+    wass_sigma = {
+        "logP": _mad(obs_logP_arr),
+        "e":    _mad(obs_e_for_wass),
+        "K1":   _mad(obs_K1_arr),
+    }
     return {
-        "obs_logP": np.asarray(obs_logP),
-        "obs_e": np.asarray(obs_e),
-        "obs_K1": np.asarray(obs_K1),
+        "obs_logP": obs_logP_arr,
+        "obs_e": obs_e_arr,
+        "obs_K1": obs_K1_arr,
         "clip_range": clip_range,
         "e_score_mode": e_score_mode,
-        "obs_e_cont": np.asarray(obs_e_cont) if obs_e_cont is not None
-                      else None,
+        "obs_e_cont": obs_e_cont_arr,
         "n_obs_circ": int(n_obs_circ) if n_obs_circ is not None else 0,
         "n_obs_e_total": int(n_obs_e_total) if n_obs_e_total is not None
                          else 0,
         "N_det_obs": int(N_det_obs),
         "N_stars": int(N_stars),
+        "wass_sigma": wass_sigma,
+        "sim_logP_floor": float(sim_logP_floor),
     }
 
 
@@ -323,10 +392,30 @@ def _compute_scores(res, ctx):
 
     No mutation, no I/O — safe to call from any process.
     """
+    # Under scope="exclude" (schema v3), sim injection covers the full
+    # [log_p_min, log_p_max] range — drop the log_p_min override that the
+    # old "exclude" used. Restrict the CDF tests to logP>=cutoff via this
+    # joint mask on the sim-detected arrays, matching the obs-side filter
+    # the engine already applied. floor=0 in every other scope so the
+    # mask is a no-op there. p_det / n_physical (used by the binomial)
+    # stay over the FULL sim sample on purpose: the binomial speaks to
+    # the full O-star population (catalog totals).
+    floor = ctx.get("sim_logP_floor", 0.0)
+    if floor > 0.0:
+        sim_logP_arr = np.asarray(res["logP_det"])
+        keep_sim = sim_logP_arr >= floor
+        sim_logP_in = sim_logP_arr[keep_sim]
+        sim_e_in = np.asarray(res["e_det"])[keep_sim]
+        sim_K1_in = np.asarray(res["K1_det"])[keep_sim]
+    else:
+        sim_logP_in = res["logP_det"]
+        sim_e_in = res["e_det"]
+        sim_K1_in = res["K1_det"]
+
     sim_clipped = {
-        "logP": _clip_to_range(res["logP_det"], *ctx["clip_range"]["logP"]),
-        "e": _clip_to_range(res["e_det"], *ctx["clip_range"]["e"]),
-        "K1": _clip_to_range(res["K1_det"], *ctx["clip_range"]["K1"]),
+        "logP": _clip_to_range(sim_logP_in, *ctx["clip_range"]["logP"]),
+        "e": _clip_to_range(sim_e_in, *ctx["clip_range"]["e"]),
+        "K1": _clip_to_range(sim_K1_in, *ctx["clip_range"]["K1"]),
     }
 
     # The binomial uses the FULL detection count: p_det is the per-realization
@@ -384,6 +473,46 @@ def _compute_scores(res, ctx):
         if mode == "split":
             out["%s_p_e_circ" % tname] = p_e_circ
         out["log_gmf_%s" % tname] = log_gmf
+
+    # Wasserstein-1 distance branch. Distances are sign-flipped (so
+    # argmax still selects the best fit) and normalized by per-channel
+    # MAD (precomputed in ctx) before summing. p_binom and p_e_circ
+    # remain real pmfs and enter on the log scale unchanged. p_e_circ
+    # is independent of the test function, so we reuse the value left
+    # by the last iteration of the p-value loop above.
+    sigma = ctx["wass_sigma"]
+    d_logP = _safe_distance(_wasserstein_distance,
+                            ctx["obs_logP"], sim_clipped["logP"])
+    d_K1 = _safe_distance(_wasserstein_distance,
+                          ctx["obs_K1"], sim_clipped["K1"], min_samples=3)
+    if mode == "combined":
+        d_e = _safe_distance(_wasserstein_distance,
+                             ctx["obs_e"], sim_clipped["e"])
+    else:
+        sim_e_cont = sim_clipped["e"][sim_clipped["e"] > 0]
+        d_e = _safe_distance(_wasserstein_distance,
+                             ctx["obs_e_cont"], sim_e_cont)
+
+    out["wass_p_logP"] = d_logP   # stored in p_* slot so the explorer's
+    out["wass_p_e"]    = d_e      # generic per-param loop picks them up;
+    out["wass_p_K1"]   = d_K1     # values are distances, not probabilities
+
+    if (np.isfinite(d_logP) and np.isfinite(d_e) and np.isfinite(d_K1)
+            and p_binom > 0):
+        log_gmf_wass = -(d_logP / sigma["logP"]
+                         + d_e   / sigma["e"]
+                         + d_K1  / sigma["K1"]) + np.log(p_binom)
+        if mode == "split":
+            if p_e_circ and p_e_circ > 0:
+                log_gmf_wass += np.log(p_e_circ)
+            else:
+                log_gmf_wass = -np.inf
+    else:
+        log_gmf_wass = -np.inf
+
+    if mode == "split":
+        out["wass_p_e_circ"] = p_e_circ
+    out["log_gmf_wass"] = log_gmf_wass
 
     out["log_gmf"] = out["log_gmf_ks"]
     return out
@@ -687,6 +816,27 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
                 "(apply_lucy_sweeny_e=%s)",
                 n_sb1, n_sb2, len(all_logP), apply_lucy_sweeny_e)
     return obs
+
+
+def _load_catalog_counts(path):
+    """Read ostar_catalog.csv and return (n_total, n_nonsingle).
+
+    n_total is the number of catalog rows; n_nonsingle counts rows whose
+    "Binary status" column is anything except "Apparently single". Used
+    as the binomial denominator and numerator under scope=exclude (the
+    catalog represents the full O-star population for the binomial,
+    independent of period cutoffs).
+    """
+    df = pd.read_csv(path)
+    if "Binary status" not in df.columns:
+        raise KeyError(
+            "%s lacks 'Binary status' column (got: %s)"
+            % (path, list(df.columns)))
+    n_total = int(len(df))
+    n_nonsingle = int((df["Binary status"] != "Apparently single").sum())
+    logger.info("_load_catalog_counts: %s → total=%d, non-single=%d",
+                os.path.basename(path), n_total, n_nonsingle)
+    return n_total, n_nonsingle
 
 
 # ---------------------------------------------------------------------------
@@ -1399,6 +1549,10 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
                      sb1_tex="",
                      sb2_tex="",
                      obs=None,
+                     n_catalog_total=None,
+                     n_catalog_nonsingle=None,
+                     ostar_catalog="",
+                     wass_sigma=None,
                      global_hists=None):
     """Save intermediate results so a killed run can be resumed.
 
@@ -1437,8 +1591,20 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
             obs_n_sb1=np.array(int(obs["n_sb1"])),
             obs_n_sb2=np.array(int(obs["n_sb2"])),
         )
+    if wass_sigma is not None:
+        save_kw.update(
+            wass_sigma_logP=np.array(float(wass_sigma["logP"])),
+            wass_sigma_e=np.array(float(wass_sigma["e"])),
+            wass_sigma_K1=np.array(float(wass_sigma["K1"])),
+        )
+    if n_catalog_total is not None:
+        save_kw["obs_n_catalog_total"] = np.array(int(n_catalog_total))
+    if n_catalog_nonsingle is not None:
+        save_kw["obs_n_catalog_nonsingle"] = np.array(int(n_catalog_nonsingle))
+    if ostar_catalog:
+        save_kw["ostar_catalog"] = np.array(str(ostar_catalog))
     # All tests
-    for tname in _ALL_TESTS:
+    for tname in _SCORED_TESTS:
         save_kw["gmf_%s_cube" % tname] = gmf_cubes[tname]
         for par in ("logP", "e", "K1"):
             save_kw["%s_%s_cube" % (tname, par)] = test_cubes[tname][par]
@@ -1659,7 +1825,9 @@ class GridSearchEngine:
             n_workers=1,
             grid_start=0, grid_end=None,
             parallel_grid=False,
-            obs=None, sb1_tex="", sb2_tex=""):
+            obs=None, sb1_tex="", sb2_tex="",
+            n_catalog_total=None, n_catalog_nonsingle=None,
+            ostar_catalog=""):
         """
         Run the full 4D grid search.
 
@@ -1724,34 +1892,48 @@ class GridSearchEngine:
                          if logP_cutoff > 0.0 else 0)
 
         if logP_cutoff_scope == "exclude" and logP_cutoff > 0.0:
-            # Drop below-cutoff systems from EVERY downstream consumer:
-            # obs P/e/K1 CDFs, N_det_obs, N_stars, and the intrinsic sim
-            # draws. The intrinsic truncation is a one-liner: the workers
-            # call powerlaw_draw(..., cfg["log_p_min"], cfg["log_p_max"]),
-            # so overriding log_p_min restricts the modeled population to
-            # logP >= cutoff with no further plumbing.
+            # Scope=exclude (catalog-binomial semantics, schema v3):
+            #   - obs P/e/K1 CDFs jointly masked by obs_logP >= cutoff
+            #     (same as the historical exclude obs-side filter).
+            #   - sim injection covers the FULL [log_p_min, log_p_max]
+            #     range (no log_p_min override). The sim-side joint mask
+            #     against sim_logP >= cutoff is applied later inside the
+            #     scoring context.
+            #   - binomial uses the O-star catalog counts (total +
+            #     non-single) — independent of the period cutoff, so
+            #     f_bin reads as the FULL-population binary fraction.
+            #   - p_det is the full-sample sim detection rate
+            #     (det/inject across the full range), feeding the
+            #     binomial against the catalog totals.
             keep = obs_logP >= logP_cutoff
             obs_logP = obs_logP[keep]
             obs_e = obs_e[keep]
             obs_K1 = obs_K1[keep]
             obs_logP_above = obs_logP                       # already filtered
-            N_stars_eff = original_N_stars - n_dropped_obs
-            self.cfg["log_p_min"] = float(logP_cutoff)
+            if n_catalog_total is None or n_catalog_nonsingle is None:
+                raise ValueError(
+                    "scope=exclude requires n_catalog_total + "
+                    "n_catalog_nonsingle (load from ostar_catalog.csv); "
+                    "got None")
+            N_stars_eff = int(n_catalog_total)
+            N_det_obs_override = int(n_catalog_nonsingle)
             logger.info(
                 "logP_cutoff_scope=exclude, mode=%s, cutoff=%.3f (P=%.2f d): "
-                "dropped %d/%d obs binaries AND %d stars from binomial "
-                "(N_stars: %d → %d); intrinsic logP draws truncated to "
-                "[%.3f, %.3f]",
+                "obs CDF panels filtered to logP>=cutoff (%d/%d kept); "
+                "sim injection covers full [%.3f, %.3f]; sim-det jointly "
+                "masked by sim_logP>=cutoff at scoring time; binomial "
+                "uses catalog totals (%d non-single / %d total)",
                 logP_cutoff_mode, logP_cutoff, 10 ** logP_cutoff,
-                n_dropped_obs, len(obs_logP) + n_dropped_obs,
-                n_dropped_obs, original_N_stars, N_stars_eff,
-                logP_cutoff, self.cfg["log_p_max"])
+                len(obs_logP), len(obs_logP) + n_dropped_obs,
+                self.cfg.get("log_p_min", 0.0), self.cfg["log_p_max"],
+                N_det_obs_override, N_stars_eff)
         elif logP_cutoff > 0.0:
             # period_only (default): cutoff scoped to the logP CDF KS test
             # only. obs e/K1 stay full, binomial stays full, intrinsic
             # draws stay full.
             obs_logP_above = obs_logP[obs_logP >= logP_cutoff]
             N_stars_eff = original_N_stars
+            N_det_obs_override = None
             logger.info(
                 "logP_cutoff_scope=period_only, mode=%s, cutoff=%.3f "
                 "(P=%.2f d); logP CDF test uses %d/%d obs (binomial + "
@@ -1761,11 +1943,14 @@ class GridSearchEngine:
         else:
             obs_logP_above = obs_logP
             N_stars_eff = original_N_stars
+            N_det_obs_override = None
             logger.info(
                 "logP_cutoff_mode=%s, scope=%s, cutoff=0.0 (no truncation)",
                 logP_cutoff_mode, logP_cutoff_scope)
 
-        N_det_obs = len(obs_logP)
+        N_det_obs = (N_det_obs_override
+                     if N_det_obs_override is not None
+                     else len(obs_logP))
         N_stars = N_stars_eff
 
         # Bundle the extra scoring-context kwargs once so every
@@ -1777,6 +1962,9 @@ class GridSearchEngine:
             sb1_tex=sb1_tex,
             sb2_tex=sb2_tex,
             obs=obs,
+            n_catalog_total=n_catalog_total,
+            n_catalog_nonsingle=n_catalog_nonsingle,
+            ostar_catalog=ostar_catalog,
         )
 
         n_pi = len(pi_grid)
@@ -1791,7 +1979,7 @@ class GridSearchEngine:
         # Per-test p-value cubes and GMF cubes
         test_cubes = {}
         gmf_cubes = {}
-        for tname in _ALL_TESTS:
+        for tname in _SCORED_TESTS:
             tc = {
                 "logP": np.zeros(shape),
                 "e": np.zeros(shape),
@@ -1973,7 +2161,7 @@ class GridSearchEngine:
                 pdet_cube = ckpt["pdet_cube"]
                 # Restore per-test cubes (with backward compat for
                 # old checkpoints that only have KS)
-                for tname in _ALL_TESTS:
+                for tname in _SCORED_TESTS:
                     gmf_key = "gmf_%s_cube" % tname
                     if gmf_key in ckpt.files:
                         gmf_cubes[tname][:] = ckpt[gmf_key]
@@ -2039,6 +2227,14 @@ class GridSearchEngine:
         # consumes it via ctx["obs_logP"]. obs_e and obs_K1 are the full
         # observed arrays so their KS tests and the binomial use the
         # complete 70-system sample.
+        # sim_logP_floor: under scope="exclude" we drop the log_p_min
+        # injection override (so sim covers the full range) and instead
+        # apply the cutoff as a joint mask on sim-detected arrays at
+        # CDF-test time. Floor=0 in every other scope.
+        sim_logP_floor = (float(logP_cutoff)
+                          if logP_cutoff_scope == "exclude"
+                             and logP_cutoff > 0.0
+                          else 0.0)
         scoring_ctx = _make_scoring_ctx(
             obs_logP=obs_logP_above, obs_e=obs_e, obs_K1=obs_K1,
             clip_range=clip_range,
@@ -2047,7 +2243,13 @@ class GridSearchEngine:
             n_obs_circ=n_obs_circ,
             n_obs_e_total=n_obs_e_total,
             N_det_obs=N_det_obs, N_stars=N_stars,
+            sim_logP_floor=sim_logP_floor,
         )
+        # Now that the per-channel Wasserstein normalization scales are
+        # known, propagate them through every _save_checkpoint call so
+        # the explorer can surface them and aggregate runs can preserve
+        # them across task checkpoints.
+        _ckpt_extra["wass_sigma"] = scoring_ctx["wass_sigma"]
 
         # Buffer for per-grid-point CSV rows in parallel mode. Flushed
         # at every cube checkpoint and once at end-of-run (not per-row,
@@ -2078,7 +2280,7 @@ class GridSearchEngine:
             if scores is None:
                 scores = _compute_scores(res, scoring_ctx)
 
-            for tname in _ALL_TESTS:
+            for tname in _SCORED_TESTS:
                 test_cubes[tname]["logP"][i, j, k, l] = \
                     scores["%s_p_logP" % tname]
                 test_cubes[tname]["e"][i, j, k, l] = \
@@ -2465,7 +2667,7 @@ class GridSearchEngine:
 
         # Best fit (per test)
         best_fits = {}
-        for tname in _ALL_TESTS:
+        for tname in _SCORED_TESTS:
             gc = gmf_cubes[tname]
             idx = np.unravel_index(np.nanargmax(gc), gc.shape)
             best_fits[tname] = (float(pi_grid[idx[0]]),
@@ -2479,7 +2681,7 @@ class GridSearchEngine:
             np.nanargmax(gmf_cubes["ks"]), gmf_cubes["ks"].shape)
 
         logger.info("Grid search complete in %.1f min", (time.time()-t0)/60)
-        for tname in _ALL_TESTS:
+        for tname in _SCORED_TESTS:
             bf = best_fits[tname]
             logger.info("Best fit (%s): π=%.2f, κ=%.2f, η=%.2f, f_bin=%.2f",
                          tname.upper(), *bf)
@@ -2508,6 +2710,7 @@ class GridSearchEngine:
             "logP_cutoff_mode": logP_cutoff_mode,
             "logP_cutoff": logP_cutoff,
             "logP_cutoff_scope": logP_cutoff_scope,
+            "wass_sigma": scoring_ctx["wass_sigma"],
             "global_hists": {
                 "total": global_hist_total,
                 "det": global_hist_det,
@@ -2737,7 +2940,7 @@ def format_grid_summary(results):
             "P_binom": f"{r['p_binom']:.4f}",
             "N_det": r["n_detected"],
         }
-        for tname in _ALL_TESTS:
+        for tname in _SCORED_TESTS:
             prefix = tname.upper()
             row["%s_logP" % prefix] = f"{r.get('%s_p_logP' % tname, 0):.3f}"
             row["%s_e" % prefix] = f"{r.get('%s_p_e' % tname, 0):.3f}"
@@ -2801,7 +3004,7 @@ def aggregate_tasks(base_dir, output_dir=None):
     pdet_cube = np.zeros(shape)
     gmf_cubes_agg = {}
     test_cubes_agg = {}
-    for tname in _ALL_TESTS:
+    for tname in _SCORED_TESTS:
         gmf_cubes_agg[tname] = np.full(shape, -np.inf)
         test_cubes_agg[tname] = {
             "logP": np.zeros(shape),
@@ -2889,7 +3092,7 @@ def aggregate_tasks(base_dir, output_dir=None):
         # Merge cubes: each task only fills its own cells.
         pdet_cube += ckpt["pdet_cube"]
         # Per-test cubes (with backward compat)
-        for tname in _ALL_TESTS:
+        for tname in _SCORED_TESTS:
             gmf_key = "gmf_%s_cube" % tname
             if gmf_key in ckpt.files:
                 gmf_cubes_agg[tname] = np.maximum(
@@ -2979,7 +3182,7 @@ def aggregate_tasks(base_dir, output_dir=None):
 
     # Best fit from merged cubes (per test).
     best_fits = {}
-    for tname in _ALL_TESTS:
+    for tname in _SCORED_TESTS:
         gc = gmf_cubes_agg[tname]
         idx = np.unravel_index(np.nanargmax(gc), gc.shape)
         best_fits[tname] = (float(pi_grid[idx[0]]),
@@ -3042,7 +3245,9 @@ def aggregate_tasks(base_dir, output_dir=None):
     # runs that consumed pre-schema-v2 task checkpoints will lack them.
     for k in ("logP_cutoff_smooth_sigma", "sb1_tex", "sb2_tex",
               "obs_logP", "obs_e_value", "obs_e_is_upper_limit",
-              "obs_K1", "obs_q_sb2", "obs_n_sb1", "obs_n_sb2"):
+              "obs_K1", "obs_q_sb2", "obs_n_sb1", "obs_n_sb2",
+              "obs_n_catalog_total", "obs_n_catalog_nonsingle",
+              "ostar_catalog"):
         if k in first_npz.files:
             save_kw_cubes[k] = first_npz[k]
         else:
@@ -3050,7 +3255,13 @@ def aggregate_tasks(base_dir, output_dir=None):
                 "aggregate_tasks: task checkpoints lack %s — merged cube "
                 "will fail the explorer's schema check. Re-run tasks with "
                 "the updated bias_grid.py.", k)
-    for tname in _ALL_TESTS:
+    # Wasserstein per-channel σ — optional (only present on cubes built
+    # after the Wasserstein metric was added). Silently skip on older
+    # task checkpoints; the explorer just falls back to plain labels.
+    for k in ("wass_sigma_logP", "wass_sigma_e", "wass_sigma_K1"):
+        if k in first_npz.files:
+            save_kw_cubes[k] = first_npz[k]
+    for tname in _SCORED_TESTS:
         save_kw_cubes["gmf_%s_cube" % tname] = gmf_cubes_agg[tname]
         for par in ("logP", "e", "K1"):
             save_kw_cubes["%s_%s_cube" % (tname, par)] = \
@@ -3734,6 +3945,10 @@ def main():
                 "(apply_lucy_sweeny_e=%s)...", apply_lucy_sweeny_e)
     obs = load_observed_from_tex(sb1_tex, sb2_tex,
                                  apply_lucy_sweeny_e=apply_lucy_sweeny_e)
+    # Catalog counts feed the binomial under scope="exclude" (full O-star
+    # population, independent of the period cutoff). Loaded eagerly so a
+    # bad path fails fast before the grid starts.
+    n_catalog_total, n_catalog_nonsingle = _load_catalog_counts(ostar_catalog)
     logger.info("  SB1: %d, SB2: %d, Total: %d",
                 obs['n_sb1'], obs['n_sb2'], len(obs['logP']))
     cfg["n_det_obs"] = len(obs["logP"])
@@ -3899,6 +4114,9 @@ def main():
         obs=obs,
         sb1_tex=sb1_tex,
         sb2_tex=sb2_tex,
+        n_catalog_total=n_catalog_total,
+        n_catalog_nonsingle=n_catalog_nonsingle,
+        ostar_catalog=ostar_catalog,
     )
 
     if is_task_mode:
@@ -3930,6 +4148,9 @@ def main():
         obs_q_sb2=np.asarray(obs["q_sb2"]),
         obs_n_sb1=np.array(int(obs["n_sb1"])),
         obs_n_sb2=np.array(int(obs["n_sb2"])),
+        obs_n_catalog_total=np.array(int(n_catalog_total)),
+        obs_n_catalog_nonsingle=np.array(int(n_catalog_nonsingle)),
+        ostar_catalog=np.array(str(ostar_catalog)),
     )
     if "e_score_mode" in results:
         save_kw_cubes["e_score_mode"] = np.array(results["e_score_mode"])
@@ -3939,9 +4160,16 @@ def main():
         save_kw_cubes["logP_cutoff"] = np.array(results["logP_cutoff"])
         save_kw_cubes["logP_cutoff_scope"] = np.array(
             results.get("logP_cutoff_scope", "period_only"))
+    if "wass_sigma" in results:
+        save_kw_cubes["wass_sigma_logP"] = np.array(
+            float(results["wass_sigma"]["logP"]))
+        save_kw_cubes["wass_sigma_e"] = np.array(
+            float(results["wass_sigma"]["e"]))
+        save_kw_cubes["wass_sigma_K1"] = np.array(
+            float(results["wass_sigma"]["K1"]))
     # All tests
     if "gmf_cubes" in results:
-        for tname in _ALL_TESTS:
+        for tname in _SCORED_TESTS:
             save_kw_cubes["gmf_%s_cube" % tname] = results["gmf_cubes"][tname]
             for par in ("logP", "e", "K1"):
                 save_kw_cubes["%s_%s_cube" % (tname, par)] = \
