@@ -215,6 +215,15 @@ GRID_PRESETS = {
         "fbin":  np.linspace(0.40, 1.00, 21),    # step 0.030
         "n_inject_per_star": 100,
     },
+        # Same axis bounds as final3_10min3 but uniform ~0.03 step and kappa
+    # lower bound pushed to -1.50 (captures equal-mass-biased priors).
+    "final3_howmany_hr": {  # 39×51×39×28 = 2,171,988 pts, ~2 hr on astro3 (each axis of the 22M grid reduced by 10^(1/4))
+        "pi":    np.linspace(-1.8, 0.20, 39),
+        "kappa": np.linspace(-3.0, 0.10, 51),
+        "eta":   np.linspace(-0.60, 0.30, 39),
+        "fbin":  np.linspace(0.40, 0.80, 28),
+        "n_inject_per_star": 100,
+    },
 
     "final3_5min": {
         "pi":    np.linspace(-0.95, 0.20, 20),   # step 0.030

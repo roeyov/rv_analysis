@@ -72,8 +72,19 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
     with open(sb1_path, "r") as f:
         sb1_lines = f.readlines()
 
+    in_rlof_section = False
     for line in sb1_lines:
         line = line.strip()
+        # The SB1 table lists a few systems below an "RLOF" separator whose
+        # best-fit orbit overfills the primary's Roche lobe at periastron. They
+        # are kept in the table for completeness only and must be excluded from
+        # the observed sample. Once the separator is reached, skip everything
+        # below it (rows + notes).
+        if "RLOF" in line or "Roche-lobe overflow" in line:
+            in_rlof_section = True
+            continue
+        if in_rlof_section:
+            continue
         if not line or line.startswith("%") or line.startswith("\\"):
             continue
         if "&" not in line:
@@ -126,8 +137,16 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         sb2_lines = f.readlines()
 
     # SB2 rows come in pairs: primary (has all params) + secondary (only K and M sin^3 i)
+    in_rlof_section = False
     for line in sb2_lines:
         line = line.strip()
+        # Same RLOF-separator guard as the SB1 table (defensive: the SB2 table
+        # currently has no such rows, but this keeps both parsers consistent).
+        if "RLOF" in line or "Roche-lobe overflow" in line:
+            in_rlof_section = True
+            continue
+        if in_rlof_section:
+            continue
         if not line or line.startswith("%") or line.startswith("\\"):
             continue
         if "&" not in line:
