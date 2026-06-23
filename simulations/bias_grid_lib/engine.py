@@ -33,15 +33,17 @@ from simulations.bias_config import DEFAULT_BIAS_CFG
 from simulations.bias_grid_lib.checkpointing import (
     _DET_SHARDS_DIR, _save_checkpoint, _save_det_index, _save_det_shard,
 )
-from simulations.bias_grid_lib.constants import _HIST_NBINS, _HIST_PAIRS
+from simulations.bias_grid_lib.constants import (
+    _HIST_NBINS, _HIST_PAIRS, all_variants, variant_tag,
+)
 from simulations.bias_grid_lib.cutoffs import (
-    _compute_logP_cutoff, _resolve_e_score_mode,
-    _resolve_logP_cutoff_mode, _resolve_logP_cutoff_scope,
+    _build_variant_inputs, _resolve_logP_cutoff_scope,
 )
 from simulations.bias_grid_lib.injection import (
     _worker_star_injections, _worker_star_injections_vectorized,
 )
 from simulations.bias_grid_lib.logging_utils import logger
+from simulations.bias_grid_lib.physics import n_inject_for_budget
 from simulations.bias_grid_lib.parallel import (
     _init_grid_worker, _init_resume_worker, _resume_score_worker,
     _worker_grid_point,
@@ -49,7 +51,7 @@ from simulations.bias_grid_lib.parallel import (
 from simulations.bias_grid_lib.scoring import (
     _compute_scores, _make_scoring_ctx,
 )
-from simulations.bias_grid_lib.statistics import _ALL_TESTS, _SCORED_TESTS
+from simulations.bias_grid_lib.statistics import _SCORED_TESTS
 
 
 class GridSearchEngine:
@@ -281,89 +283,84 @@ class GridSearchEngine:
         if n_inject_per_star is None:
             n_inject_per_star = self.cfg.get("n_inject_per_star", 100)
 
-        e_score_mode = _resolve_e_score_mode(self.cfg)
-        apply_lucy_sweeny_e = bool(self.cfg.get("apply_lucy_sweeny_e", True))
+        # Legacy shared scalar (schema v5 sweeps lucy per variant; this is
+        # only a backward-compat placeholder written to the cube/checkpoint
+        # for v3/v4 readers).
+        apply_lucy_sweeny_e = bool(self.cfg.get("apply_lucy_sweeny_e", False))
 
-        # Resolve the low-period cutoff before sizing N_det_obs. The cutoff
-        # truncates BOTH observed and simulated period arrays to a common
-        # window so the KS/AD/CvM tests compare conditional CDFs given
-        # P >= 10^cutoff (the regime where the power-law model is valid;
-        # below it the obs sample is contaminated by short-period attrition
-        # that the model does not describe).
-        logP_cutoff_mode = _resolve_logP_cutoff_mode(self.cfg)
+        # --- All-variants scoring (schema v5) ---------------------------
+        # One injection/detection pass is scored under every
+        # (e_score_mode, logP_cutoff_mode, apply_lucy_sweeny_e) variant
+        # (12). The cutoff *scope*, smoothing σ, and manual value are
+        # run-level (shared); bias_grid.main fixes scope='exclude', σ=0.15,
+        # value=None. The expensive simulation is invariant to all of these
+        # — only the cheap scoring context differs per variant (see
+        # cutoffs._build_variant_inputs + scoring._compute_scores).
         logP_cutoff_scope = _resolve_logP_cutoff_scope(self.cfg)
-        logP_cutoff = _compute_logP_cutoff(
-            obs_logP, logP_cutoff_mode,
-            smooth_sigma=self.cfg.get("logP_cutoff_smooth_sigma", 0.15),
-            manual_value=self.cfg.get("logP_cutoff_value"),
-        )
+        smooth_sigma = float(self.cfg.get("logP_cutoff_smooth_sigma", 0.15))
+        manual_value = self.cfg.get("logP_cutoff_value")
+        n_stars_sample = self.cfg.get("n_stars_sample", len(self.M1_arr))
 
-        original_N_stars = self.cfg.get(
-            "n_stars_sample", len(self.M1_arr))
-        n_dropped_obs = (int(np.sum(obs_logP < logP_cutoff))
-                         if logP_cutoff > 0.0 else 0)
-
-        if logP_cutoff_scope == "exclude" and logP_cutoff > 0.0:
-            # Scope=exclude (catalog-binomial semantics, schema v3):
-            #   - obs P/e/K1 CDFs jointly masked by obs_logP >= cutoff
-            #     (same as the historical exclude obs-side filter).
-            #   - sim injection covers the FULL [log_p_min, log_p_max]
-            #     range (no log_p_min override). The sim-side joint mask
-            #     against sim_logP >= cutoff is applied later inside the
-            #     scoring context.
-            #   - binomial uses the O-star catalog counts (total +
-            #     non-single) — independent of the period cutoff, so
-            #     f_bin reads as the FULL-population binary fraction.
-            #   - p_det is the full-sample sim detection rate
-            #     (det/inject across the full range), feeding the
-            #     binomial against the catalog totals.
-            keep = obs_logP >= logP_cutoff
-            obs_logP = obs_logP[keep]
-            obs_e = obs_e[keep]
-            obs_K1 = obs_K1[keep]
-            obs_logP_above = obs_logP                       # already filtered
-            if n_catalog_total is None or n_catalog_nonsingle is None:
-                raise ValueError(
-                    "scope=exclude requires n_catalog_total + "
-                    "n_catalog_nonsingle (load from ostar_catalog.csv); "
-                    "got None")
-            N_stars_eff = int(n_catalog_total)
-            N_det_obs_override = int(n_catalog_nonsingle)
-            logger.info(
-                "logP_cutoff_scope=exclude, mode=%s, cutoff=%.3f (P=%.2f d): "
-                "obs CDF panels filtered to logP>=cutoff (%d/%d kept); "
-                "sim injection covers full [%.3f, %.3f]; sim-det jointly "
-                "masked by sim_logP>=cutoff at scoring time; binomial "
-                "uses catalog totals (%d non-single / %d total)",
-                logP_cutoff_mode, logP_cutoff, 10 ** logP_cutoff,
-                len(obs_logP), len(obs_logP) + n_dropped_obs,
-                self.cfg.get("log_p_min", 0.0), self.cfg["log_p_max"],
-                N_det_obs_override, N_stars_eff)
-        elif logP_cutoff > 0.0:
-            # period_only (default): cutoff scoped to the logP CDF KS test
-            # only. obs e/K1 stay full, binomial stays full, intrinsic
-            # draws stay full.
-            obs_logP_above = obs_logP[obs_logP >= logP_cutoff]
-            N_stars_eff = original_N_stars
-            N_det_obs_override = None
-            logger.info(
-                "logP_cutoff_scope=period_only, mode=%s, cutoff=%.3f "
-                "(P=%.2f d); logP CDF test uses %d/%d obs (binomial + "
-                "e/K1 tests use all %d)",
-                logP_cutoff_mode, logP_cutoff, 10 ** logP_cutoff,
-                len(obs_logP_above), len(obs_logP), len(obs_logP))
+        # Keep the observed arrays pristine — every variant masks its own
+        # copy. logP/K1 are lucy-independent; the eccentricities are kept
+        # RAW (e_value + upper-limit mask) so each variant applies its own
+        # Lucy-Sweeney convention inside _build_variant_inputs.
+        obs_logP_raw = np.asarray(obs_logP, dtype=float).copy()
+        obs_K1_raw = np.asarray(obs_K1, dtype=float).copy()
+        if obs is not None and "e_value" in obs:
+            obs_e_value = np.asarray(obs["e_value"], dtype=float)
+            obs_e_is_upper_limit = np.asarray(obs["e_is_upper_limit"], dtype=bool)
         else:
-            obs_logP_above = obs_logP
-            N_stars_eff = original_N_stars
-            N_det_obs_override = None
-            logger.info(
-                "logP_cutoff_mode=%s, scope=%s, cutoff=0.0 (no truncation)",
-                logP_cutoff_mode, logP_cutoff_scope)
+            # Fallback: treat the passed obs_e as already-resolved values
+            # with no upper limits (lucy axis degenerates to those values).
+            obs_e_value = np.asarray(obs_e, dtype=float)
+            obs_e_is_upper_limit = np.zeros(len(obs_e_value), dtype=bool)
 
-        N_det_obs = (N_det_obs_override
-                     if N_det_obs_override is not None
-                     else len(obs_logP))
-        N_stars = N_stars_eff
+        variants = all_variants()                # 12 (em, cm, lucy) tuples
+        tags = [variant_tag(em, cm, lucy) for (em, cm, lucy) in variants]
+        default_tag = variant_tag("combined", "numerical", False)
+        if default_tag not in tags:
+            default_tag = tags[0]
+
+        scoring_ctxs = {}
+        variant_meta = {}
+        for (em, cm, lucy) in variants:
+            tag = variant_tag(em, cm, lucy)
+            vi = _build_variant_inputs(
+                em, cm, lucy, logP_cutoff_scope,
+                obs_logP_raw, obs_e_value, obs_e_is_upper_limit, obs_K1_raw,
+                n_stars_sample, n_catalog_total, n_catalog_nonsingle,
+                smooth_sigma=smooth_sigma, manual_value=manual_value)
+            ctx = _make_scoring_ctx(
+                obs_logP=vi["obs_logP"], obs_e=vi["obs_e"], obs_K1=vi["obs_K1"],
+                clip_range=vi["clip_range"], e_score_mode=em,
+                obs_e_cont=vi["obs_e_cont"],
+                n_obs_circ=vi["n_obs_circ"] or 0,
+                n_obs_e_total=vi["n_obs_e_total"] or 0,
+                N_det_obs=vi["N_det_obs"], N_stars=vi["N_stars"],
+                sim_logP_floor=vi["sim_logP_floor"])
+            scoring_ctxs[tag] = ctx
+            variant_meta[tag] = {
+                "e_score_mode": em,
+                "logP_cutoff_mode": cm,
+                "apply_lucy_sweeny_e": bool(lucy),
+                "logP_cutoff": vi["logP_cutoff"],
+                "N_stars": vi["N_stars"],
+                "N_det_obs": vi["N_det_obs"],
+                "wass_sigma": ctx["wass_sigma"],
+                "has_e_circ": (em == "split"),
+            }
+            logger.info(
+                "  variant %-34s logP_cutoff=%.3f N_det_obs=%d N_stars=%d",
+                tag, vi["logP_cutoff"], vi["N_det_obs"], vi["N_stars"])
+
+        # Backward-compat single-mode scalars used by logging / the resume
+        # validator / the return dict. Sourced from the default variant.
+        e_score_mode = variant_meta[default_tag]["e_score_mode"]
+        logP_cutoff_mode = variant_meta[default_tag]["logP_cutoff_mode"]
+        logP_cutoff = variant_meta[default_tag]["logP_cutoff"]
+        N_stars = variant_meta[default_tag]["N_stars"]
+        N_det_obs = variant_meta[default_tag]["N_det_obs"]
 
         # Bundle the extra scoring-context kwargs once so every
         # _save_checkpoint call (4 sites: pre-resume, periodic, parallel
@@ -385,66 +382,105 @@ class GridSearchEngine:
         n_fbin = len(fbin_grid)
         total = n_pi * n_kappa * n_eta * n_fbin
 
+        # --- Adaptive injection budget (opt-in) -------------------------
+        # When enabled, n_inject is scaled per (π, f_bin) cell so the
+        # expected number of injected binary periods above the cutoff is a
+        # constant target, compensating for the surviving-sample collapse
+        # at steep π under scope="exclude". Disabled → every cell uses the
+        # flat baseline (behaviour identical to pre-feature runs). The
+        # budget is a function of (i, l) only (κ, η do not affect logP).
+        adaptive_n_inject = bool(self.cfg.get("adaptive_n_inject", False))
+        if adaptive_n_inject:
+            budget_cutoff = self.cfg.get("adaptive_n_cutoff")
+            budget_cutoff = (float(logP_cutoff) if budget_cutoff is None
+                             else float(budget_cutoff))
+            n_above_target = int(self.cfg.get("n_above_cutoff_target", 200))
+            n_inject_max = int(self.cfg.get("n_inject_max", 50000))
+            log_p_min = float(self.cfg.get("log_p_min", 0.0))
+            log_p_max = float(self.cfg.get("log_p_max", 3.5))
+            # The injection loops over every star in M1_arr (one task per
+            # star), so the pooled above-cutoff count scales with that count
+            # — NOT n_stars_sample, which is the catalog total feeding the
+            # binomial only.
+            n_stars_budget = int(len(self.M1_arr))
+            _budget_cache = {}
+
+            def _n_inject_for_cell(i, l):
+                key = (i, l)
+                cached = _budget_cache.get(key)
+                if cached is None:
+                    cached = n_inject_for_budget(
+                        pi_grid[i], n_stars_budget, fbin_grid[l],
+                        n_above_target, log_p_min, log_p_max, budget_cutoff,
+                        n_inject_max, n_inject_per_star)
+                    _budget_cache[key] = cached
+                return cached
+
+            # Precompute the full (i, l) budget table once for logging and so
+            # the checkpoint can persist it.
+            n_inject_grid = np.array(
+                [[_n_inject_for_cell(i, l) for l in range(n_fbin)]
+                 for i in range(n_pi)], dtype=np.int64)
+            n_capped = int(np.sum(n_inject_grid >= n_inject_max))
+            logger.info(
+                "Adaptive n_inject: cutoff=%.3f target=%d log_p_min=%.3f → "
+                "n_inject min=%d median=%d max=%d (%d/%d (π,f_bin) cells "
+                "capped at %d)",
+                budget_cutoff, n_above_target, log_p_min,
+                int(n_inject_grid.min()), int(np.median(n_inject_grid)),
+                int(n_inject_grid.max()), n_capped, n_inject_grid.size,
+                n_inject_max)
+            _ckpt_extra["adaptive_meta"] = dict(
+                adaptive_n_inject=True,
+                n_above_cutoff_target=n_above_target,
+                n_inject_max=n_inject_max,
+                log_p_min=log_p_min,
+                log_p_max=log_p_max,
+                budget_cutoff=budget_cutoff,
+                n_inject_grid=n_inject_grid,
+            )
+        else:
+            n_inject_grid = None
+            _ckpt_extra["adaptive_meta"] = dict(adaptive_n_inject=False)
+
+            def _n_inject_for_cell(i, l):
+                return n_inject_per_star
+
         shape = (n_pi, n_kappa, n_eta, n_fbin)
-        pdet_cube = np.zeros(shape)
+        pdet_cube = np.zeros(shape)        # shared across all variants
 
-        # Per-test p-value cubes and GMF cubes
-        test_cubes = {}
-        gmf_cubes = {}
-        for tname in _SCORED_TESTS:
-            tc = {
-                "logP": np.zeros(shape),
-                "e": np.zeros(shape),
-                "K1": np.zeros(shape),
+        # Per-variant goodness cubes. The expensive pdet_cube + det_shards
+        # + global hists are shared; only these cheap goodness cubes
+        # multiply by variant. Stored float32 (precision is non-critical
+        # for argmax/display) to keep the 6× footprint modest.
+        gmf_cubes_v = {}
+        test_cubes_v = {}
+        for tag in tags:
+            has_e_circ = variant_meta[tag]["has_e_circ"]
+            gmf_cubes_v[tag] = {
+                t: np.full(shape, -np.inf, dtype=np.float32)
+                for t in _SCORED_TESTS
             }
-            if e_score_mode == "split":
-                tc["e_circ"] = np.zeros(shape)
-            test_cubes[tname] = tc
-            gmf_cubes[tname] = np.full(shape, -np.inf)
+            tcv = {}
+            for t in _SCORED_TESTS:
+                d = {
+                    "logP": np.zeros(shape, dtype=np.float32),
+                    "e": np.zeros(shape, dtype=np.float32),
+                    "K1": np.zeros(shape, dtype=np.float32),
+                }
+                if has_e_circ:
+                    d["e_circ"] = np.zeros(shape, dtype=np.float32)
+                tcv[t] = d
+            test_cubes_v[tag] = tcv
 
-        # Backward-compat aliases (KS is the default)
+        # Backward-compat aliases (default variant, KS test) for logging /
+        # the return dict; downstream consumers read variant-keyed cubes.
+        gmf_cubes = gmf_cubes_v[default_tag]
+        test_cubes = test_cubes_v[default_tag]
         gmf_cube = gmf_cubes["ks"]
         ks_logP_cube = test_cubes["ks"]["logP"]
         ks_e_cube = test_cubes["ks"]["e"]
         ks_K1_cube = test_cubes["ks"]["K1"]
-
-        # Survey-sensitivity bounds for clipping simulated detected arrays.
-        # Based on the highest observed detection (not the survey baseline),
-        # so we compare CDFs only where we have constraining power. The
-        # logP lower bound is the inflection cutoff resolved above (0.0
-        # when logP_cutoff_mode='none').
-        clip_range = {
-            "logP": (logP_cutoff, obs_logP.max()),
-            "e": (0.0, 1.0),
-            "K1": (0.0, obs_K1.max()),
-        }
-        logger.info("CDF clip ranges: logP=[%.2f,%.2f] e=[%.3f,%.3f] "
-                     "K1=[%.1f,%.1f]",
-                     *clip_range["logP"], *clip_range["e"],
-                     *clip_range["K1"])
-
-        # Pre-split observed eccentricities for the circular/continuous
-        # scoring modes (avoids recomputing inside the inner loop).
-        # "split" needs all three; "eccentric_only" only needs obs_e_cont.
-        obs_e_cont = None
-        n_obs_circ = None
-        n_obs_e_total = None
-        if e_score_mode != "combined":
-            obs_e_cont = obs_e[obs_e > 0]
-            if e_score_mode == "split":
-                n_obs_circ = int(np.sum(obs_e == 0))
-                n_obs_e_total = len(obs_e)
-                logger.info(
-                    "e_score_mode=split: %d circular (e=0) + %d eccentric "
-                    "out of %d observed",
-                    n_obs_circ, len(obs_e_cont), n_obs_e_total)
-            else:
-                logger.info(
-                    "e_score_mode=eccentric_only: %d eccentric (e>0) of %d "
-                    "observed; circular fraction ignored",
-                    len(obs_e_cont), len(obs_e))
-        else:
-            logger.info("e_score_mode=combined: full e distribution tested")
 
         # Lightweight index: which steps have been processed and their
         # grid indices.  The actual detected arrays live on disk as
@@ -477,9 +513,9 @@ class GridSearchEngine:
                 # overwriting the checkpoint on the next save.
                 mismatches = []
 
-                ckpt_gmf_key = ("gmf_ks_cube" if "gmf_ks_cube" in ckpt.files
-                                else "gmf_cube")
-                if ckpt[ckpt_gmf_key].shape != gmf_cube.shape:
+                ckpt_gmf_key = "v__%s__gmf_ks_cube" % default_tag
+                if (ckpt_gmf_key in ckpt.files
+                        and ckpt[ckpt_gmf_key].shape != gmf_cube.shape):
                     mismatches.append(
                         "cube shape: stored=%s current=%s" % (
                             ckpt[ckpt_gmf_key].shape, gmf_cube.shape))
@@ -516,50 +552,54 @@ class GridSearchEngine:
                             "preset_name: stored=%s current=%s" % (
                                 stored_preset, preset_name))
 
-                # Recover the stored eccentricity-scoring mode. Checkpoints
-                # from before the 3-way switch lack this key — infer it
-                # from the legacy boolean if present, else from the
-                # presence of *_e_circ_cube entries.
-                if "e_score_mode" in ckpt.files:
-                    stored_mode = str(ckpt["e_score_mode"])
-                elif "split_e_circular" in ckpt.files:
-                    stored_mode = ("split"
-                                   if bool(ckpt["split_e_circular"])
-                                   else "combined")
-                else:
-                    has_e_circ = any(("%s_e_circ_cube" % t) in ckpt.files
-                                     for t in _ALL_TESTS)
-                    stored_mode = "split" if has_e_circ else "combined"
-                if stored_mode != e_score_mode:
+                # The all-variants schema (v4) persists the full variant
+                # set; the checkpoint metadata is no longer a single
+                # scalar mode. Resume requires the SAME variant set and
+                # the same (shared) cutoff scope. A single-mode v3
+                # checkpoint lacks the 'variants' key → refuse to resume.
+                stored_variants = ([str(v) for v in ckpt["variants"]]
+                                   if "variants" in ckpt.files else None)
+                if stored_variants is None:
                     mismatches.append(
-                        "e_score_mode: stored=%s current=%s" % (
-                            stored_mode, e_score_mode))
+                        "variants: checkpoint predates the all-variants "
+                        "schema (no 'variants' key); cannot resume")
+                elif set(stored_variants) != set(tags):
+                    mismatches.append(
+                        "variants: stored=%s current=%s" % (
+                            sorted(stored_variants), sorted(tags)))
 
-                # Recover the stored logP cutoff — checkpoints written
-                # before this feature lack both keys; treat that as
-                # "none / 0.0" so old runs remain resumable.
-                stored_logP_mode = (str(ckpt["logP_cutoff_mode"])
-                                    if "logP_cutoff_mode" in ckpt.files
-                                    else "none")
-                stored_logP_cutoff = (float(ckpt["logP_cutoff"])
-                                      if "logP_cutoff" in ckpt.files
-                                      else 0.0)
                 stored_logP_scope = (str(ckpt["logP_cutoff_scope"])
                                      if "logP_cutoff_scope" in ckpt.files
                                      else "period_only")
-                if stored_logP_mode != logP_cutoff_mode:
-                    mismatches.append(
-                        "logP_cutoff_mode: stored=%s current=%s" % (
-                            stored_logP_mode, logP_cutoff_mode))
-                elif not np.isclose(stored_logP_cutoff, logP_cutoff,
-                                    atol=1e-6):
-                    mismatches.append(
-                        "logP_cutoff: stored=%.6f current=%.6f" % (
-                            stored_logP_cutoff, logP_cutoff))
                 if stored_logP_scope != logP_cutoff_scope:
                     mismatches.append(
                         "logP_cutoff_scope: stored=%s current=%s" % (
                             stored_logP_scope, logP_cutoff_scope))
+
+                # Adaptive injection budget must match: a different target /
+                # cutoff / sampling bound changes n_inject per cell and would
+                # silently mix incompatible shards on resume.
+                stored_adaptive = (bool(ckpt["adaptive_n_inject"])
+                                   if "adaptive_n_inject" in ckpt.files
+                                   else False)
+                if stored_adaptive != adaptive_n_inject:
+                    mismatches.append(
+                        "adaptive_n_inject: stored=%s current=%s" % (
+                            stored_adaptive, adaptive_n_inject))
+                elif adaptive_n_inject:
+                    for key, cur, fmt in (
+                            ("adaptive_n_above_target", n_above_target, "%d"),
+                            ("adaptive_n_inject_max", n_inject_max, "%d"),
+                            ("adaptive_cutoff", budget_cutoff, "%.4f"),
+                            ("adaptive_log_p_min", log_p_min, "%.4f"),
+                            ("adaptive_log_p_max", log_p_max, "%.4f")):
+                        if key not in ckpt.files:
+                            continue
+                        stored_v = ckpt[key]
+                        if not np.isclose(float(stored_v), float(cur)):
+                            mismatches.append(
+                                ("%s: stored=" + fmt + " current=" + fmt) % (
+                                    key, float(stored_v), float(cur)))
 
                 if mismatches:
                     raise RuntimeError(
@@ -571,28 +611,25 @@ class GridSearchEngine:
                             checkpoint_dir, "\n  - ".join(mismatches)))
 
                 pdet_cube = ckpt["pdet_cube"]
-                # Restore per-test cubes (with backward compat for
-                # old checkpoints that only have KS)
-                for tname in _SCORED_TESTS:
-                    gmf_key = "gmf_%s_cube" % tname
-                    if gmf_key in ckpt.files:
-                        gmf_cubes[tname][:] = ckpt[gmf_key]
-                    elif tname == "ks" and "gmf_cube" in ckpt.files:
-                        gmf_cubes["ks"][:] = ckpt["gmf_cube"]
-                    for par in ("logP", "e", "K1"):
-                        tc_key = "%s_%s_cube" % (tname, par)
-                        if tc_key in ckpt.files:
-                            test_cubes[tname][par][:] = ckpt[tc_key]
-                        elif tname == "ks":
-                            # Backward compat: old key names
-                            old_key = "ks_%s_cube" % par
-                            if old_key in ckpt.files:
-                                test_cubes["ks"][par][:] = ckpt[old_key]
-                    if e_score_mode == "split":
-                        ec_key = "%s_e_circ_cube" % tname
-                        if ec_key in ckpt.files:
-                            test_cubes[tname]["e_circ"][:] = ckpt[ec_key]
-                # Update aliases
+                # Restore namespaced per-variant goodness cubes.
+                for tag in tags:
+                    has_e_circ = variant_meta[tag]["has_e_circ"]
+                    for tname in _SCORED_TESTS:
+                        gmf_key = "v__%s__gmf_%s_cube" % (tag, tname)
+                        if gmf_key in ckpt.files:
+                            gmf_cubes_v[tag][tname][:] = ckpt[gmf_key]
+                        for par in ("logP", "e", "K1"):
+                            tc_key = "v__%s__%s_%s_cube" % (tag, tname, par)
+                            if tc_key in ckpt.files:
+                                test_cubes_v[tag][tname][par][:] = ckpt[tc_key]
+                        if has_e_circ:
+                            ec_key = "v__%s__%s_e_circ_cube" % (tag, tname)
+                            if ec_key in ckpt.files:
+                                test_cubes_v[tag][tname]["e_circ"][:] = \
+                                    ckpt[ec_key]
+                # Refresh default-variant aliases
+                gmf_cubes = gmf_cubes_v[default_tag]
+                test_cubes = test_cubes_v[default_tag]
                 gmf_cube = gmf_cubes["ks"]
                 ks_logP_cube = test_cubes["ks"]["logP"]
                 ks_e_cube = test_cubes["ks"]["e"]
@@ -632,36 +669,12 @@ class GridSearchEngine:
             enumerate(eta_grid), enumerate(fbin_grid),
         ))
 
-        # Build the per-run scoring context once. Both the local
-        # _score_and_accumulate (forward path) and the resume re-score
-        # workers consume this through _compute_scores.
-        # obs_logP_above is the above-cutoff view; the period KS test
-        # consumes it via ctx["obs_logP"]. obs_e and obs_K1 are the full
-        # observed arrays so their KS tests and the binomial use the
-        # complete 70-system sample.
-        # sim_logP_floor: under scope="exclude" we drop the log_p_min
-        # injection override (so sim covers the full range) and instead
-        # apply the cutoff as a joint mask on sim-detected arrays at
-        # CDF-test time. Floor=0 in every other scope.
-        sim_logP_floor = (float(logP_cutoff)
-                          if logP_cutoff_scope == "exclude"
-                             and logP_cutoff > 0.0
-                          else 0.0)
-        scoring_ctx = _make_scoring_ctx(
-            obs_logP=obs_logP_above, obs_e=obs_e, obs_K1=obs_K1,
-            clip_range=clip_range,
-            e_score_mode=e_score_mode,
-            obs_e_cont=obs_e_cont,
-            n_obs_circ=n_obs_circ,
-            n_obs_e_total=n_obs_e_total,
-            N_det_obs=N_det_obs, N_stars=N_stars,
-            sim_logP_floor=sim_logP_floor,
-        )
-        # Now that the per-channel Wasserstein normalization scales are
-        # known, propagate them through every _save_checkpoint call so
-        # the explorer can surface them and aggregate runs can preserve
-        # them across task checkpoints.
-        _ckpt_extra["wass_sigma"] = scoring_ctx["wass_sigma"]
+        # Per-variant scoring contexts (scoring_ctxs) were built once in the
+        # preamble. Both _score_and_accumulate (forward path) and the
+        # parallel workers consume them through _compute_scores — one
+        # _compute_scores call per (grid point, variant). The simulated
+        # population (res) is identical across variants; only the cheap
+        # scoring differs.
 
         # Buffer for per-grid-point CSV rows in parallel mode. Flushed
         # at every cube checkpoint and once at end-of-run (not per-row,
@@ -679,32 +692,37 @@ class GridSearchEngine:
             )
             _pending_csv_rows.clear()
 
-        # Helper: write one grid-point result into cubes / hists / CSV.
-        # If `scores` is given (parallel resume path), skip the KS/AD/CvM
-        # work — the worker already did it. Otherwise compute scores
-        # inline (forward path, single-threaded but bounded by the
-        # inflight semaphore around imap_unordered).
+        # Helper: write one grid-point result into cubes / hists / CSV,
+        # scoring it under EVERY variant. If `scores_by_variant` is given
+        # (parallel paths), reuse the worker-computed scores; otherwise
+        # score inline here (one _compute_scores per variant).
         def _score_and_accumulate(step, i, j, k, l, pi, kappa, eta, fbin,
-                                  res, scores=None):
+                                  res, scores_by_variant=None):
             p_det = res["p_det"]
             pdet_cube[i, j, k, l] = p_det
 
-            if scores is None:
-                scores = _compute_scores(res, scoring_ctx)
+            if scores_by_variant is None:
+                scores_by_variant = {
+                    tag: _compute_scores(res, scoring_ctxs[tag])
+                    for tag in tags
+                }
 
-            for tname in _SCORED_TESTS:
-                test_cubes[tname]["logP"][i, j, k, l] = \
-                    scores["%s_p_logP" % tname]
-                test_cubes[tname]["e"][i, j, k, l] = \
-                    scores["%s_p_e" % tname]
-                test_cubes[tname]["K1"][i, j, k, l] = \
-                    scores["%s_p_K1" % tname]
-                if e_score_mode == "split":
-                    test_cubes[tname]["e_circ"][i, j, k, l] = \
-                        scores["%s_p_e_circ" % tname]
-                gmf_cubes[tname][i, j, k, l] = scores["log_gmf_%s" % tname]
+            for tag in tags:
+                scores = scores_by_variant[tag]
+                has_e_circ = variant_meta[tag]["has_e_circ"]
+                gc = gmf_cubes_v[tag]
+                tc = test_cubes_v[tag]
+                for tname in _SCORED_TESTS:
+                    tc[tname]["logP"][i, j, k, l] = scores["%s_p_logP" % tname]
+                    tc[tname]["e"][i, j, k, l] = scores["%s_p_e" % tname]
+                    tc[tname]["K1"][i, j, k, l] = scores["%s_p_K1" % tname]
+                    if has_e_circ:
+                        tc[tname]["e_circ"][i, j, k, l] = \
+                            scores["%s_p_e_circ" % tname]
+                    gc[tname][i, j, k, l] = scores["log_gmf_%s" % tname]
 
             # Accumulate 2D histograms (fixed-size, negligible memory).
+            # Variant-independent — done once.
             for pair in _HIST_PAIRS:
                 global_hist_total[pair] += res["hist_total"][pair]
                 global_hist_det[pair] += res["hist_det"][pair]
@@ -712,13 +730,16 @@ class GridSearchEngine:
             # Flush per-grid-point detected arrays to a shard file on
             # disk in serial mode. In parallel modes the shard was already
             # written (forward: by _worker_grid_point; resume: by the
-            # original run that produced the shard).
+            # original run that produced the shard). The shard is
+            # variant-independent (raw detected populations).
             if checkpoint_dir and not parallel_grid:
                 _save_det_shard(checkpoint_dir, step, i, j, k, l, res)
             step_to_ijkl.append((step, i, j, k, l))
 
-            # Build the CSV row from res scalars + scores. Drop any
-            # heavy arrays/dicts that may have been on res.
+            # Build the CSV row: shared scalars + each variant's log-GMF
+            # per test (flat columns log_gmf_<tname>__<tag>). The cubes are
+            # authoritative; the CSV is a convenience/sanity table + resume
+            # bookkeeping (one row per step keeps m_csv step-gating valid).
             row = {
                 "step": step,
                 "pi": pi, "kappa": kappa, "eta": eta, "fbin": fbin,
@@ -728,10 +749,10 @@ class GridSearchEngine:
                 "n_rlof": int(res.get("n_rlof", 0)),
                 "n_false_positive": int(res.get("n_false_positive", 0)),
             }
-            row.update({
-                k: v for k, v in scores.items()
-                if not isinstance(v, (np.ndarray, dict))
-            })
+            for tag in tags:
+                for tname in _SCORED_TESTS:
+                    row["log_gmf_%s__%s" % (tname, tag)] = \
+                        scores_by_variant[tag]["log_gmf_%s" % tname]
 
             if not parallel_grid:
                 all_results.append(row)
@@ -739,7 +760,7 @@ class GridSearchEngine:
                 _pending_csv_rows.append(row)
                 m_csv.add(step)
 
-            return p_det, scores["log_gmf_ks"]
+            return p_det, scores_by_variant[default_tag]["log_gmf_ks"]
 
         t0 = time.time()
         steps_done = 0
@@ -809,7 +830,7 @@ class GridSearchEngine:
                 with ctx_mp.Pool(
                         processes=n_resume_pool,
                         initializer=_init_resume_worker,
-                        initargs=(checkpoint_dir, scoring_ctx),
+                        initargs=(checkpoint_dir, scoring_ctxs),
                         maxtasksperchild=2000,
                 ) as resume_pool:
                     rescored = 0
@@ -823,7 +844,7 @@ class GridSearchEngine:
                         try:
                             if r is None:
                                 continue
-                            # `scores` already computed by the worker.
+                            # Per-variant scores already computed by worker.
                             res = {
                                 "p_det": r["p_det"],
                                 "n_detected": r["n_detected"],
@@ -836,7 +857,8 @@ class GridSearchEngine:
                             _score_and_accumulate(
                                 r["step"], r["i"], r["j"], r["k"], r["l"],
                                 r["pi"], r["kappa"], r["eta"], r["fbin"],
-                                res, scores=r["scores"])
+                                res,
+                                scores_by_variant=r["scores_by_variant"])
                             rescored += 1
                             # Periodic CSV flush so re-score progress
                             # survives a kill mid-resume.
@@ -856,15 +878,14 @@ class GridSearchEngine:
                 _flush_csv_rows()
                 _save_checkpoint(
                     checkpoint_dir, start_step,
-                    gmf_cubes, pdet_cube, test_cubes,
+                    gmf_cubes_v, pdet_cube, test_cubes_v,
                     pi_grid, kappa_grid, eta_grid, fbin_grid,
                     [],
                     n_inject_per_star=n_inject_per_star,
                     seed=seed,
                     preset_name=preset_name,
-                    e_score_mode=e_score_mode,
-                    logP_cutoff_mode=logP_cutoff_mode,
-                    logP_cutoff=logP_cutoff,
+                    variant_meta=variant_meta,
+                    tags=tags,
                     logP_cutoff_scope=logP_cutoff_scope,
                     apply_lucy_sweeny_e=apply_lucy_sweeny_e,
                     global_hists={
@@ -887,7 +908,7 @@ class GridSearchEngine:
                     continue
                 pending_tasks.append((
                     step, i, j, k, l, pi, kappa, eta, fbin,
-                    seed, n_inject_per_star,
+                    seed, _n_inject_for_cell(i, l),
                 ))
 
             logger.info("Parallel grid mode: %d grid points to compute "
@@ -920,7 +941,7 @@ class GridSearchEngine:
                               self.cfg, self.args_dict,
                               self.detect_method,
                               checkpoint_dir,
-                              scoring_ctx),
+                              scoring_ctxs),
                     maxtasksperchild=500,
             ) as pool:
                 for task_result in pool.imap_unordered(
@@ -932,10 +953,10 @@ class GridSearchEngine:
                         eta = eta_grid[k]
                         fbin = fbin_grid[l]
 
-                        scores = res.pop("scores", None)
+                        scores_by_variant = res.pop("scores_by_variant", None)
                         p_det, log_gmf = _score_and_accumulate(
                             step, i, j, k, l, pi, kappa, eta, fbin, res,
-                            scores=scores)
+                            scores_by_variant=scores_by_variant)
 
                         steps_done += 1
                         elapsed = time.time() - t0
@@ -963,15 +984,14 @@ class GridSearchEngine:
                             _flush_csv_rows()
                             _save_checkpoint(
                                 checkpoint_dir, start_step + steps_done,
-                                gmf_cubes, pdet_cube, test_cubes,
+                                gmf_cubes_v, pdet_cube, test_cubes_v,
                                 pi_grid, kappa_grid, eta_grid, fbin_grid,
                                 [],
                                 n_inject_per_star=n_inject_per_star,
                                 seed=seed,
                                 preset_name=preset_name,
-                                e_score_mode=e_score_mode,
-                                logP_cutoff_mode=logP_cutoff_mode,
-                                logP_cutoff=logP_cutoff,
+                                variant_meta=variant_meta,
+                                tags=tags,
                                 logP_cutoff_scope=logP_cutoff_scope,
                                 apply_lucy_sweeny_e=apply_lucy_sweeny_e,
                                 global_hists={
@@ -995,15 +1015,14 @@ class GridSearchEngine:
                 _flush_csv_rows()
                 _save_checkpoint(
                     checkpoint_dir, grid_end,
-                    gmf_cubes, pdet_cube, test_cubes,
+                    gmf_cubes_v, pdet_cube, test_cubes_v,
                     pi_grid, kappa_grid, eta_grid, fbin_grid,
                     [],  # CSV already flushed above
                     n_inject_per_star=n_inject_per_star,
                     seed=seed,
                     preset_name=preset_name,
-                    e_score_mode=e_score_mode,
-                    logP_cutoff_mode=logP_cutoff_mode,
-                    logP_cutoff=logP_cutoff,
+                    variant_meta=variant_meta,
+                    tags=tags,
                     logP_cutoff_scope=logP_cutoff_scope,
                     apply_lucy_sweeny_e=apply_lucy_sweeny_e,
                     global_hists={
@@ -1027,7 +1046,7 @@ class GridSearchEngine:
 
                 res = self._run_one_grid_point(
                     pi, kappa, eta, fbin,
-                    n_inject_per_star, rng,
+                    _n_inject_for_cell(i, l), rng,
                     n_workers=n_workers,
                 )
 
@@ -1057,15 +1076,14 @@ class GridSearchEngine:
                 if checkpoint_dir:
                     _save_checkpoint(
                         checkpoint_dir, step + 1,
-                        gmf_cubes, pdet_cube, test_cubes,
+                        gmf_cubes_v, pdet_cube, test_cubes_v,
                         pi_grid, kappa_grid, eta_grid, fbin_grid,
                         all_results,
                         n_inject_per_star=n_inject_per_star,
                         seed=seed,
                         preset_name=preset_name,
-                        e_score_mode=e_score_mode,
-                        logP_cutoff_mode=logP_cutoff_mode,
-                        logP_cutoff=logP_cutoff,
+                        variant_meta=variant_meta,
+                        tags=tags,
                         logP_cutoff_scope=logP_cutoff_scope,
                         apply_lucy_sweeny_e=apply_lucy_sweeny_e,
                         global_hists={
@@ -1076,26 +1094,31 @@ class GridSearchEngine:
                     )
                     _save_det_index(checkpoint_dir, step_to_ijkl)
 
-        # Best fit (per test)
-        best_fits = {}
-        for tname in _SCORED_TESTS:
-            gc = gmf_cubes[tname]
-            idx = np.unravel_index(np.nanargmax(gc), gc.shape)
-            best_fits[tname] = (float(pi_grid[idx[0]]),
-                                float(kappa_grid[idx[1]]),
-                                float(eta_grid[idx[2]]),
-                                float(fbin_grid[idx[3]]))
+        # Best fit per (variant, test) — recomputed from the cubes.
+        best_fits_by_variant = {}
+        for tag in tags:
+            bf_v = {}
+            for tname in _SCORED_TESTS:
+                gc = gmf_cubes_v[tag][tname]
+                idx = np.unravel_index(np.nanargmax(gc), gc.shape)
+                bf_v[tname] = (float(pi_grid[idx[0]]),
+                               float(kappa_grid[idx[1]]),
+                               float(eta_grid[idx[2]]),
+                               float(fbin_grid[idx[3]]))
+            best_fits_by_variant[tag] = bf_v
 
-        # KS best fit for backward compat / logging
+        # Default-variant aliases for logging / backward compat.
+        best_fits = best_fits_by_variant[default_tag]
         best_pi, best_kappa, best_eta, best_fbin = best_fits["ks"]
         best_idx = np.unravel_index(
-            np.nanargmax(gmf_cubes["ks"]), gmf_cubes["ks"].shape)
+            np.nanargmax(gmf_cubes_v[default_tag]["ks"]),
+            gmf_cubes_v[default_tag]["ks"].shape)
 
         logger.info("Grid search complete in %.1f min", (time.time()-t0)/60)
-        for tname in _SCORED_TESTS:
-            bf = best_fits[tname]
-            logger.info("Best fit (%s): π=%.2f, κ=%.2f, η=%.2f, f_bin=%.2f",
-                         tname.upper(), *bf)
+        for tag in tags:
+            bf = best_fits_by_variant[tag]["ks"]
+            logger.info("Best fit [%s] (KS): π=%.2f, κ=%.2f, η=%.2f, "
+                        "f_bin=%.2f", tag, *bf)
 
         return {
             "pi_grid": pi_grid,
@@ -1103,27 +1126,34 @@ class GridSearchEngine:
             "eta_grid": eta_grid,
             "fbin_grid": fbin_grid,
             "results": all_results,
-            "best_fit": (best_pi, best_kappa, best_eta, best_fbin),
-            "best_fits": best_fits,
-            "best_idx": best_idx,
-            "gmf_cube": gmf_cube,
-            "gmf_cubes": gmf_cubes,
+            # All-variants structures (schema v4)
+            "variants": tags,
+            "variant_meta": variant_meta,
+            "gmf_cubes_by_variant": gmf_cubes_v,
+            "test_cubes_by_variant": test_cubes_v,
+            "best_fits_by_variant": best_fits_by_variant,
             "pdet_cube": pdet_cube,
-            "test_cubes": test_cubes,
-            "ks_logP_cube": ks_logP_cube,
-            "ks_e_cube": ks_e_cube,
-            "ks_K1_cube": ks_K1_cube,
-            "N_stars": N_stars,
-            "N_det_obs": len(obs_logP),
+            "logP_cutoff_scope": logP_cutoff_scope,
             "step_to_ijkl": step_to_ijkl,
             "checkpoint_dir": checkpoint_dir,
-            "e_score_mode": e_score_mode,
-            "logP_cutoff_mode": logP_cutoff_mode,
-            "logP_cutoff": logP_cutoff,
-            "logP_cutoff_scope": logP_cutoff_scope,
-            "wass_sigma": scoring_ctx["wass_sigma"],
             "global_hists": {
                 "total": global_hist_total,
                 "det": global_hist_det,
             },
+            # Default-variant aliases (backward compat)
+            "best_fit": (best_pi, best_kappa, best_eta, best_fbin),
+            "best_fits": best_fits,
+            "best_idx": best_idx,
+            "gmf_cube": gmf_cubes_v[default_tag]["ks"],
+            "gmf_cubes": gmf_cubes_v[default_tag],
+            "test_cubes": test_cubes_v[default_tag],
+            "ks_logP_cube": test_cubes_v[default_tag]["ks"]["logP"],
+            "ks_e_cube": test_cubes_v[default_tag]["ks"]["e"],
+            "ks_K1_cube": test_cubes_v[default_tag]["ks"]["K1"],
+            "N_stars": variant_meta[default_tag]["N_stars"],
+            "N_det_obs": variant_meta[default_tag]["N_det_obs"],
+            "e_score_mode": variant_meta[default_tag]["e_score_mode"],
+            "logP_cutoff_mode": variant_meta[default_tag]["logP_cutoff_mode"],
+            "logP_cutoff": variant_meta[default_tag]["logP_cutoff"],
+            "wass_sigma": variant_meta[default_tag]["wass_sigma"],
         }

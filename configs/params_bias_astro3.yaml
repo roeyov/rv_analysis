@@ -37,21 +37,37 @@ bias_grid:
   rv_dir: "/jonathan_storage/roeyovadia/data/rv_csvs/"
   sb2_analysis_dir: "/jonathan_storage/roeyovadia/data/sb2_per_star"
   ostar_catalog: "/jonathan_storage/roeyovadia/tables/ostar_catalog.csv"
-  output_dir: "/jonathan_storage/roeyovadia/bias_grid_results/final3_2hr/"
+  output_dir: "/jonathan_storage/roeyovadia/bias_grid_results/final4_10min_adaptive/"
 
   # run shape
-  preset: final3_2hr
+  preset: final4_10min
   n_inject: null
   seed: 42
   n_stars_sample: null
-  e_score_mode: eccentric_only              # combined | split | eccentric_only
-  # Drop short-period mergers from the period CDF goodness-of-fit.
-  # Diagnostic places the elbow at logP ≈ 0.54 (P ≈ 3.5 d) for this sample.
-  logP_cutoff_mode: none           # none | numerical | manual
-  logP_cutoff_value: null          # used iff mode == "manual"
-  logP_cutoff_smooth_sigma: 0.15   # used iff mode == "numerical"
-  logP_cutoff_scope: period_only   # period_only | exclude
+  # ALL-VARIANTS run (cube schema v4): one pass scores every
+  # (e_score_mode, logP_cutoff_mode) variant = {combined, split,
+  # eccentric_only} × {none, numerical}. The per-variant mode keys are no
+  # longer read; the explorer switches between mechanisms on the loaded
+  # run. The numerical elbow sits at logP ≈ 0.54 (P ≈ 3.5 d) for this sample.
+  logP_cutoff_smooth_sigma: 0.15   # Gaussian σ (dex) for the numerical cutoff
+  logP_cutoff_scope: exclude       # period_only | exclude (fixed across variants)
   detect_method: rv_threshold
+
+  # ---- Sampling bounds + adaptive injection budget ----
+  # log_p_min is the lower bound of the log-P power-law sampler (default 0.0 is
+  # clamped to 1e-10 → normalization blow-up for π < -1). Set it to the observed
+  # minimum logP (P=1.11 d) to keep F_>(π) ≳ 0.1 across the grid — the root-cause
+  # fix for steep-π drift under scope=exclude.
+  log_p_min: 0.046
+  log_p_max: 3.5
+  # adaptive_n_inject scales n_inject per (π, f_bin) cell so the expected number
+  # of injected periods above the cutoff stays ≈ n_above_cutoff_target. Never
+  # injects below the preset baseline; capped at n_inject_max. With log_p_min
+  # physical this mostly floors to baseline (safety net). false → flat n_inject.
+  adaptive_n_inject: true
+  n_above_cutoff_target: 2200
+  n_inject_max: 50000
+  adaptive_n_cutoff: null          # null ⇒ use the run's numerical cutoff
 
   # parallelism — null lets bias_grid pick cpu_count - 2.
   # On a shared box, set this explicitly to a polite fraction of `nproc`.

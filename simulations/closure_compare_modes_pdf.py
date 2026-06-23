@@ -24,6 +24,8 @@ import yaml
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
+from simulations.bias_grid_lib.cube_io import read_gmf_cube
+
 
 PARAMS = [
     ("pi",     r"$\pi$",          "Period slope"),
@@ -42,7 +44,7 @@ def _load(base_dir):
     return df, truth
 
 
-def _joint_best_fit(base_dir):
+def _joint_best_fit(base_dir, variant=None):
     sum_log_gmf = None
     grids = {}
     n_seeds = 0
@@ -54,11 +56,10 @@ def _joint_best_fit(base_dir):
         else:
             continue
         z = np.load(p, allow_pickle=True)
-        for k in ("gmf_ks_cube", "log_gmf_ks", "log_gmf"):
-            if k in z.files:
-                cube = z[k].astype(np.float64)
-                break
-        else:
+        try:
+            cube, _ = read_gmf_cube(z, test="ks", tag=variant)
+            cube = cube.astype(np.float64)
+        except KeyError:
             continue
         if sum_log_gmf is None:
             sum_log_gmf = np.zeros_like(cube)
@@ -296,12 +297,19 @@ def main():
     ap.add_argument("--dir-b", required=True)
     ap.add_argument("--label-b", default="B")
     ap.add_argument("--output", default="closure_compare_modes.pdf")
+    # With all-variants (v4) cubes, the two sides can be the SAME dir read
+    # under different scoring variants (e.g. --dir-a==--dir-b,
+    # --variant-a=split__numerical --variant-b=eccentric_only__numerical).
+    ap.add_argument("--variant-a", default=None,
+                    help="Scoring variant tag for side A (v4 cubes).")
+    ap.add_argument("--variant-b", default=None,
+                    help="Scoring variant tag for side B (v4 cubes).")
     args = ap.parse_args()
 
     df_a, truth_a = _load(args.dir_a)
     df_b, truth_b = _load(args.dir_b)
-    joint_a = _joint_best_fit(args.dir_a)
-    joint_b = _joint_best_fit(args.dir_b)
+    joint_a = _joint_best_fit(args.dir_a, variant=args.variant_a)
+    joint_b = _joint_best_fit(args.dir_b, variant=args.variant_b)
 
     if any(abs(truth_a[k] - truth_b[k]) > 1e-9 for k in
            ("pi", "kappa", "eta", "fbin")):

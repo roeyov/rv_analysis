@@ -23,6 +23,8 @@ import yaml
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
+from simulations.bias_grid_lib.cube_io import read_gmf_cube
+
 PARAMS = [
     ("pi",     r"$\pi$",          "Period slope"),
     ("kappa",  r"$\kappa$",       "Mass-ratio slope"),
@@ -40,7 +42,7 @@ def _load(base_dir):
     return df, truth
 
 
-def _joint_best_fit(base_dir):
+def _joint_best_fit(base_dir, variant=None):
     sum_log_gmf = None
     grids = {}
     n_seeds = 0
@@ -52,11 +54,10 @@ def _joint_best_fit(base_dir):
         else:
             continue
         z = np.load(p, allow_pickle=True)
-        for k in ("gmf_ks_cube", "log_gmf_ks", "log_gmf"):
-            if k in z.files:
-                cube = z[k].astype(np.float64)
-                break
-        else:
+        try:
+            cube, _ = read_gmf_cube(z, test="ks", tag=variant)
+            cube = cube.astype(np.float64)
+        except KeyError:
             continue
         if sum_log_gmf is None:
             sum_log_gmf = np.zeros_like(cube)
@@ -322,10 +323,13 @@ def main():
                     help="Directory containing seed_*/ subdirs and per_seed_summary.csv.")
     ap.add_argument("--output", default=None,
                     help="Output PDF path. Default: <base-dir>/closure_summary.pdf")
+    ap.add_argument("--variant", default=None,
+                    help="Scoring variant tag for all-variants (v4) cubes; "
+                         "default eccentric_only__numerical.")
     args = ap.parse_args()
 
     df, truth = _load(args.base_dir)
-    joint = _joint_best_fit(args.base_dir)
+    joint = _joint_best_fit(args.base_dir, variant=args.variant)
     n_seeds = len(df)
 
     out_path = args.output or os.path.join(args.base_dir, "closure_summary.pdf")

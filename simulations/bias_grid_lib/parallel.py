@@ -32,8 +32,13 @@ _resume_shared = {}
 
 def _init_grid_worker(field_mjds, field_arr, rv_err_arr, M1_arr, R1_arr,
                       gamma_arr, cfg, args_dict, detect_method,
-                      checkpoint_dir=None, scoring_ctx=None):
-    """Pool initializer: stash shared data in module-level dict."""
+                      checkpoint_dir=None, scoring_ctxs=None):
+    """Pool initializer: stash shared data in module-level dict.
+
+    ``scoring_ctxs`` is the dict ``{variant_tag: scoring_ctx}`` (one entry
+    per (e_score_mode, logP_cutoff_mode) variant). The worker scores each
+    grid point's single simulated population under every variant.
+    """
     _shared["field_mjds"] = field_mjds
     _shared["field_arr"] = field_arr
     _shared["rv_err_arr"] = rv_err_arr
@@ -44,25 +49,26 @@ def _init_grid_worker(field_mjds, field_arr, rv_err_arr, M1_arr, R1_arr,
     _shared["args_dict"] = args_dict
     _shared["detect_method"] = detect_method
     _shared["checkpoint_dir"] = checkpoint_dir
-    _shared["scoring_ctx"] = scoring_ctx
+    _shared["scoring_ctxs"] = scoring_ctxs
 
 
-def _init_resume_worker(checkpoint_dir, scoring_ctx):
+def _init_resume_worker(checkpoint_dir, scoring_ctxs):
     """Pool initializer for parallel resume re-scoring.
 
-    Stash the scoring context once per worker so per-task IPC stays small.
+    Stash the per-variant scoring contexts once per worker so per-task IPC
+    stays small.
     """
     _resume_shared["checkpoint_dir"] = checkpoint_dir
-    _resume_shared["scoring_ctx"] = scoring_ctx
+    _resume_shared["scoring_ctxs"] = scoring_ctxs
 
 
 def _resume_score_worker(task):
     """Worker for parallel resume re-scoring.
 
     Loads one shard from disk, reconstructs the per-shard histograms,
-    runs all KS/AD/CvM tests via _compute_scores, and returns a small
-    dict the main process can fold into cubes/hists/CSV. No mutation
-    of any shared state happens in the worker.
+    runs all KS/AD/CvM tests via _compute_scores under EVERY variant, and
+    returns a small dict the main process folds into cubes/hists/CSV. No
+    mutation of any shared state happens in the worker.
 
     Returns None if the shard file vanished between discovery and load
     (race with another process / manual deletion).
@@ -70,7 +76,7 @@ def _resume_score_worker(task):
     from simulations.bias_grid_lib.checkpointing import _hists_from_shard
     step, i, j, k, l, pi, kappa, eta, fbin = task
     checkpoint_dir = _resume_shared["checkpoint_dir"]
-    ctx = _resume_shared["scoring_ctx"]
+    ctxs = _resume_shared["scoring_ctxs"]
     shard = _load_det_shard(checkpoint_dir, step)
     if shard is None:
         return None
@@ -93,7 +99,10 @@ def _resume_score_worker(task):
         "e_det": shard.get("e", np.array([])),
         "K1_det": shard.get("K1", np.array([])),
     }
-    scores = _compute_scores(res_for_scoring, ctx)
+    scores_by_variant = {
+        tag: _compute_scores(res_for_scoring, ctx)
+        for tag, ctx in ctxs.items()
+    }
     return {
         "step": step, "i": i, "j": j, "k": k, "l": l,
         "pi": pi, "kappa": kappa, "eta": eta, "fbin": fbin,
@@ -104,7 +113,7 @@ def _resume_score_worker(task):
         "n_false_positive": n_false_positive,
         "hist_total": hist_total,
         "hist_det": hist_det,
-        "scores": scores,
+        "scores_by_variant": scores_by_variant,
     }
 
 
@@ -236,12 +245,15 @@ def _worker_grid_point(task):
     if checkpoint_dir:
         _save_det_shard(checkpoint_dir, step, i, j, k, l, res)
 
-    # Score in-worker so the KS/AD/CvM work parallelizes across cores
-    # instead of bottlenecking the main process. Mirrors the pattern
-    # used by _resume_score_worker.
-    scoring_ctx = _shared.get("scoring_ctx")
-    if scoring_ctx is not None:
-        res["scores"] = _compute_scores(res, scoring_ctx)
+    # Score in-worker (once per variant) so the KS/AD/CvM work parallelizes
+    # across cores instead of bottlenecking the main process. The simulated
+    # population is identical across variants; only the cheap scoring loops.
+    scoring_ctxs = _shared.get("scoring_ctxs")
+    if scoring_ctxs is not None:
+        res["scores_by_variant"] = {
+            tag: _compute_scores(res, ctx)
+            for tag, ctx in scoring_ctxs.items()
+        }
 
     if checkpoint_dir:
         # Drop everything _score_and_accumulate doesn't need when

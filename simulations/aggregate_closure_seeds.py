@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from simulations.bias_grid_lib.cube_io import read_gmf_cube
+
 
 def _load_truth(seed_dir):
     with open(os.path.join(seed_dir, "truth_params.yaml")) as fh:
@@ -51,12 +53,14 @@ def _load_per_seed_summaries(base_dir):
     return pd.DataFrame(rows)
 
 
-def _joint_best_fit(base_dir):
+def _joint_best_fit(base_dir, variant=None):
     """Sum log_gmf cubes across seeds and report the joint mode.
 
-    Each per-seed cube is `log_gmf_ks` from grid_run/grid_cubes.npz (or
-    checkpoint_cubes.npz). Cubes share grid axes (pi, kappa, eta, fbin)
-    by construction since all seeds use the same preset.
+    Each per-seed cube is the KS log-GMF for the chosen scoring `variant`
+    from grid_run/grid_cubes.npz (or checkpoint_cubes.npz). All-variants
+    (schema v4) cubes are read via the namespaced 'v__<tag>__gmf_ks_cube'
+    key (default variant `eccentric_only__numerical`); legacy single-mode
+    cubes fall back to the bare key. Cubes share grid axes by construction.
     """
     cubes_paths = []
     for seed_dir in sorted(glob.glob(os.path.join(base_dir, "seed_*"))):
@@ -70,15 +74,13 @@ def _joint_best_fit(base_dir):
 
     sum_log_gmf = None
     pi_g = kappa_g = eta_g = fbin_g = None
+    resolved_tag = None
     for p in cubes_paths:
         z = np.load(p, allow_pickle=True)
-        # log_gmf_ks may be stored under different names depending on bias_grid
-        # version; try the common ones.
-        for k in ("gmf_ks_cube", "log_gmf_ks", "log_gmf"):
-            if k in z.files:
-                cube = z[k].astype(np.float64)
-                break
-        else:
+        try:
+            cube, resolved_tag = read_gmf_cube(z, test="ks", tag=variant)
+            cube = cube.astype(np.float64)
+        except KeyError:
             print(f"  no log_gmf cube in {p} -- skipping")
             continue
         if sum_log_gmf is None:
@@ -99,6 +101,7 @@ def _joint_best_fit(base_dir):
     i, j, k, l = np.unravel_index(flat_idx, sum_log_gmf.shape)
     return {
         "n_seeds_summed": len(cubes_paths),
+        "variant": resolved_tag,
         "joint_pi": float(pi_g[i]),
         "joint_kappa": float(kappa_g[j]),
         "joint_eta": float(eta_g[k]),
@@ -113,6 +116,10 @@ def main():
                     help="Directory containing seed_NN/ subdirs.")
     ap.add_argument("--out", default=None,
                     help="Optional CSV path to write per-seed table.")
+    ap.add_argument("--variant", default=None,
+                    help="Scoring variant tag '<e_score_mode>__<logP_cutoff_"
+                         "mode>' to read from all-variants (v4) cubes. "
+                         "Default: eccentric_only__numerical.")
     args = ap.parse_args()
 
     df = _load_per_seed_summaries(args.base_dir)
@@ -145,11 +152,12 @@ def main():
     print(f"  {'log_gmf_gap':>16s}: {df['log_gmf_gap'].mean():7.3f} "
           f"+/- {df['log_gmf_gap'].std():6.3f}")
 
-    joint = _joint_best_fit(args.base_dir)
+    joint = _joint_best_fit(args.base_dir, variant=args.variant)
     if joint:
         print()
         print("=" * 78)
-        print(f"Joint best fit (sum log_gmf over {joint['n_seeds_summed']} seeds)")
+        print(f"Joint best fit (sum log_gmf over {joint['n_seeds_summed']} "
+              f"seeds, variant={joint['variant']})")
         print("=" * 78)
         print(f"  joint_pi    = {joint['joint_pi']:7.3f}   "
               f"(truth={truth['pi']:6.3f}, delta={joint['joint_pi']-truth['pi']:+.3f})")

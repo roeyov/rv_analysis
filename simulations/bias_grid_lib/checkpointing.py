@@ -130,15 +130,54 @@ def _save_det_index(checkpoint_dir, step_to_ijkl):
     )
 
 
+def _save_variant_cube_kw(save_kw, gmf_cubes_v, test_cubes_v, variant_meta,
+                          tags):
+    """Add namespaced per-variant goodness cubes + metadata to ``save_kw``.
+
+    Shared by the engine checkpoint and the SLURM aggregation merge so the
+    'v__<tag>__…' key scheme is defined in exactly one place. Goodness
+    cubes are written float32 (precision is non-critical for argmax /
+    display); pdet / obs arrays keep their native dtype.
+    """
+    save_kw["variants"] = np.array([str(t) for t in tags])
+    for tag in tags:
+        meta = variant_meta[tag]
+        save_kw["v__%s__e_score_mode" % tag] = np.array(
+            str(meta["e_score_mode"]))
+        save_kw["v__%s__logP_cutoff_mode" % tag] = np.array(
+            str(meta["logP_cutoff_mode"]))
+        save_kw["v__%s__apply_lucy_sweeny_e" % tag] = np.array(
+            bool(meta.get("apply_lucy_sweeny_e", False)))
+        save_kw["v__%s__logP_cutoff" % tag] = np.array(
+            float(meta["logP_cutoff"]))
+        save_kw["v__%s__N_stars" % tag] = np.array(int(meta["N_stars"]))
+        save_kw["v__%s__N_det_obs" % tag] = np.array(int(meta["N_det_obs"]))
+        ws = meta.get("wass_sigma")
+        if ws is not None:
+            for ch in ("logP", "e", "K1"):
+                save_kw["v__%s__wass_sigma_%s" % (tag, ch)] = np.array(
+                    float(ws[ch]))
+        for tname in _SCORED_TESTS:
+            save_kw["v__%s__gmf_%s_cube" % (tag, tname)] = \
+                np.asarray(gmf_cubes_v[tag][tname], dtype=np.float32)
+            for par in ("logP", "e", "K1"):
+                save_kw["v__%s__%s_%s_cube" % (tag, tname, par)] = \
+                    np.asarray(test_cubes_v[tag][tname][par],
+                               dtype=np.float32)
+            if "e_circ" in test_cubes_v[tag][tname]:
+                save_kw["v__%s__%s_e_circ_cube" % (tag, tname)] = \
+                    np.asarray(test_cubes_v[tag][tname]["e_circ"],
+                               dtype=np.float32)
+    return save_kw
+
+
 def _save_checkpoint(checkpoint_dir, completed_steps,
-                     gmf_cubes, pdet_cube, test_cubes,
+                     gmf_cubes_v, pdet_cube, test_cubes_v,
                      pi_grid, kappa_grid, eta_grid, fbin_grid,
                      all_results,
                      n_inject_per_star, seed, preset_name,
-                     e_score_mode,
-                     logP_cutoff_mode="none",
-                     logP_cutoff=0.0,
-                     logP_cutoff_scope="period_only",
+                     variant_meta, tags,
+                     logP_cutoff_scope="exclude",
                      apply_lucy_sweeny_e=True,
                      logP_cutoff_smooth_sigma=0.15,
                      sb1_tex="",
@@ -147,13 +186,17 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
                      n_catalog_total=None,
                      n_catalog_nonsingle=None,
                      ostar_catalog="",
-                     wass_sigma=None,
+                     adaptive_meta=None,
                      global_hists=None):
     """Save intermediate results so a killed run can be resumed.
 
-    Detected arrays are saved per-grid-point as shard files by the
-    caller (_score_and_accumulate), so this function only persists the
-    cubes, scalar CSV, and global histograms.
+    All-variants schema (v4): one shared ``pdet_cube`` + per-variant
+    goodness cubes namespaced 'v__<tag>__…'. ``logP_cutoff_scope``,
+    ``logP_cutoff_smooth_sigma``, the obs block, and the catalog counts
+    are run-level (shared); each variant's resolved cutoff / N_stars /
+    N_det_obs / wass_sigma live in its 'v__<tag>__…' metadata. Detected
+    arrays are saved per-grid-point as shard files by the caller, so this
+    function only persists the cubes, scalar CSV, and global histograms.
     """
     logger.debug("_save_checkpoint: step %d", completed_steps)
     save_kw = dict(
@@ -167,9 +210,6 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
         n_inject_per_star=np.array(n_inject_per_star),
         seed=np.array(seed),
         preset_name=np.array(preset_name),
-        e_score_mode=np.array(e_score_mode),
-        logP_cutoff_mode=np.array(logP_cutoff_mode),
-        logP_cutoff=np.array(logP_cutoff),
         logP_cutoff_scope=np.array(logP_cutoff_scope),
         apply_lucy_sweeny_e=np.array(bool(apply_lucy_sweeny_e)),
         logP_cutoff_smooth_sigma=np.array(float(logP_cutoff_smooth_sigma)),
@@ -186,25 +226,32 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
             obs_n_sb1=np.array(int(obs["n_sb1"])),
             obs_n_sb2=np.array(int(obs["n_sb2"])),
         )
-    if wass_sigma is not None:
-        save_kw.update(
-            wass_sigma_logP=np.array(float(wass_sigma["logP"])),
-            wass_sigma_e=np.array(float(wass_sigma["e"])),
-            wass_sigma_K1=np.array(float(wass_sigma["K1"])),
-        )
     if n_catalog_total is not None:
         save_kw["obs_n_catalog_total"] = np.array(int(n_catalog_total))
     if n_catalog_nonsingle is not None:
         save_kw["obs_n_catalog_nonsingle"] = np.array(int(n_catalog_nonsingle))
     if ostar_catalog:
         save_kw["ostar_catalog"] = np.array(str(ostar_catalog))
-    # All tests
-    for tname in _SCORED_TESTS:
-        save_kw["gmf_%s_cube" % tname] = gmf_cubes[tname]
-        for par in ("logP", "e", "K1"):
-            save_kw["%s_%s_cube" % (tname, par)] = test_cubes[tname][par]
-        if "e_circ" in test_cubes[tname]:
-            save_kw["%s_e_circ_cube" % tname] = test_cubes[tname]["e_circ"]
+    # Adaptive injection budget context (opt-in). Persisted so a resume can
+    # validate the budget params match and the explorer can surface them.
+    if adaptive_meta is not None:
+        save_kw["adaptive_n_inject"] = np.array(
+            bool(adaptive_meta.get("adaptive_n_inject", False)))
+        save_kw["adaptive_n_above_target"] = np.array(
+            int(adaptive_meta.get("n_above_cutoff_target", 0)))
+        save_kw["adaptive_n_inject_max"] = np.array(
+            int(adaptive_meta.get("n_inject_max", 0)))
+        save_kw["adaptive_log_p_min"] = np.array(
+            float(adaptive_meta.get("log_p_min", 0.0)))
+        save_kw["adaptive_log_p_max"] = np.array(
+            float(adaptive_meta.get("log_p_max", 0.0)))
+        save_kw["adaptive_cutoff"] = np.array(
+            float(adaptive_meta.get("budget_cutoff", 0.0)))
+        grid = adaptive_meta.get("n_inject_grid")
+        if grid is not None:
+            save_kw["adaptive_n_inject_grid"] = np.asarray(grid, dtype=np.int64)
+    _save_variant_cube_kw(save_kw, gmf_cubes_v, test_cubes_v, variant_meta,
+                          tags)
     np.savez(os.path.join(checkpoint_dir, "checkpoint_cubes.npz"), **save_kw)
     # Save results list as CSV (arrays already stripped by caller).
     # Skip if empty — parallel mode writes CSV incrementally.

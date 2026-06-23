@@ -29,14 +29,15 @@ from simulations.bias_grid_lib.aggregation import aggregate_tasks
 from simulations.bias_grid_lib.checkpointing import (
     _det_shard_path, _hists_from_shard,
     _load_det_shard, _save_checkpoint, _save_det_index, _save_det_shard,
+    _save_variant_cube_kw,
 )
 from simulations.bias_grid_lib.constants import (
-    CUBE_SCHEMA_VERSION,
+    CUBE_SCHEMA_VERSION, EXPLORER_MIN_SCHEMA_VERSION,
     G_CGS, MSUN, RSUN, DAY, KM, TWOPI,
     _DET_SHARDS_DIR,
     _E_SCORE_MODES, _LOGP_CUTOFF_MODES, _LOGP_CUTOFF_SCOPES,
     _HIST_BINS, _HIST_NBINS, _HIST_PAIRS,
-    _trapz,
+    _trapz, all_variants, variant_tag, split_variant_tag,
 )
 from simulations.bias_grid_lib.cutoffs import (
     _compute_logP_cutoff, _numerical_logP_cutoff,
@@ -145,38 +146,50 @@ def main():
             "Unknown detect_method %r in bias_grid; valid: %s" %
             (detect_method, sorted(DETECTION_METHODS.keys())))
 
-    e_score_mode_cfg = _bg("e_score_mode")
-    if e_score_mode_cfg not in ("combined", "split", "eccentric_only"):
-        raise ValueError(
-            "Unknown e_score_mode %r in bias_grid; valid: "
-            "combined | split | eccentric_only" % (e_score_mode_cfg,))
-
-    logP_cutoff_mode_cfg = _bg("logP_cutoff_mode")
-    if logP_cutoff_mode_cfg not in _LOGP_CUTOFF_MODES:
-        raise ValueError(
-            "Unknown logP_cutoff_mode %r in bias_grid; valid: %s"
-            % (logP_cutoff_mode_cfg, " | ".join(_LOGP_CUTOFF_MODES)))
-    if logP_cutoff_mode_cfg == "manual" and _bg("logP_cutoff_value") is None:
-        raise ValueError(
-            "logP_cutoff_mode='manual' requires bias_grid.logP_cutoff_value "
-            "to be set in the YAML config")
-
+    # All-variants run (schema v4): one simulation pass is scored under
+    # every (e_score_mode, logP_cutoff_mode) variant, so the per-variant
+    # e_score_mode / logP_cutoff_mode YAML keys are no longer read here —
+    # they are enumerated internally (constants.all_variants). Only the
+    # run-level knobs (cutoff scope, smoothing σ, Lucy) remain configurable.
     logP_cutoff_scope_cfg = _bg("logP_cutoff_scope")
     if logP_cutoff_scope_cfg not in _LOGP_CUTOFF_SCOPES:
         raise ValueError(
             "Unknown logP_cutoff_scope %r in bias_grid; valid: %s"
             % (logP_cutoff_scope_cfg, " | ".join(_LOGP_CUTOFF_SCOPES)))
+    if logP_cutoff_scope_cfg != "exclude":
+        logger.warning(
+            "logP_cutoff_scope=%r — the canonical all-variants matrix "
+            "assumes 'exclude'. Proceeding with the configured scope.",
+            logP_cutoff_scope_cfg)
 
-    # Load bias config (defaults + YAML overrides for the scoring-related keys).
+    # Load bias config (defaults + run-level YAML overrides).
     cfg = copy.deepcopy(DEFAULT_BIAS_CFG)
-    cfg["e_score_mode"] = e_score_mode_cfg
-    cfg["logP_cutoff_mode"] = logP_cutoff_mode_cfg
-    cfg["logP_cutoff_value"] = _bg("logP_cutoff_value")
-    cfg["logP_cutoff_smooth_sigma"] = _bg("logP_cutoff_smooth_sigma")
     cfg["logP_cutoff_scope"] = logP_cutoff_scope_cfg
-    # Drop the legacy boolean so _resolve_e_score_mode uses the new
-    # explicit key without ambiguity.
+    cfg["logP_cutoff_smooth_sigma"] = _bg("logP_cutoff_smooth_sigma")
+    # The variant matrix only spans logP_cutoff_mode in {none, numerical};
+    # there is no 'manual' variant, so no manual cutoff value is used.
+    cfg["logP_cutoff_value"] = None
+    # Drop single-mode keys so nothing downstream reads a stale scalar.
+    cfg.pop("e_score_mode", None)
+    cfg.pop("logP_cutoff_mode", None)
     cfg.pop("split_e_circular", None)
+
+    # Sampling bounds for the log-P power law (now YAML-configurable; the
+    # defaults reproduce historical runs). log_p_min is also the lower bound
+    # used by the adaptive-budget F_>(π) — set it to a physical value
+    # (e.g. the observed minimum logP) to avoid the x_min→0 normalization
+    # blow-up for π < -1.
+    cfg["log_p_min"] = float(_bg("log_p_min"))
+    cfg["log_p_max"] = float(_bg("log_p_max"))
+
+    # Adaptive injection budget (opt-in; default OFF). See DEFAULT_BIAS_CFG
+    # and engine.run for the n_inject(π, f_bin) scaling.
+    cfg["adaptive_n_inject"] = bool(_bg("adaptive_n_inject"))
+    cfg["n_above_cutoff_target"] = int(_bg("n_above_cutoff_target"))
+    cfg["n_inject_max"] = int(_bg("n_inject_max"))
+    _adaptive_cutoff = _bg("adaptive_n_cutoff")
+    cfg["adaptive_n_cutoff"] = (None if _adaptive_cutoff is None
+                                else float(_adaptive_cutoff))
 
     # Paths
     sb1_tex = _bg("sb1_tex")
@@ -198,11 +211,16 @@ def main():
     # Setup logging (before any work)
     setup_logging(output_dir)
 
-    # 1) Load observed distributions
+    # 1) Load observed distributions.
+    # apply_lucy_sweeny_e is now a SWEPT variant axis (schema v5), not a
+    # single run knob — the engine derives both conventions per variant
+    # from the raw obs e_value + e_is_upper_limit. The value below is only
+    # a legacy placeholder for the cube's shared scalar (v3/v4 readers);
+    # the obs["e"] it produces is unused by the all-variants scorer.
     apply_lucy_sweeny_e = bool(_bg("apply_lucy_sweeny_e"))
     cfg["apply_lucy_sweeny_e"] = apply_lucy_sweeny_e
     logger.info("Loading observed distributions from LaTeX tables "
-                "(apply_lucy_sweeny_e=%s)...", apply_lucy_sweeny_e)
+                "(apply_lucy_sweeny_e is swept: {False, True})...")
     obs = load_observed_from_tex(sb1_tex, sb2_tex,
                                  apply_lucy_sweeny_e=apply_lucy_sweeny_e)
     # Catalog counts feed the binomial under scope="exclude" (full O-star
@@ -248,12 +266,14 @@ def main():
         cfg["n_stars_sample"] = len(star_df)
     logger.info("  n_stars_sample for binomial: %d (injection sample: %d)",
                 cfg["n_stars_sample"], len(star_df))
-    logger.info("  e_score_mode: %s", cfg["e_score_mode"])
-    logger.info("  logP_cutoff_mode: %s (value=%s, smooth_sigma=%.3f)",
-                cfg["logP_cutoff_mode"],
-                cfg.get("logP_cutoff_value"),
+    _variant_tags = [variant_tag(em, cm, lucy)
+                     for (em, cm, lucy) in all_variants()]
+    logger.info("  All-variants run: %d variants = %s",
+                len(_variant_tags), ", ".join(_variant_tags))
+    logger.info("  logP_cutoff_scope: %s (fixed across variants); "
+                "smooth_sigma=%.3f",
+                cfg["logP_cutoff_scope"],
                 cfg.get("logP_cutoff_smooth_sigma", 0.15))
-    logger.info("  logP_cutoff_scope: %s", cfg["logP_cutoff_scope"])
 
     # 3) Setup grids from the selected preset
     preset = GRID_PRESETS[preset_name]
@@ -274,7 +294,13 @@ def main():
     logger.info("  Grid: %d×%d×%d×%d = %d points",
                 len(pi_grid), len(kappa_grid), len(eta_grid),
                 len(fbin_grid), total)
-    logger.info("  Injections per star: %d", n_inject)
+    if cfg["adaptive_n_inject"]:
+        logger.info("  Injections per star: ADAPTIVE (baseline %d, "
+                    "target N>cutoff=%d, cap=%d, log_p_min=%.3f)",
+                    n_inject, cfg["n_above_cutoff_target"],
+                    cfg["n_inject_max"], cfg["log_p_min"])
+    else:
+        logger.info("  Injections per star: %d", n_inject)
     logger.info("  Stars: %d", len(star_df))
     logger.info("  Observed detections: %d", len(obs['logP']))
     logger.info("  Output: %s", output_dir)
@@ -297,8 +323,17 @@ def main():
         "n_inject": int(n_inject),
         "seed": seed,
         "n_stars_sample": cfg["n_stars_sample"],
-        "e_score_mode": cfg["e_score_mode"],
+        "variants": [variant_tag(em, cm, lucy)
+                     for (em, cm, lucy) in all_variants()],
+        "logP_cutoff_scope": cfg["logP_cutoff_scope"],
+        "logP_cutoff_smooth_sigma": cfg.get("logP_cutoff_smooth_sigma", 0.15),
         "apply_lucy_sweeny_e": apply_lucy_sweeny_e,
+        "log_p_min": cfg["log_p_min"],
+        "log_p_max": cfg["log_p_max"],
+        "adaptive_n_inject": cfg["adaptive_n_inject"],
+        "n_above_cutoff_target": cfg["n_above_cutoff_target"],
+        "n_inject_max": cfg["n_inject_max"],
+        "adaptive_n_cutoff": cfg["adaptive_n_cutoff"],
         "detect_method": detect_method,
         "n_workers": n_workers_cfg,
         "parallel_grid": parallel_grid,
@@ -388,7 +423,8 @@ def main():
     # 5) Save results (single-machine mode only)
     os.makedirs(output_dir, exist_ok=True)
 
-    # Save cubes
+    # Save cubes (schema v4: one shared pdet_cube + obs block, plus
+    # namespaced per-variant goodness cubes via _save_variant_cube_kw).
     save_kw_cubes = dict(
         cube_schema_version=np.array(CUBE_SCHEMA_VERSION),
         pdet_cube=results["pdet_cube"],
@@ -397,6 +433,8 @@ def main():
         eta_grid=eta_grid,
         fbin_grid=fbin_grid,
         apply_lucy_sweeny_e=np.array(bool(apply_lucy_sweeny_e)),
+        logP_cutoff_scope=np.array(
+            str(results.get("logP_cutoff_scope", "exclude"))),
         logP_cutoff_smooth_sigma=np.array(
             float(cfg.get("logP_cutoff_smooth_sigma", 0.15))),
         sb1_tex=np.array(str(sb1_tex)),
@@ -412,33 +450,16 @@ def main():
         obs_n_catalog_nonsingle=np.array(int(n_catalog_nonsingle)),
         ostar_catalog=np.array(str(ostar_catalog)),
     )
-    if "e_score_mode" in results:
-        save_kw_cubes["e_score_mode"] = np.array(results["e_score_mode"])
-    if "logP_cutoff_mode" in results:
-        save_kw_cubes["logP_cutoff_mode"] = np.array(
-            results["logP_cutoff_mode"])
-        save_kw_cubes["logP_cutoff"] = np.array(results["logP_cutoff"])
-        save_kw_cubes["logP_cutoff_scope"] = np.array(
-            results.get("logP_cutoff_scope", "period_only"))
-    if "wass_sigma" in results:
-        save_kw_cubes["wass_sigma_logP"] = np.array(
-            float(results["wass_sigma"]["logP"]))
-        save_kw_cubes["wass_sigma_e"] = np.array(
-            float(results["wass_sigma"]["e"]))
-        save_kw_cubes["wass_sigma_K1"] = np.array(
-            float(results["wass_sigma"]["K1"]))
-    # All tests
-    if "gmf_cubes" in results:
-        for tname in _SCORED_TESTS:
-            save_kw_cubes["gmf_%s_cube" % tname] = results["gmf_cubes"][tname]
-            for par in ("logP", "e", "K1"):
-                save_kw_cubes["%s_%s_cube" % (tname, par)] = \
-                    results["test_cubes"][tname][par]
-            if "e_circ" in results["test_cubes"][tname]:
-                save_kw_cubes["%s_e_circ_cube" % tname] = \
-                    results["test_cubes"][tname]["e_circ"]
+    _save_variant_cube_kw(
+        save_kw_cubes,
+        results["gmf_cubes_by_variant"],
+        results["test_cubes_by_variant"],
+        results["variant_meta"],
+        results["variants"],
+    )
     np.savez(os.path.join(output_dir, "grid_cubes.npz"), **save_kw_cubes)
-    logger.info("Saved grid cubes to %s/grid_cubes.npz", output_dir)
+    logger.info("Saved grid cubes (%d variants) to %s/grid_cubes.npz",
+                len(results["variants"]), output_dir)
 
     # Save global histograms (detected arrays are already on disk as
     # individual shard files in det_shards/).
@@ -459,12 +480,12 @@ def main():
         logger.info("Saved det index + %d shard files in %s/det_shards/",
                      len(results["step_to_ijkl"]), output_dir)
 
-    # Plots
-    plot_grid_results(results, output_dir,
-                      obs_logP=obs["logP"], obs_e=obs["e"],
-                      obs_K1=obs["K1"])
-
-    logger.info("Done.")
+    # Static plotting is intentionally not run here: with 6 variants the
+    # comparison lives in the interactive explorer (bias_grid_explorer.py),
+    # which switches between fitting mechanisms on one loaded run.
+    logger.info("Done. Explore with: streamlit run "
+                "simulations/bias_grid_explorer.py -- --output-dir %s",
+                output_dir)
 
 
 if __name__ == "__main__":

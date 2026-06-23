@@ -61,6 +61,19 @@ DEFAULT_BIAS_CFG = {
     "n_inject_per_star": 100,
     "per_star_mode": True,
 
+    # Adaptive injection budget (opt-in; default OFF → flat n_inject_per_star).
+    # When enabled, n_inject is scaled per grid cell so the EXPECTED number of
+    # injected binary periods above the cutoff is held at a constant target:
+    #     n_inject(π, f_bin) = N_target / (n_stars · f_bin · F_>(π))
+    # clamped to [n_inject_per_star, n_inject_max]. F_>(π) is the fraction of
+    # the log-P power law above the cutoff (see physics.fraction_above_cutoff).
+    # This compensates for the surviving-sample collapse at steep (negative) π
+    # under logP_cutoff_scope="exclude". Only meaningful with a finite cutoff.
+    "adaptive_n_inject": False,
+    "n_above_cutoff_target": 2200,  # requested N intrinsic samples above cutoff
+    "n_inject_max": 50000,         # hard cap on per-cell n_inject
+    "adaptive_n_cutoff": None,     # cutoff for the budget; None ⇒ run cutoff
+
     # Observed sample sizes
     "n_stars_sample": 134,   # full O-star sample (134 = 159 - 25 Oe)
     "n_det_obs": 71,         # 46 SB1 + 25 SB2 detected
@@ -215,6 +228,16 @@ GRID_PRESETS = {
         "fbin":  np.linspace(0.40, 1.00, 21),    # step 0.030
         "n_inject_per_star": 100,
     },
+    
+        # Same axis bounds as final3_10min3 but uniform ~0.03 step and kappa
+    # lower bound pushed to -1.50 (captures equal-mass-biased priors).
+    "final4_10min": {  # 39×51×39×28 = 2,171,988 pts, ~2 hr on astro3 (each axis of the 22M grid reduced by 10^(1/4))
+        "pi":    np.linspace(-1.8, 0.20, 20),
+        "kappa": np.linspace(-1.6, 0.10, 25),
+        "eta":   np.linspace(-0.60, 0.30, 20),
+        "fbin":  np.linspace(0.40, 0.80, 15),
+        "n_inject_per_star": 100,
+    },
         # Same axis bounds as final3_10min3 but uniform ~0.03 step and kappa
     # lower bound pushed to -1.50 (captures equal-mass-biased priors).
     "final3_howmany_hr": {  # 39×51×39×28 = 2,171,988 pts, ~2 hr on astro3 (each axis of the 22M grid reduced by 10^(1/4))
@@ -224,7 +247,6 @@ GRID_PRESETS = {
         "fbin":  np.linspace(0.40, 0.80, 28),
         "n_inject_per_star": 100,
     },
-
     "final3_5min": {
         "pi":    np.linspace(-0.95, 0.20, 20),   # step 0.030
         "kappa": np.linspace(-2.50, 0.10, 33),   # step 0.030; lower edge widened from -0.50

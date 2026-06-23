@@ -134,3 +134,59 @@ def powerlaw_draw(n, alpha, xmin, xmax, rng):
     logger.debug("powerlaw_draw: n=%d alpha=%.2f [%.3f,%.3f] → [%.3f,%.3f]",
                  n, alpha, xmin, xmax, samples.min(), samples.max())
     return samples
+
+
+# ---------------------------------------------------------------------------
+# Adaptive injection budget — fraction of the log-P power law above a cutoff
+# ---------------------------------------------------------------------------
+
+# Lower-bound floor applied by powerlaw_draw (x^alpha needs xmin > 0). The
+# budget math must use the SAME clamp so F_>(π) matches the realized sampler.
+_POWERLAW_XMIN_FLOOR = 1e-10
+
+
+def fraction_above_cutoff(pi, xmin, xmax, xc):
+    """Fraction of the log-P power law p(x) ∝ x^pi that lies above the cutoff.
+
+    With x = log10(P) drawn on [xmin, xmax] (same clamp as ``powerlaw_draw``),
+
+        F_>(pi) = (xmax^(pi+1) - xc^(pi+1)) / (xmax^(pi+1) - xmin^(pi+1)),
+
+    with the pi == -1 logarithmic limit. Returns a value in [0, 1]; degenerate
+    cutoffs collapse to the obvious limits (xc <= xmin → 1, xc >= xmax → 0).
+    """
+    xmin = max(float(xmin), _POWERLAW_XMIN_FLOOR)
+    xmax = max(float(xmax), xmin + _POWERLAW_XMIN_FLOOR)
+    xc = float(xc)
+    if xc <= xmin:
+        return 1.0
+    if xc >= xmax:
+        return 0.0
+    a = float(pi) + 1.0
+    if abs(a) < 1e-8:               # pi == -1: integral of x^-1 is log
+        denom = np.log(xmax) - np.log(xmin)
+        return float((np.log(xmax) - np.log(xc)) / denom) if denom > 0 else 0.0
+    denom = xmax ** a - xmin ** a
+    if denom == 0.0:
+        return 0.0
+    return float((xmax ** a - xc ** a) / denom)
+
+
+def n_inject_for_budget(pi, n_stars, f_bin, target, xmin, xmax, xc,
+                        n_inject_max, n_inject_floor):
+    """Per-star injection count holding E[N injected periods > cutoff] = target.
+
+    E[N_above] = (n_inject · n_stars · f_bin) · F_>(pi), so to hit ``target``::
+
+        n_inject = ceil(target / (n_stars · f_bin · F_>(pi)))
+
+    clamped to [n_inject_floor, n_inject_max]. When F_>(pi) → 0 (steep pi with a
+    near-zero xmin) the raw budget diverges and the cap binds — those cells are
+    statistically unmeasurable at any feasible sample size.
+    """
+    f_above = fraction_above_cutoff(pi, xmin, xmax, xc)
+    denom = float(n_stars) * float(f_bin) * f_above
+    if denom <= 0.0:
+        return int(n_inject_max)
+    raw = int(np.ceil(float(target) / denom))
+    return int(min(max(raw, int(n_inject_floor)), int(n_inject_max)))

@@ -27,6 +27,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from simulations.bias_grid_lib.cube_io import read_gmf_cube
+
 
 PARAM_NAMES = ["pi", "kappa", "eta", "fbin"]
 PARAM_LABELS = {"pi": r"$\pi$", "kappa": r"$\kappa$",
@@ -128,6 +130,10 @@ def main(argv=None):
                     help="Where to write report (default: <grid-dir>/closure_report).")
     ap.add_argument("--test", choices=["ks", "ad", "cvm"], default="ks",
                     help="Which GMF cube to use for argmax/marginals.")
+    ap.add_argument("--variant", default=None,
+                    help="Scoring variant tag '<e_score_mode>__<logP_cutoff_"
+                         "mode>' for all-variants (v4) cubes. Default: "
+                         "eccentric_only__numerical.")
     args = ap.parse_args(argv)
 
     out_dir = args.output or os.path.join(args.grid_dir, "closure_report")
@@ -144,11 +150,11 @@ def main(argv=None):
         "fbin": np.asarray(grid["fbin_grid"]),
     }
 
-    cube_key = "gmf_%s_cube" % args.test
-    if cube_key not in grid.files:
-        raise KeyError("%s not in %s; available: %s" %
-                       (cube_key, args.grid_dir, list(grid.files)))
-    cube = np.asarray(grid[cube_key])
+    cube_raw, variant_tag_used = read_gmf_cube(grid, test=args.test,
+                                               tag=args.variant)
+    cube = np.asarray(cube_raw)
+    print("Using scoring variant: %s (test=%s)" % (variant_tag_used,
+                                                   args.test))
 
     flat_idx = int(np.nanargmax(cube))
     idx = np.unravel_index(flat_idx, cube.shape)

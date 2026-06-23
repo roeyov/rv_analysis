@@ -28,7 +28,8 @@ from simulations.bias_config import DEFAULT_BIAS_CFG
 from simulations.bias_grid import (
     _HIST_BINS, _HIST_PAIRS, _HIST_NBINS,
     _DET_SHARDS_DIR, _load_det_shard,
-    CUBE_SCHEMA_VERSION,
+    CUBE_SCHEMA_VERSION, EXPLORER_MIN_SCHEMA_VERSION,
+    variant_tag, split_variant_tag,
 )
 
 
@@ -77,15 +78,18 @@ def load_grid_data(output_dir):
 
     stored_version = (int(cubes["cube_schema_version"])
                       if "cube_schema_version" in cubes.files else 0)
-    if stored_version < CUBE_SCHEMA_VERSION:
+    if stored_version < EXPLORER_MIN_SCHEMA_VERSION:
         st.error(
             "Cube schema mismatch: %s reports version %d, explorer "
             "requires >= %d. Re-run bias_grid.py on this output dir to "
             "regenerate the cubes with the obs arrays and extra "
             "metadata the explorer now needs."
-            % (cubes_path, stored_version, CUBE_SCHEMA_VERSION)
+            % (cubes_path, stored_version, EXPLORER_MIN_SCHEMA_VERSION)
         )
         st.stop()
+    # v4 cubes carry the full 6-variant namespace ('variants' key); v3
+    # single-mode cubes load as one synthetic variant (see below).
+    is_multi_variant = "variants" in cubes.files
 
     data = {
         "cube_schema_version": stored_version,
@@ -96,106 +100,127 @@ def load_grid_data(output_dir):
         "fbin_grid": cubes["fbin_grid"],
     }
 
-    # Load per-test GMF and p-value cubes. Wasserstein stores raw
+    # --- Load per-variant goodness cubes (schema v4) -----------------
+    # One simulation pass is scored under every (e_score_mode,
+    # logP_cutoff_mode) variant. Goodness cubes are namespaced
+    # 'v__<tag>__…'. A v3 single-mode cube loads as ONE synthetic variant
+    # derived from its stored scalar metadata. Wasserstein stores raw
     # distances in the *_p_* slots (the explorer surfaces the unit
-    # distinction in labels — see `test_labels` and the CDF annotation).
+    # distinction in labels).
     test_names = ["ks", "ad", "cvm", "wass"]
-    available_tests = []
-    gmf_cubes = {}
-    test_pval_cubes = {}
-    best_fits = {}
 
-    for tname in test_names:
-        gmf_key = "gmf_%s_cube" % tname
-        bf_key = "best_fit_%s" % tname
-        if gmf_key in cubes.files:
-            gmf_cubes[tname] = cubes[gmf_key]
-            available_tests.append(tname)
-            test_pval_cubes[tname] = {}
+    _shared_lucy = (bool(cubes["apply_lucy_sweeny_e"])
+                    if "apply_lucy_sweeny_e" in cubes.files else False)
+    if is_multi_variant:
+        tags = [str(t) for t in cubes["variants"]]
+    else:
+        if "e_score_mode" in cubes.files:
+            _em = str(cubes["e_score_mode"])
+        else:
+            _em = "split" if any(
+                ("%s_e_circ_cube" % t) in cubes.files for t in test_names
+            ) else "combined"
+        _cm = (str(cubes["logP_cutoff_mode"])
+               if "logP_cutoff_mode" in cubes.files else "none")
+        tags = [variant_tag(_em, _cm, _shared_lucy)]
+
+    gmf_by_variant = {}
+    test_by_variant = {}
+    best_by_variant = {}
+    avail_by_variant = {}
+    variant_meta = {}
+
+    for tag in tags:
+        em, cm, tag_lucy = split_variant_tag(tag)
+        gmf_v, test_v, best_v, avail = {}, {}, {}, []
+        for tname in test_names:
+            gmf_key = ("v__%s__gmf_%s_cube" % (tag, tname) if is_multi_variant
+                       else "gmf_%s_cube" % tname)
+            gc = None
+            if gmf_key in cubes.files:
+                gc = cubes[gmf_key]
+            elif (not is_multi_variant) and tname == "ks" \
+                    and "gmf_cube" in cubes.files:
+                gc = cubes["gmf_cube"]          # very old single-KS cube
+            if gc is None:
+                continue
+            gmf_v[tname] = gc
+            avail.append(tname)
+            test_v[tname] = {}
             for par in ("logP", "e", "K1", "e_circ"):
-                tc_key = "%s_%s_cube" % (tname, par)
-                if tc_key in cubes.files:
-                    test_pval_cubes[tname][par] = cubes[tc_key]
-            # Always recompute best fit from the loaded cube — stored
-            # values may be stale from an incomplete checkpoint.
-            gc = gmf_cubes[tname]
+                pk = ("v__%s__%s_%s_cube" % (tag, tname, par)
+                      if is_multi_variant else "%s_%s_cube" % (tname, par))
+                if pk in cubes.files:
+                    test_v[tname][par] = cubes[pk]
+                elif (not is_multi_variant) and tname == "ks":
+                    old = "ks_%s_cube" % par
+                    if old in cubes.files:
+                        test_v[tname][par] = cubes[old]
             idx = np.unravel_index(np.nanargmax(gc), gc.shape)
-            best_fits[tname] = (
+            best_v[tname] = (
                 float(data["pi_grid"][idx[0]]),
                 float(data["kappa_grid"][idx[1]]),
                 float(data["eta_grid"][idx[2]]),
                 float(data["fbin_grid"][idx[3]]),
             )
+        gmf_by_variant[tag] = gmf_v
+        test_by_variant[tag] = test_v
+        best_by_variant[tag] = best_v
+        avail_by_variant[tag] = avail
 
-    # Backward compat: if no per-test cubes, use legacy KS keys
-    if "ks" not in gmf_cubes and "gmf_cube" in cubes.files:
-        gmf_cubes["ks"] = cubes["gmf_cube"]
-        available_tests.append("ks")
-        test_pval_cubes["ks"] = {}
-        for par, old_key in [("logP", "ks_logP_cube"),
-                             ("e", "ks_e_cube"),
-                             ("K1", "ks_K1_cube")]:
-            if old_key in cubes.files:
-                test_pval_cubes["ks"][par] = cubes[old_key]
-        gc = gmf_cubes["ks"]
-        idx = np.unravel_index(np.nanargmax(gc), gc.shape)
-        best_fits["ks"] = (
-            float(data["pi_grid"][idx[0]]),
-            float(data["kappa_grid"][idx[1]]),
-            float(data["eta_grid"][idx[2]]),
-            float(data["fbin_grid"][idx[3]]),
-        )
+        # Per-variant scalar metadata.
+        def _g(key, cast, default):
+            return cast(cubes[key]) if key in cubes.files else default
+        # Per-variant Lucy-Sweeney: v5 stores it per variant; v4 2-part tags
+        # carry it in the shared scalar (tag_lucy is None); v3 from shared.
+        lucy_fallback = tag_lucy if tag_lucy is not None else _shared_lucy
+        if is_multi_variant:
+            meta = {
+                "e_score_mode": _g("v__%s__e_score_mode" % tag, str, em),
+                "logP_cutoff_mode": _g(
+                    "v__%s__logP_cutoff_mode" % tag, str, cm),
+                "apply_lucy_sweeny_e": _g(
+                    "v__%s__apply_lucy_sweeny_e" % tag, bool, lucy_fallback),
+                "logP_cutoff": _g("v__%s__logP_cutoff" % tag, float, 0.0),
+                "N_stars": _g("v__%s__N_stars" % tag, int, None),
+                "N_det_obs": _g("v__%s__N_det_obs" % tag, int, None),
+            }
+            for ch in ("logP", "e", "K1"):
+                meta["wass_sigma_%s" % ch] = _g(
+                    "v__%s__wass_sigma_%s" % (tag, ch), float, float("nan"))
+        else:
+            meta = {
+                "e_score_mode": em,
+                "logP_cutoff_mode": cm,
+                "apply_lucy_sweeny_e": lucy_fallback,
+                "logP_cutoff": _g("logP_cutoff", float, 0.0),
+                "N_stars": None,
+                "N_det_obs": None,
+                "wass_sigma_logP": _g("wass_sigma_logP", float, float("nan")),
+                "wass_sigma_e": _g("wass_sigma_e", float, float("nan")),
+                "wass_sigma_K1": _g("wass_sigma_K1", float, float("nan")),
+            }
+        variant_meta[tag] = meta
 
-    data["available_tests"] = available_tests
-    data["gmf_cubes"] = gmf_cubes
-    data["test_pval_cubes"] = test_pval_cubes
-    data["best_fits"] = best_fits
+    data["variants"] = tags
+    data["gmf_cubes_by_variant"] = gmf_by_variant
+    data["test_pval_cubes_by_variant"] = test_by_variant
+    data["best_fits_by_variant"] = best_by_variant
+    data["available_tests_by_variant"] = avail_by_variant
+    data["variant_meta"] = variant_meta
 
-    # Recover the eccentricity scoring mode used to produce these cubes.
-    # Modern files carry an explicit "e_score_mode" entry; legacy files
-    # are inferred from the presence of *_e_circ_cube (split mode) vs.
-    # absence (combined mode — the only other historical option).
-    if "e_score_mode" in cubes.files:
-        data["e_score_mode"] = str(cubes["e_score_mode"])
-    else:
-        has_e_circ = any("e_circ" in test_pval_cubes.get(t, {})
-                         for t in test_pval_cubes)
-        data["e_score_mode"] = "split" if has_e_circ else "combined"
-
-    # logP cutoff metadata. Schema v2+ guarantees the mode/value keys;
-    # smooth_sigma is best-effort (only present for newly-rerun cubes).
-    data["logP_cutoff"] = float(cubes["logP_cutoff"]) \
-        if "logP_cutoff" in cubes.files else 0.0
-    data["logP_cutoff_mode"] = str(cubes["logP_cutoff_mode"]) \
-        if "logP_cutoff_mode" in cubes.files else "none"
+    # Shared (run-level) metadata, common to every variant.
     data["logP_cutoff_scope"] = str(cubes["logP_cutoff_scope"]) \
         if "logP_cutoff_scope" in cubes.files else "period_only"
     data["logP_cutoff_smooth_sigma"] = (
         float(cubes["logP_cutoff_smooth_sigma"])
         if "logP_cutoff_smooth_sigma" in cubes.files else float("nan"))
-
     data["apply_lucy_sweeny_e"] = bool(cubes["apply_lucy_sweeny_e"]) \
         if "apply_lucy_sweeny_e" in cubes.files else True
-
-    # Per-channel Wasserstein normalization (MAD of obs). Only present
-    # on cubes built after the Wasserstein metric was added; older runs
-    # fall back to NaN and the sidebar omits the caption.
-    data["wass_sigma_logP"] = (float(cubes["wass_sigma_logP"])
-        if "wass_sigma_logP" in cubes.files else float("nan"))
-    data["wass_sigma_e"] = (float(cubes["wass_sigma_e"])
-        if "wass_sigma_e" in cubes.files else float("nan"))
-    data["wass_sigma_K1"] = (float(cubes["wass_sigma_K1"])
-        if "wass_sigma_K1" in cubes.files else float("nan"))
-
-    # Source tex paths — purely informational, surfaced as captions.
     data["sb1_tex"] = str(cubes["sb1_tex"]) \
         if "sb1_tex" in cubes.files else ""
     data["sb2_tex"] = str(cubes["sb2_tex"]) \
         if "sb2_tex" in cubes.files else ""
-
-    # Catalog counts feeding the binomial under scope="exclude" (schema v3).
-    # Pre-v3 cubes lack these — the explorer's hard-error above already
-    # blocked load, so these reads are safe here.
     data["obs_n_catalog_total"] = (int(cubes["obs_n_catalog_total"])
         if "obs_n_catalog_total" in cubes.files else None)
     data["obs_n_catalog_nonsingle"] = (int(cubes["obs_n_catalog_nonsingle"])
@@ -216,17 +241,9 @@ def load_grid_data(output_dir):
         "n_sb2": int(cubes["obs_n_sb2"]),
     }
 
-    # Default gmf_cube / best_fit (KS for backward compat)
-    default_test = available_tests[0] if available_tests else "ks"
-    data["gmf_cube"] = gmf_cubes.get(default_test, cubes.get("gmf_cube"))
-    data["best_fit"] = best_fits.get(default_test)
-    # Legacy p-value cube keys (used by sidebar stats)
-    data["ks_logP_cube"] = test_pval_cubes.get("ks", {}).get(
-        "logP", np.zeros_like(data["pdet_cube"]))
-    data["ks_e_cube"] = test_pval_cubes.get("ks", {}).get(
-        "e", np.zeros_like(data["pdet_cube"]))
-    data["ks_K1_cube"] = test_pval_cubes.get("ks", {}).get(
-        "K1", np.zeros_like(data["pdet_cube"]))
+    # The active variant's cubes / best fits / mode scalars are selected
+    # in main() (after the sidebar variant selectbox) and folded into
+    # data[...] there, so the rest of the app reads them unchanged.
 
     # --- Detect which storage format is available ---
     shard_dir = os.path.join(output_dir, _DET_SHARDS_DIR)
@@ -1015,7 +1032,77 @@ def main():
     eta_grid = data["eta_grid"]
     fbin_grid = data["fbin_grid"]
     grids = [pi_grid, kappa_grid, eta_grid, fbin_grid]
-    available_tests = data.get("available_tests", ["ks"])
+
+    # --- Sidebar: fitting-mechanism (variant) selector ---
+    # One run holds all (e_score_mode, logP_cutoff_mode, apply_lucy_sweeny_e)
+    # variants. Pick which scoring mechanism to view; switching only re-keys
+    # the cubes / metadata below (no recomputation — pure reader).
+    variants = data["variants"]
+    vmeta = data["variant_meta"]
+    st.sidebar.header("Fitting Mechanism")
+    e_mode_opts = []
+    for t in variants:
+        em = vmeta[t]["e_score_mode"]
+        if em not in e_mode_opts:
+            e_mode_opts.append(em)
+    sel_e = st.sidebar.selectbox(
+        "e_score_mode", e_mode_opts, index=0, key="sel_e_score_mode")
+    c_mode_opts = []
+    for t in variants:
+        if vmeta[t]["e_score_mode"] != sel_e:
+            continue
+        cm = vmeta[t]["logP_cutoff_mode"]
+        if cm not in c_mode_opts:
+            c_mode_opts.append(cm)
+    sel_c = st.sidebar.selectbox(
+        "logP_cutoff_mode", c_mode_opts, index=0, key="sel_logP_cutoff_mode")
+    lucy_opts = []
+    for t in variants:
+        m = vmeta[t]
+        if m["e_score_mode"] != sel_e or m["logP_cutoff_mode"] != sel_c:
+            continue
+        lv = bool(m.get("apply_lucy_sweeny_e", False))
+        if lv not in lucy_opts:
+            lucy_opts.append(lv)
+    if not lucy_opts:
+        lucy_opts = [False]
+    sel_lucy = st.sidebar.selectbox(
+        "apply_lucy_sweeny_e", lucy_opts, index=0,
+        format_func=lambda b: str(bool(b)), key="sel_apply_lucy_sweeny_e")
+    active_variant_tag = variant_tag(sel_e, sel_c, sel_lucy)
+    if active_variant_tag not in variants:
+        # Cube may be legacy (v4 2-part tags) — match on (em, cm).
+        match = [t for t in variants
+                 if (vmeta[t]["e_score_mode"], vmeta[t]["logP_cutoff_mode"])
+                 == (sel_e, sel_c)]
+        prev = active_variant_tag
+        active_variant_tag = match[0] if match else variants[0]
+        st.sidebar.warning(
+            "Variant %s not present in this run; showing %s." % (
+                prev, active_variant_tag))
+
+    # Fold the selected variant's cubes + scalar metadata into `data`
+    # (shallow rebind — no array copies) so the rest of the app reads the
+    # active mechanism through the same data[...] keys it always used.
+    _vm = vmeta[active_variant_tag]
+    data = {
+        **data,
+        "gmf_cubes": data["gmf_cubes_by_variant"][active_variant_tag],
+        "best_fits": data["best_fits_by_variant"][active_variant_tag],
+        "test_pval_cubes":
+            data["test_pval_cubes_by_variant"][active_variant_tag],
+        "available_tests":
+            data["available_tests_by_variant"][active_variant_tag],
+        "e_score_mode": _vm["e_score_mode"],
+        "logP_cutoff_mode": _vm["logP_cutoff_mode"],
+        "logP_cutoff": _vm["logP_cutoff"],
+        "apply_lucy_sweeny_e": bool(_vm.get("apply_lucy_sweeny_e", False)),
+        "wass_sigma_logP": _vm.get("wass_sigma_logP", float("nan")),
+        "wass_sigma_e": _vm.get("wass_sigma_e", float("nan")),
+        "wass_sigma_K1": _vm.get("wass_sigma_K1", float("nan")),
+    }
+    available_tests = data["available_tests"] or ["ks"]
+    st.sidebar.caption("Active variant: %s" % active_variant_tag)
 
     # --- Sidebar: scoring metric selector ---
     st.sidebar.header("Scoring Metric")
@@ -1038,12 +1125,12 @@ def main():
 
     # --- Sidebar: parameter sliders ---
     st.sidebar.header("Grid Point Selection")
-    # Per-test slider keys: when the user switches tests we *want* the
-    # sliders to jump to that test's best fit (so they start at the
-    # peak of the new gmf cube), but we don't want them to reset on
-    # every rerun. Namespacing keys by selected_test gives each test
+    # Per-(variant, test) slider keys: when the user switches the fitting
+    # mechanism or the test we *want* the sliders to jump to that
+    # combination's best fit (the peak of the new gmf cube), but not to
+    # reset on every rerun. Namespacing by variant tag + test gives each
     # its own persisted slider state.
-    _k = selected_test
+    _k = "%s__%s" % (active_variant_tag, selected_test)
     pi_val = st.sidebar.select_slider(
         "\u03c0 (period exponent)",
         options=[round(x, 3) for x in pi_grid.tolist()],
@@ -1280,22 +1367,24 @@ def main():
                 logP_cutoff_scope, logP_cutoff_data, logP_cutoff_mode),
             value=cutoff_active,
             disabled=(not cutoff_active),
-            key="apply_logP_cutoff",
+            key="apply_logP_cutoff_%s" % active_variant_tag,
             help=cutoff_help,
         )
         if e_mode_data == "eccentric_only":
             restrict_e_to_positive = col_cb2.checkbox(
                 "Restrict eccentricity to e>0 (as scored)",
                 value=True,
-                key="restrict_e_to_positive",
+                key="restrict_e_to_positive_%s" % active_variant_tag,
             )
         else:
             restrict_e_to_positive = True
 
+        # Defaults to the active variant's Lucy setting; namespaced by
+        # variant so switching the lucy mechanism resets the toggle.
         display_lucy = col_cb3.checkbox(
-            "Apply Lucy-Sweeney (cube=%s)" % cube_lucy,
+            "Apply Lucy-Sweeney (variant=%s)" % cube_lucy,
             value=cube_lucy,
-            key="display_lucy",
+            key="display_lucy_%s" % active_variant_tag,
             help="Collapse e upper-limit rows to e=0 (cube convention) vs "
                  "keep the reported limit value. Off-default diverges from "
                  "the persisted p-values.",

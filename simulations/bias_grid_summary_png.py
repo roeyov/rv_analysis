@@ -30,6 +30,9 @@ from simulations.bias_grid import (
     load_observed_from_tex, _HIST_PAIRS,
     _DET_SHARDS_DIR, _load_det_shard,
 )
+from simulations.bias_grid_lib.cube_io import (
+    is_multi_variant, resolve_variant_tag,
+)
 
 _trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 
@@ -45,7 +48,7 @@ TEST_LABELS = {"ks": "Kolmogorov-Smirnov",
 # Data loading (same shape as bias_grid_explorer.load_grid_data, no streamlit)
 # ---------------------------------------------------------------------------
 
-def load_grid_data(output_dir):
+def load_grid_data(output_dir, variant=None):
     cubes_path = os.path.join(output_dir, "grid_cubes.npz")
     if not os.path.exists(cubes_path):
         cubes_path = os.path.join(output_dir, "checkpoint_cubes.npz")
@@ -59,6 +62,12 @@ def load_grid_data(output_dir):
         "fbin_grid": cubes["fbin_grid"],
     }
 
+    # Resolve the scoring variant. All-variants (v4) cubes namespace every
+    # goodness cube 'v__<tag>__…'; legacy v3 cubes use the bare keys.
+    multi = is_multi_variant(cubes)
+    tag = resolve_variant_tag(cubes, requested=variant)
+    data["variant"] = tag
+
     test_names = ["ks", "ad", "cvm"]
     available_tests = []
     gmf_cubes = {}
@@ -66,37 +75,29 @@ def load_grid_data(output_dir):
     best_fits = {}
 
     for tname in test_names:
-        gmf_key = "gmf_%s_cube" % tname
+        gmf_key = ("v__%s__gmf_%s_cube" % (tag, tname) if multi
+                   else "gmf_%s_cube" % tname)
+        gc = None
         if gmf_key in cubes.files:
-            gmf_cubes[tname] = cubes[gmf_key]
-            available_tests.append(tname)
-            test_pval_cubes[tname] = {}
-            for par in ("logP", "e", "K1", "e_circ"):
-                tc_key = "%s_%s_cube" % (tname, par)
-                if tc_key in cubes.files:
-                    test_pval_cubes[tname][par] = cubes[tc_key]
-            gc = gmf_cubes[tname]
-            idx = np.unravel_index(np.nanargmax(gc), gc.shape)
-            best_fits[tname] = (
-                float(data["pi_grid"][idx[0]]),
-                float(data["kappa_grid"][idx[1]]),
-                float(data["eta_grid"][idx[2]]),
-                float(data["fbin_grid"][idx[3]]),
-            )
-
-    # Legacy KS-only fallback
-    if "ks" not in gmf_cubes and "gmf_cube" in cubes.files:
-        gmf_cubes["ks"] = cubes["gmf_cube"]
-        available_tests.append("ks")
-        test_pval_cubes["ks"] = {}
-        for par, old_key in [("logP", "ks_logP_cube"),
-                             ("e", "ks_e_cube"),
-                             ("K1", "ks_K1_cube")]:
-            if old_key in cubes.files:
-                test_pval_cubes["ks"][par] = cubes[old_key]
-        gc = gmf_cubes["ks"]
+            gc = cubes[gmf_key]
+        elif (not multi) and tname == "ks" and "gmf_cube" in cubes.files:
+            gc = cubes["gmf_cube"]
+        if gc is None:
+            continue
+        gmf_cubes[tname] = gc
+        available_tests.append(tname)
+        test_pval_cubes[tname] = {}
+        for par in ("logP", "e", "K1", "e_circ"):
+            pk = ("v__%s__%s_%s_cube" % (tag, tname, par) if multi
+                  else "%s_%s_cube" % (tname, par))
+            if pk in cubes.files:
+                test_pval_cubes[tname][par] = cubes[pk]
+            elif (not multi) and tname == "ks":
+                old = "ks_%s_cube" % par
+                if old in cubes.files:
+                    test_pval_cubes[tname][par] = cubes[old]
         idx = np.unravel_index(np.nanargmax(gc), gc.shape)
-        best_fits["ks"] = (
+        best_fits[tname] = (
             float(data["pi_grid"][idx[0]]),
             float(data["kappa_grid"][idx[1]]),
             float(data["eta_grid"][idx[2]]),
@@ -113,19 +114,28 @@ def load_grid_data(output_dir):
     else:
         data["logP_cutoff_scope"] = "period_only"
 
-    if "logP_cutoff_mode" in cubes.files:
-        data["logP_cutoff_mode"] = str(cubes["logP_cutoff_mode"])
-        data["logP_cutoff"] = float(cubes["logP_cutoff"])
+    # Per-variant cutoff + e_score_mode (v4/v5 namespaced; v3 scalar fallback).
+    if multi:
+        _parts = tag.split("__")          # 3-part (v5) or 2-part (v4)
+        em, cm = _parts[0], _parts[1]
+        data["e_score_mode"] = (str(cubes["v__%s__e_score_mode" % tag])
+            if "v__%s__e_score_mode" % tag in cubes.files else em)
+        data["logP_cutoff_mode"] = (
+            str(cubes["v__%s__logP_cutoff_mode" % tag])
+            if "v__%s__logP_cutoff_mode" % tag in cubes.files else cm)
+        data["logP_cutoff"] = (float(cubes["v__%s__logP_cutoff" % tag])
+            if "v__%s__logP_cutoff" % tag in cubes.files else 0.0)
     else:
-        data["logP_cutoff_mode"] = "none"
-        data["logP_cutoff"] = 0.0
-
-    if "e_score_mode" in cubes.files:
-        data["e_score_mode"] = str(cubes["e_score_mode"])
-    else:
-        has_e_circ = any("e_circ" in test_pval_cubes.get(t, {})
-                         for t in test_pval_cubes)
-        data["e_score_mode"] = "split" if has_e_circ else "combined"
+        data["logP_cutoff_mode"] = (str(cubes["logP_cutoff_mode"])
+            if "logP_cutoff_mode" in cubes.files else "none")
+        data["logP_cutoff"] = (float(cubes["logP_cutoff"])
+            if "logP_cutoff" in cubes.files else 0.0)
+        if "e_score_mode" in cubes.files:
+            data["e_score_mode"] = str(cubes["e_score_mode"])
+        else:
+            has_e_circ = any("e_circ" in test_pval_cubes.get(t, {})
+                             for t in test_pval_cubes)
+            data["e_score_mode"] = "split" if has_e_circ else "combined"
 
     # Detected-systems storage discovery
     shard_dir = os.path.join(output_dir, _DET_SHARDS_DIR)
@@ -484,12 +494,17 @@ def main():
     parser.add_argument("--sb1-tex", default=None)
     parser.add_argument("--sb2-tex", default=None)
     parser.add_argument("--dpi", type=int, default=150)
+    parser.add_argument("--variant", default=None,
+                        help="Scoring variant tag '<e_score_mode>__<logP_"
+                             "cutoff_mode>' for all-variants (v4) cubes. "
+                             "Default: eccentric_only__numerical.")
     args = parser.parse_args()
 
     out_png_dir = args.output_png_dir or args.output_dir
     os.makedirs(out_png_dir, exist_ok=True)
 
-    data = load_grid_data(args.output_dir)
+    data = load_grid_data(args.output_dir, variant=args.variant)
+    print("Using scoring variant: %s" % data.get("variant"))
 
     sb1 = args.sb1_tex or DEFAULT_BIAS_CFG.get("sb1_tex", "")
     sb2 = args.sb2_tex or DEFAULT_BIAS_CFG.get("sb2_tex", "")

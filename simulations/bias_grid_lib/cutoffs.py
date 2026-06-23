@@ -101,6 +101,115 @@ def _compute_logP_cutoff(obs_logP, mode, *, smooth_sigma=0.15,
     raise ValueError("Unknown logP_cutoff_mode %r" % mode)
 
 
+def _build_variant_inputs(e_score_mode, logP_cutoff_mode, apply_lucy_sweeny_e,
+                          logP_cutoff_scope,
+                          obs_logP, obs_e_value, obs_e_is_upper_limit, obs_K1,
+                          n_stars_sample, n_catalog_total, n_catalog_nonsingle,
+                          smooth_sigma=0.15, manual_value=None):
+    """Resolve the obs-side scoring inputs for ONE scoring variant.
+
+    A "variant" is one ``(e_score_mode, logP_cutoff_mode,
+    apply_lucy_sweeny_e)`` combination. This is the pure, grid-independent
+    bookkeeping the engine historically did inline once per run: apply the
+    Lucy-Sweeney convention to the observed eccentricities, mask obs under
+    the cutoff scope, size the binomial counts, build ``clip_range`` + the
+    pre-split observed eccentricities + the ``sim_logP_floor`` joint mask.
+    Factoring it out lets the engine build all 12 variant contexts up front
+    and re-score one cached simulation against every one of them.
+
+    ``obs_e_value`` / ``obs_e_is_upper_limit`` are the RAW observed
+    eccentricities + upper-limit mask (as stored in the cube). Lucy is
+    applied here per variant: upper-limit rows → 0 when True, else kept.
+    This function never mutates its inputs; it returns masked *copies* per
+    variant. Returns a dict ready to splat into ``_make_scoring_ctx`` plus
+    the resolved ``logP_cutoff`` / ``N_stars`` / ``N_det_obs`` the cube
+    persists per variant.
+    """
+    obs_logP = np.asarray(obs_logP, dtype=float)
+    obs_K1 = np.asarray(obs_K1, dtype=float)
+    # Lucy-Sweeney: collapse observed e upper-limits to 0 (True) or keep
+    # the reported limit value (False). This is the only thing the lucy
+    # axis changes (logP/K1/counts/sim are all lucy-independent).
+    obs_e = np.asarray(obs_e_value, dtype=float).copy()
+    if apply_lucy_sweeny_e:
+        obs_e[np.asarray(obs_e_is_upper_limit, dtype=bool)] = 0.0
+
+    logP_cutoff = _compute_logP_cutoff(
+        obs_logP, logP_cutoff_mode,
+        smooth_sigma=smooth_sigma, manual_value=manual_value)
+
+    has_cut = logP_cutoff > 0.0
+    if logP_cutoff_scope == "exclude":
+        # Catalog-binomial semantics (schema v3): the binomial ALWAYS
+        # speaks to the full O-star population (catalog totals), so the
+        # recovered f_bin is a population binary fraction that does not
+        # depend on the period cutoff — identical for logP_cutoff_mode in
+        # {none, numerical}. A positive cutoff additionally masks the obs
+        # P/e/K1 CDF panels (and the sim-det arrays, via sim_logP_floor)
+        # to logP >= cutoff; with no cutoff (none / no-elbow) nothing is
+        # masked but the binomial stays the catalog one.
+        if n_catalog_total is None or n_catalog_nonsingle is None:
+            raise ValueError(
+                "logP_cutoff_scope=exclude requires n_catalog_total + "
+                "n_catalog_nonsingle (load from ostar_catalog.csv); got None")
+        if has_cut:
+            keep = obs_logP >= logP_cutoff
+            obs_logP_f, obs_e_f, obs_K1_f = (
+                obs_logP[keep], obs_e[keep], obs_K1[keep])
+        else:
+            obs_logP_f, obs_e_f, obs_K1_f = obs_logP, obs_e, obs_K1
+        obs_logP_above = obs_logP_f
+        N_stars = int(n_catalog_total)
+        N_det_obs = int(n_catalog_nonsingle)
+        sim_logP_floor = float(logP_cutoff) if has_cut else 0.0
+    else:
+        # period_only: the cutoff (if any) scopes only the period CDF test;
+        # obs e/K1, the binomial counts, and intrinsic draws stay full.
+        obs_logP_f, obs_e_f, obs_K1_f = obs_logP, obs_e, obs_K1
+        obs_logP_above = (obs_logP[obs_logP >= logP_cutoff]
+                          if has_cut else obs_logP)
+        N_stars = int(n_stars_sample)
+        N_det_obs = len(obs_logP)
+        sim_logP_floor = 0.0
+
+    clip_range = {
+        "logP": (logP_cutoff,
+                 float(obs_logP_f.max()) if len(obs_logP_f) else logP_cutoff),
+        "e": (0.0, 1.0),
+        "K1": (0.0, float(obs_K1_f.max()) if len(obs_K1_f) else 0.0),
+    }
+
+    # Pre-split observed eccentricities for the circular/continuous modes.
+    # Under scope=exclude these come from the period-filtered obs sample
+    # (obs_e_f), matching the CDF panels.
+    obs_e_cont = None
+    n_obs_circ = None
+    n_obs_e_total = None
+    if e_score_mode != "combined":
+        obs_e_cont = obs_e_f[obs_e_f > 0]
+        if e_score_mode == "split":
+            n_obs_circ = int(np.sum(obs_e_f == 0))
+            n_obs_e_total = len(obs_e_f)
+
+    return {
+        "e_score_mode": e_score_mode,
+        "logP_cutoff_mode": logP_cutoff_mode,
+        "apply_lucy_sweeny_e": bool(apply_lucy_sweeny_e),
+        "logP_cutoff_scope": logP_cutoff_scope,
+        "logP_cutoff": float(logP_cutoff),
+        "obs_logP": obs_logP_above,
+        "obs_e": obs_e_f,
+        "obs_K1": obs_K1_f,
+        "obs_e_cont": obs_e_cont,
+        "n_obs_circ": n_obs_circ,
+        "n_obs_e_total": n_obs_e_total,
+        "N_stars": N_stars,
+        "N_det_obs": N_det_obs,
+        "clip_range": clip_range,
+        "sim_logP_floor": sim_logP_floor,
+    }
+
+
 def _resolve_e_score_mode(cfg):
     """Pick the eccentricity scoring mode from a config dict.
 

@@ -51,14 +51,16 @@ bias_grid:
   n_inject: null            # null -> preset default n_inject_per_star
   seed: 42
   n_stars_sample: null      # null -> len(star_df)
-  e_score_mode: split       # combined | split | eccentric_only
-  # Drop short-period systems likely depleted by mergers from the period
-  # CDF goodness-of-fit. Diagnostic (simulations.logP_inflection_check)
-  # placed the elbow at logP ≈ 0.54 (P ≈ 3.5 d) for the current sample.
-  logP_cutoff_mode: none           # none | numerical | manual
-  logP_cutoff_value: null          # used iff mode == "manual"
-  logP_cutoff_smooth_sigma: 0.15   # used iff mode == "numerical"
-  logP_cutoff_scope: period_only   # period_only | exclude
+  # ALL-VARIANTS run (cube schema v4): every (e_score_mode, logP_cutoff_mode)
+  # combination is scored in ONE pass over the shared simulation, so the
+  # per-variant e_score_mode / logP_cutoff_mode keys are no longer read —
+  # the explorer switches between the 6 mechanisms on the loaded run. Only
+  # the run-level cutoff knobs below are configurable.
+  #   variants = {combined, split, eccentric_only} × {none, numerical}
+  # The numerical elbow sits at logP ≈ 0.54 (P ≈ 3.5 d) for the current
+  # sample (simulations.logP_inflection_check).
+  logP_cutoff_smooth_sigma: 0.15   # Gaussian σ (dex) for the numerical cutoff
+  logP_cutoff_scope: exclude       # period_only | exclude (fixed across variants)
   detect_method: pipeline   # pipeline | rv_threshold
 
   # parallelism
