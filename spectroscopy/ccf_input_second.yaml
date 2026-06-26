@@ -1,0 +1,68 @@
+# Interpolation method used in processing
+intr_kind: cubic
+
+# Whether to plot the first result
+plot_first: false
+
+# Whether to plot all results
+plot_all: false
+
+# Fraction of the range to fit
+fit_range_fraction: 0.87
+
+# Oversampling factor for calculations
+OverSampleFac: 1
+
+# rotate_star: true
+
+# Whether to calculate speed separately
+seperate_speed: true
+
+# Ranges for cross-correlation in the spectrum
+cross_cor_ranges:
+  # "H_Gamma": (4325.0, 4355.0)
+  # "H_Delta": (4086.0, 4116.0)
+  # "H_Epsilon": (3955.0, 3985.0)
+  "HeI_4471": (4451.0, 4491.0)
+  "HeI_4143": (4123.0, 4163.0)
+  "HeI_4388": (4368.0, 4408.0)
+  "HeI+HeII_4026": (4006.0, 4046.0)
+  "HeII_4542": (4522.0, 4562.0)
+  "HeII_4200": (4180.0, 4220.0)
+
+
+# Velocity range for the analysis
+velocity_range: [-450.0, 600.0]  # In km/s
+
+# Signal-to-noise ratio calculation range
+S2Nrange: [4445.0, 4460.0]  # In Angstroms
+
+# Path to observation data
+path_to_observations: "/Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR5.0_Combined/"
+
+# Path to the list of objects to process
+#path_to_list_of_objects: "/Users/roeyovadia/Downloads/allSB1Stars.txt"
+#path_to_list_of_objects: "/Users/roeyovadia/Documents/Data/BLOeM_Data/lists/ostars_sb1.txt"
+#path_to_list_of_objects: "/Users/roeyovadia/Documents/Data/lists/tomer_stars_07_05_25.txt"
+path_to_list_of_objects: ""
+list_of_objects: ["BLOeM_3-042"]
+
+# Identifier string for files
+str_identifier: "Combined.fits"
+
+# Path to save the output files
+# path_to_output: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_temp/"
+path_to_output: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_reruns2_from_coadded/"
+#path_to_output: ''
+
+# Path to the template files for cross-correlation
+template_path: "/Users/roeyovadia/Roey/Masters//Reasearch/scriptsOut/CCF/dr5_reruns2_from_temp/"
+# template_path: "/Users/roeyovadia/Documents/Data/BLOeM_Data/Crowther_templates/per_star_templates"
+#template_path: ""
+
+#path_to_meta_data_csv: "Users/roeyovadia/Documents/Data/results_bloem_24nov24.csv"
+#columns_to_load: ["ID", "vsini", "vsini_er_plus", "vsini_er_minus"]
+path_to_meta_data_csv: ""
+# path_to_meta_data_csv: "/Users/roeyovadia/Documents/master_table_vsini_v1.csv"
+columns_to_load: ["ID", "vsini", "evsini"]
+
