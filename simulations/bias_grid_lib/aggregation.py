@@ -106,7 +106,16 @@ def aggregate_tasks(base_dir, output_dir=None):
             "'variants' key). Re-run the tasks with the updated bias_grid."
             % task_dirs[0])
     tags = [str(t) for t in first_npz["variants"]]
-    shape = first_npz["v__%s__gmf_ks_cube" % tags[0]].shape
+    # Metrics actually present in the cube — single-metric runs persist only
+    # their scored set. Probe tags[0]; default test keeps "ks" when scored.
+    scored_tests = [t for t in _SCORED_TESTS
+                    if "v__%s__gmf_%s_cube" % (tags[0], t) in first_npz.files]
+    if not scored_tests:
+        raise RuntimeError(
+            "No gmf_<test>_cube keys for variant %s in %s — cannot merge."
+            % (tags[0], task_dirs[0]))
+    default_test = "ks" if "ks" in scored_tests else scored_tests[0]
+    shape = first_npz["v__%s__gmf_%s_cube" % (tags[0], default_test)].shape
     has_e_circ = {tag: _variant_has_e_circ(first_npz, tag) for tag in tags}
 
     # Initialise merged per-variant cubes.
@@ -115,10 +124,10 @@ def aggregate_tasks(base_dir, output_dir=None):
     test_cubes_v = {}
     for tag in tags:
         gmf_cubes_v[tag] = {
-            t: np.full(shape, -np.inf, dtype=np.float32) for t in _SCORED_TESTS
+            t: np.full(shape, -np.inf, dtype=np.float32) for t in scored_tests
         }
         tcv = {}
-        for t in _SCORED_TESTS:
+        for t in scored_tests:
             d = {
                 "logP": np.zeros(shape, dtype=np.float32),
                 "e": np.zeros(shape, dtype=np.float32),
@@ -159,7 +168,7 @@ def aggregate_tasks(base_dir, output_dir=None):
         # Merge cubes: each task only fills its own (disjoint) cells.
         pdet_cube += ckpt["pdet_cube"]
         for tag in tags:
-            for tname in _SCORED_TESTS:
+            for tname in scored_tests:
                 gk = "v__%s__gmf_%s_cube" % (tag, tname)
                 if gk in ckpt.files:
                     gmf_cubes_v[tag][tname] = np.maximum(

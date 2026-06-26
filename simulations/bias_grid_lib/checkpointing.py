@@ -15,7 +15,6 @@ from simulations.bias_grid_lib.constants import (
     CUBE_SCHEMA_VERSION, _DET_SHARDS_DIR, _HIST_BINS, _HIST_NBINS, _HIST_PAIRS,
 )
 from simulations.bias_grid_lib.logging_utils import logger
-from simulations.bias_grid_lib.statistics import _SCORED_TESTS
 
 
 def _det_shard_path(checkpoint_dir, step):
@@ -157,7 +156,10 @@ def _save_variant_cube_kw(save_kw, gmf_cubes_v, test_cubes_v, variant_meta,
             for ch in ("logP", "e", "K1"):
                 save_kw["v__%s__wass_sigma_%s" % (tag, ch)] = np.array(
                     float(ws[ch]))
-        for tname in _SCORED_TESTS:
+        # Persist exactly the metrics that were scored (the cube dict only
+        # holds the active set), not the full module list — so a single-metric
+        # run writes a single-metric cube.
+        for tname in gmf_cubes_v[tag]:
             save_kw["v__%s__gmf_%s_cube" % (tag, tname)] = \
                 np.asarray(gmf_cubes_v[tag][tname], dtype=np.float32)
             for par in ("logP", "e", "K1"):

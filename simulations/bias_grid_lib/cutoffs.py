@@ -190,6 +190,12 @@ def _build_variant_inputs(e_score_mode, logP_cutoff_mode, apply_lucy_sweeny_e,
         if e_score_mode == "split":
             n_obs_circ = int(np.sum(obs_e_f == 0))
             n_obs_e_total = len(obs_e_f)
+        elif e_score_mode == "eccentric_only" and len(obs_e_cont) > 0:
+            # Tighten the simulated e-CDF window to the observed significant-e
+            # range, analogous to the logP cutoff. obs_e_cont spans exactly
+            # [min, max], so no observed system is dropped — only the simulated
+            # array is clipped (via clip_range["e"] in _compute_scores).
+            clip_range["e"] = (float(obs_e_cont.min()), float(obs_e_cont.max()))
 
     return {
         "e_score_mode": e_score_mode,

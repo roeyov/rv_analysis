@@ -57,6 +57,18 @@ DEFAULT_BIAS_CFG = {
     #                   binary fraction.
     "logP_cutoff_scope": "exclude",
 
+    # All-variants restriction (opt-in; default None ⇒ score every variant /
+    # every metric, i.e. the historical 12-variant × 4-metric behaviour).
+    #   variant_filter — dict subsetting the (e_score_mode, logP_cutoff_mode,
+    #     apply_lucy_sweeny_e) cartesian product. Each key may be a scalar, a
+    #     list, or omitted (⇒ unconstrained on that axis). None ⇒ all 12.
+    #   scored_tests   — list subsetting (ks, ad, cvm, wass). None ⇒ all four.
+    # Restricting both is the cheap way to run a single preferred variant under
+    # a single metric without the comparison overhead (cube + per-cell scoring
+    # shrink accordingly; the explorer auto-detects the reduced set).
+    "variant_filter": None,
+    "scored_tests": None,
+
     # Grid search
     "n_inject_per_star": 100,
     "per_star_mode": True,
@@ -290,6 +302,46 @@ GRID_PRESETS = {
         "eta":   np.linspace(-0.80, 0.90, 27),
         "fbin":  np.linspace(0.60, 0.95, 20),
         "n_inject_per_star": 200,
+    },
+    # --- final5 generation: ranges set so the CvM marginal posteriors of the
+    # eccentric_only/numerical/lucyT variant drop to ≈1e-3 of peak at BOTH
+    # edges (symmetric tails → mean ≈ median ≈ MAP). Bounds = μ ± 3.717·σ from
+    # a naive Gaussian fit to the final4_10min_adaptive_clipped_e marginals:
+    #   π  μ=-0.722 σ=0.216 → [-1.53,+0.08]  (clip both vs final4 -1.8..0.20)
+    #   κ  μ=-0.982 σ=0.449 → [-2.65,+0.69]  (extend both vs -1.6..0.10)
+    #   η  μ=-0.480 σ=0.228 → [-1.33,+0.37]  (extend, mostly left, vs -0.6..0.30)
+    #   f_bin μ=0.587 σ=0.046 → [0.42,0.76]  (clip both vs 0.40..0.80)
+    # Same bounds, two resolutions; both share scope=exclude + adaptive_n_inject.
+    # FINAL bounds = measured CvM 1e-3 crossings from the iter-2 wide-observe run
+    # (eccentric_only/numerical/lucyT). On the wide grid all four axes showed
+    # mean ≈ median ≈ MAP. Crossings: π L-1.65/R+0.17, η L-1.71/R+0.50,
+    # f_bin L0.41/R0.76 (all observed interior). κ is heavy-tailed/weakly
+    # constrained: L-3.03 observed, right still 2.1e-3 at +1.60 → extended to
+    # +1.80 so κ's tail also reaches ~1e-3 (κ then spans a wide, near-flat range).
+    "final5_cvm_1e3": {  # FINE — step ~0.08–0.11 dex; 24×44×24×15 = 380,160 pts, ~40 min
+        "pi":    np.linspace(-1.70, 0.20, 24),
+        "kappa": np.linspace(-3.05, 1.80, 44),
+        "eta":   np.linspace(-1.75, 0.55, 24),
+        "fbin":  np.linspace(0.40, 0.80, 15),
+        "n_inject_per_star": 100,
+    },
+    "final5_cvm_1e3_fast": {  # FAST — same bounds, step ~0.15–0.18 dex; 14×28×15×11 = 64,680 pts, ~8 min
+        "pi":    np.linspace(-1.70, 0.20, 14),
+        "kappa": np.linspace(-3.05, 1.80, 28),
+        "eta":   np.linspace(-1.75, 0.55, 15),
+        "fbin":  np.linspace(0.40, 0.80, 11),
+        "n_inject_per_star": 100,
+    },
+    # FINE×2 — IDENTICAL bounds to final5_cvm_1e3, doubled point count on every
+    # axis (step ≈ halved). 48×88×48×30 = 6,082,560 pts (16× final5_cvm_1e3).
+    # Intended for the single-variant (eccentric_only/numerical/lucyT) CvM-only
+    # production rerun via configs/params_bias_astro3_cvm1e3_2x.yaml.
+    "final5_cvm_1e3_2x": {
+        "pi":    np.linspace(-1.70, 0.20, 48),
+        "kappa": np.linspace(-3.05, 1.80, 88),
+        "eta":   np.linspace(-1.75, 0.55, 48),
+        "fbin":  np.linspace(0.40, 0.80, 30),
+        "n_inject_per_star": 100,
     },
 }
 

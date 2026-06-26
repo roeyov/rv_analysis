@@ -93,17 +93,55 @@ def split_variant_tag(tag):
     return em, cm, lucy
 
 
-def all_variants():
+def _as_filter_set(value):
+    """Normalize a variant-filter value to a set, or None if unconstrained.
+
+    Accepts a scalar (``"eccentric_only"`` / ``True``), an iterable of
+    scalars, or None/absent. Booleans are coerced so ``True`` matches a Lucy
+    axis value of ``True`` regardless of how the YAML expressed it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bool)):
+        return {value}
+    return set(value)
+
+
+def all_variants(restrict=None):
     """The (e_score_mode, logP_cutoff_mode, apply_lucy_sweeny_e) variants.
 
     Cartesian product of the 3 e-score modes, 2 cutoff modes, and 2 Lucy
     settings (12 variants). Order is stable so cube/checkpoint enumeration
     is deterministic.
+
+    ``restrict`` optionally subsets the product. It is a dict with any of the
+    keys ``e_score_mode`` / ``logP_cutoff_mode`` / ``apply_lucy_sweeny_e``;
+    each value may be a scalar, an iterable, or omitted (⇒ unconstrained on
+    that axis). ``restrict=None`` (the default) returns all 12, so every
+    existing caller is unaffected. Raises ``ValueError`` if the filter selects
+    no variants.
     """
-    return [(em, cm, lucy)
+    full = [(em, cm, lucy)
             for em in _RUN_E_SCORE_MODES
             for cm in _RUN_LOGP_CUTOFF_MODES
             for lucy in _RUN_LUCY_SWEENY]
+    if not restrict:
+        return full
+    em_set = _as_filter_set(restrict.get("e_score_mode"))
+    cm_set = _as_filter_set(restrict.get("logP_cutoff_mode"))
+    lucy_set = _as_filter_set(restrict.get("apply_lucy_sweeny_e"))
+    if lucy_set is not None:
+        lucy_set = {bool(v) for v in lucy_set}
+    out = [(em, cm, lucy) for (em, cm, lucy) in full
+           if (em_set is None or em in em_set)
+           and (cm_set is None or cm in cm_set)
+           and (lucy_set is None or bool(lucy) in lucy_set)]
+    if not out:
+        raise ValueError(
+            "variant_filter %r selected no variants (valid e_score_mode=%s, "
+            "logP_cutoff_mode=%s, apply_lucy_sweeny_e={True, False})"
+            % (restrict, _RUN_E_SCORE_MODES, _RUN_LOGP_CUTOFF_MODES))
+    return out
 
 
 # Bumped whenever the persisted-cube schema grows new required keys. The

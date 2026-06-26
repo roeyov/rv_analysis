@@ -222,6 +222,12 @@ def plot_grid_results(results, output_dir=None, obs_logP=None, obs_e=None,
 
 def format_grid_summary(results):
     """Create a summary DataFrame of all grid points, sorted by GMF."""
+    # Use the metrics actually scored (keys of any variant's gmf cube dict),
+    # so a single-metric run doesn't emit all-zero columns for unscored tests.
+    gmf_by_variant = results.get("gmf_cubes_by_variant") or {}
+    summary_tests = (list(next(iter(gmf_by_variant.values())).keys())
+                     if gmf_by_variant else list(_SCORED_TESTS))
+    default_test = "ks" if "ks" in summary_tests else summary_tests[0]
     rows = []
     for r in results["results"]:
         row = {
@@ -233,7 +239,7 @@ def format_grid_summary(results):
             "P_binom": f"{r['p_binom']:.4f}",
             "N_det": r["n_detected"],
         }
-        for tname in _SCORED_TESTS:
+        for tname in summary_tests:
             prefix = tname.upper()
             row["%s_logP" % prefix] = f"{r.get('%s_p_logP' % tname, 0):.3f}"
             row["%s_e" % prefix] = f"{r.get('%s_p_e' % tname, 0):.3f}"
@@ -243,7 +249,7 @@ def format_grid_summary(results):
                 f"{lgmf:.2f}" if np.isfinite(lgmf) else "-inf")
         rows.append(row)
     df = pd.DataFrame(rows)
-    df["_sort"] = [r.get("log_gmf_ks", r.get("log_gmf", -np.inf))
+    df["_sort"] = [r.get("log_gmf_%s" % default_test, r.get("log_gmf", -np.inf))
                    for r in results["results"]]
     df = df.sort_values("_sort", ascending=False).drop("_sort", axis=1)
     logger.info("format_grid_summary: %d rows", len(df))

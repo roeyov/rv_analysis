@@ -51,7 +51,7 @@ from simulations.bias_grid_lib.parallel import (
 from simulations.bias_grid_lib.scoring import (
     _compute_scores, _make_scoring_ctx,
 )
-from simulations.bias_grid_lib.statistics import _SCORED_TESTS
+from simulations.bias_grid_lib.statistics import _ALL_TESTS, _SCORED_TESTS
 
 
 class GridSearchEngine:
@@ -241,7 +241,8 @@ class GridSearchEngine:
             parallel_grid=False,
             obs=None, sb1_tex="", sb2_tex="",
             n_catalog_total=None, n_catalog_nonsingle=None,
-            ostar_catalog=""):
+            ostar_catalog="",
+            variants=None, scored_tests=None):
         """
         Run the full 4D grid search.
 
@@ -316,7 +317,23 @@ class GridSearchEngine:
             obs_e_value = np.asarray(obs_e, dtype=float)
             obs_e_is_upper_limit = np.zeros(len(obs_e_value), dtype=bool)
 
-        variants = all_variants()                # 12 (em, cm, lucy) tuples
+        # Variants/metrics default to the full sweep (all 12 / all 4) so any
+        # caller that omits them reproduces the historical behaviour; the
+        # orchestrator passes restricted lists for single-variant / single-
+        # metric runs.
+        if variants is None:
+            variants = all_variants()            # up to 12 (em, cm, lucy) tuples
+        scored_tests = list(scored_tests) if scored_tests else list(_SCORED_TESTS)
+        # Default-test alias: keep "ks" when it is scored (⇒ identical legacy
+        # aliases / return dict), else fall back to the first active metric.
+        default_test = "ks" if "ks" in scored_tests else scored_tests[0]
+        # Per-cell p-value tests + Wasserstein toggle, threaded into each
+        # scoring ctx (pickled to workers) so the scorer only runs the
+        # requested metrics.
+        active_pvalue_tests = {k: _ALL_TESTS[k]
+                               for k in scored_tests if k in _ALL_TESTS}
+        score_wass = "wass" in scored_tests
+
         tags = [variant_tag(em, cm, lucy) for (em, cm, lucy) in variants]
         default_tag = variant_tag("combined", "numerical", False)
         if default_tag not in tags:
@@ -339,6 +356,10 @@ class GridSearchEngine:
                 n_obs_e_total=vi["n_obs_e_total"] or 0,
                 N_det_obs=vi["N_det_obs"], N_stars=vi["N_stars"],
                 sim_logP_floor=vi["sim_logP_floor"])
+            # Restrict which metrics the per-cell scorer computes (default:
+            # all). Travels with the ctx into the parallel workers.
+            ctx["pvalue_tests"] = active_pvalue_tests
+            ctx["score_wass"] = score_wass
             scoring_ctxs[tag] = ctx
             variant_meta[tag] = {
                 "e_score_mode": em,
@@ -459,10 +480,10 @@ class GridSearchEngine:
             has_e_circ = variant_meta[tag]["has_e_circ"]
             gmf_cubes_v[tag] = {
                 t: np.full(shape, -np.inf, dtype=np.float32)
-                for t in _SCORED_TESTS
+                for t in scored_tests
             }
             tcv = {}
-            for t in _SCORED_TESTS:
+            for t in scored_tests:
                 d = {
                     "logP": np.zeros(shape, dtype=np.float32),
                     "e": np.zeros(shape, dtype=np.float32),
@@ -473,14 +494,16 @@ class GridSearchEngine:
                 tcv[t] = d
             test_cubes_v[tag] = tcv
 
-        # Backward-compat aliases (default variant, KS test) for logging /
-        # the return dict; downstream consumers read variant-keyed cubes.
+        # Backward-compat aliases (default variant, default metric) for
+        # logging / the return dict; downstream consumers read variant-keyed
+        # cubes. default_test is "ks" whenever ks is scored, else the first
+        # active metric — so these aliases hold real cubes either way.
         gmf_cubes = gmf_cubes_v[default_tag]
         test_cubes = test_cubes_v[default_tag]
-        gmf_cube = gmf_cubes["ks"]
-        ks_logP_cube = test_cubes["ks"]["logP"]
-        ks_e_cube = test_cubes["ks"]["e"]
-        ks_K1_cube = test_cubes["ks"]["K1"]
+        gmf_cube = gmf_cubes[default_test]
+        ks_logP_cube = test_cubes[default_test]["logP"]
+        ks_e_cube = test_cubes[default_test]["e"]
+        ks_K1_cube = test_cubes[default_test]["K1"]
 
         # Lightweight index: which steps have been processed and their
         # grid indices.  The actual detected arrays live on disk as
@@ -513,7 +536,7 @@ class GridSearchEngine:
                 # overwriting the checkpoint on the next save.
                 mismatches = []
 
-                ckpt_gmf_key = "v__%s__gmf_ks_cube" % default_tag
+                ckpt_gmf_key = "v__%s__gmf_%s_cube" % (default_tag, default_test)
                 if (ckpt_gmf_key in ckpt.files
                         and ckpt[ckpt_gmf_key].shape != gmf_cube.shape):
                     mismatches.append(
@@ -614,7 +637,7 @@ class GridSearchEngine:
                 # Restore namespaced per-variant goodness cubes.
                 for tag in tags:
                     has_e_circ = variant_meta[tag]["has_e_circ"]
-                    for tname in _SCORED_TESTS:
+                    for tname in scored_tests:
                         gmf_key = "v__%s__gmf_%s_cube" % (tag, tname)
                         if gmf_key in ckpt.files:
                             gmf_cubes_v[tag][tname][:] = ckpt[gmf_key]
@@ -630,10 +653,10 @@ class GridSearchEngine:
                 # Refresh default-variant aliases
                 gmf_cubes = gmf_cubes_v[default_tag]
                 test_cubes = test_cubes_v[default_tag]
-                gmf_cube = gmf_cubes["ks"]
-                ks_logP_cube = test_cubes["ks"]["logP"]
-                ks_e_cube = test_cubes["ks"]["e"]
-                ks_K1_cube = test_cubes["ks"]["K1"]
+                gmf_cube = gmf_cubes[default_test]
+                ks_logP_cube = test_cubes[default_test]["logP"]
+                ks_e_cube = test_cubes[default_test]["e"]
+                ks_K1_cube = test_cubes[default_test]["K1"]
                 start_step = int(ckpt["completed_steps"])
                 prev_df = pd.read_csv(ckpt_csv)
                 all_results = prev_df.to_dict("records")
@@ -712,7 +735,7 @@ class GridSearchEngine:
                 has_e_circ = variant_meta[tag]["has_e_circ"]
                 gc = gmf_cubes_v[tag]
                 tc = test_cubes_v[tag]
-                for tname in _SCORED_TESTS:
+                for tname in scored_tests:
                     tc[tname]["logP"][i, j, k, l] = scores["%s_p_logP" % tname]
                     tc[tname]["e"][i, j, k, l] = scores["%s_p_e" % tname]
                     tc[tname]["K1"][i, j, k, l] = scores["%s_p_K1" % tname]
@@ -750,7 +773,7 @@ class GridSearchEngine:
                 "n_false_positive": int(res.get("n_false_positive", 0)),
             }
             for tag in tags:
-                for tname in _SCORED_TESTS:
+                for tname in scored_tests:
                     row["log_gmf_%s__%s" % (tname, tag)] = \
                         scores_by_variant[tag]["log_gmf_%s" % tname]
 
@@ -760,7 +783,7 @@ class GridSearchEngine:
                 _pending_csv_rows.append(row)
                 m_csv.add(step)
 
-            return p_det, scores_by_variant[default_tag]["log_gmf_ks"]
+            return p_det, scores_by_variant[default_tag]["log_gmf_%s" % default_test]
 
         t0 = time.time()
         steps_done = 0
@@ -1098,7 +1121,7 @@ class GridSearchEngine:
         best_fits_by_variant = {}
         for tag in tags:
             bf_v = {}
-            for tname in _SCORED_TESTS:
+            for tname in scored_tests:
                 gc = gmf_cubes_v[tag][tname]
                 idx = np.unravel_index(np.nanargmax(gc), gc.shape)
                 bf_v[tname] = (float(pi_grid[idx[0]]),
@@ -1109,16 +1132,16 @@ class GridSearchEngine:
 
         # Default-variant aliases for logging / backward compat.
         best_fits = best_fits_by_variant[default_tag]
-        best_pi, best_kappa, best_eta, best_fbin = best_fits["ks"]
+        best_pi, best_kappa, best_eta, best_fbin = best_fits[default_test]
         best_idx = np.unravel_index(
-            np.nanargmax(gmf_cubes_v[default_tag]["ks"]),
-            gmf_cubes_v[default_tag]["ks"].shape)
+            np.nanargmax(gmf_cubes_v[default_tag][default_test]),
+            gmf_cubes_v[default_tag][default_test].shape)
 
         logger.info("Grid search complete in %.1f min", (time.time()-t0)/60)
         for tag in tags:
-            bf = best_fits_by_variant[tag]["ks"]
-            logger.info("Best fit [%s] (KS): π=%.2f, κ=%.2f, η=%.2f, "
-                        "f_bin=%.2f", tag, *bf)
+            bf = best_fits_by_variant[tag][default_test]
+            logger.info("Best fit [%s] (%s): π=%.2f, κ=%.2f, η=%.2f, "
+                        "f_bin=%.2f", tag, default_test.upper(), *bf)
 
         return {
             "pi_grid": pi_grid,
@@ -1144,12 +1167,12 @@ class GridSearchEngine:
             "best_fit": (best_pi, best_kappa, best_eta, best_fbin),
             "best_fits": best_fits,
             "best_idx": best_idx,
-            "gmf_cube": gmf_cubes_v[default_tag]["ks"],
+            "gmf_cube": gmf_cubes_v[default_tag][default_test],
             "gmf_cubes": gmf_cubes_v[default_tag],
             "test_cubes": test_cubes_v[default_tag],
-            "ks_logP_cube": test_cubes_v[default_tag]["ks"]["logP"],
-            "ks_e_cube": test_cubes_v[default_tag]["ks"]["e"],
-            "ks_K1_cube": test_cubes_v[default_tag]["ks"]["K1"],
+            "ks_logP_cube": test_cubes_v[default_tag][default_test]["logP"],
+            "ks_e_cube": test_cubes_v[default_tag][default_test]["e"],
+            "ks_K1_cube": test_cubes_v[default_tag][default_test]["K1"],
             "N_stars": variant_meta[default_tag]["N_stars"],
             "N_det_obs": variant_meta[default_tag]["N_det_obs"],
             "e_score_mode": variant_meta[default_tag]["e_score_mode"],

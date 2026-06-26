@@ -129,7 +129,13 @@ def _compute_scores(res, ctx):
 
     out = {"p_binom": p_binom}
     mode = ctx["e_score_mode"]
-    for tname, tfn in _ALL_TESTS.items():
+    # Restrict which metrics are computed (default: all). The engine threads
+    # the active p-value tests + Wasserstein toggle through the ctx so the
+    # per-cell scorer skips metrics that were not requested.
+    pvalue_tests = ctx.get("pvalue_tests", _ALL_TESTS)
+    score_wass = ctx.get("score_wass", True)
+    p_e_circ = None
+    for tname, tfn in pvalue_tests.items():
         p_logP = _safe_pvalue(tfn, ctx["obs_logP"], sim_clipped["logP"])
         p_K1 = _safe_pvalue(tfn, ctx["obs_K1"], sim_clipped["K1"],
                             min_samples=3)
@@ -167,45 +173,50 @@ def _compute_scores(res, ctx):
             out["%s_p_e_circ" % tname] = p_e_circ
         out["log_gmf_%s" % tname] = log_gmf
 
-    # Wasserstein-1 distance branch. Distances are sign-flipped (so
-    # argmax still selects the best fit) and normalized by per-channel
-    # MAD (precomputed in ctx) before summing. p_binom and p_e_circ
-    # remain real pmfs and enter on the log scale unchanged. p_e_circ
-    # is independent of the test function, so we reuse the value left
-    # by the last iteration of the p-value loop above.
-    sigma = ctx["wass_sigma"]
-    d_logP = _safe_distance(_wasserstein_distance,
-                            ctx["obs_logP"], sim_clipped["logP"])
-    d_K1 = _safe_distance(_wasserstein_distance,
-                          ctx["obs_K1"], sim_clipped["K1"], min_samples=3)
-    if mode == "combined":
-        d_e = _safe_distance(_wasserstein_distance,
-                             ctx["obs_e"], sim_clipped["e"])
-    else:
-        sim_e_cont = sim_clipped["e"][sim_clipped["e"] > 0]
-        d_e = _safe_distance(_wasserstein_distance,
-                             ctx["obs_e_cont"], sim_e_cont)
+    # Wasserstein-1 distance branch (computed only when 'wass' is an active
+    # metric). Distances are sign-flipped (so argmax still selects the best
+    # fit) and normalized by per-channel MAD (precomputed in ctx) before
+    # summing. p_binom and p_e_circ remain real pmfs and enter on the log
+    # scale unchanged. p_e_circ is independent of the test function, so we
+    # reuse the value left by the last iteration of the p-value loop above.
+    if score_wass:
+        sigma = ctx["wass_sigma"]
+        d_logP = _safe_distance(_wasserstein_distance,
+                                ctx["obs_logP"], sim_clipped["logP"])
+        d_K1 = _safe_distance(_wasserstein_distance,
+                              ctx["obs_K1"], sim_clipped["K1"], min_samples=3)
+        if mode == "combined":
+            d_e = _safe_distance(_wasserstein_distance,
+                                 ctx["obs_e"], sim_clipped["e"])
+        else:
+            sim_e_cont = sim_clipped["e"][sim_clipped["e"] > 0]
+            d_e = _safe_distance(_wasserstein_distance,
+                                 ctx["obs_e_cont"], sim_e_cont)
 
-    out["wass_p_logP"] = d_logP   # stored in p_* slot so the explorer's
-    out["wass_p_e"]    = d_e      # generic per-param loop picks them up;
-    out["wass_p_K1"]   = d_K1     # values are distances, not probabilities
+        out["wass_p_logP"] = d_logP   # stored in p_* slot so the explorer's
+        out["wass_p_e"]    = d_e      # generic per-param loop picks them up;
+        out["wass_p_K1"]   = d_K1     # values are distances, not probabilities
 
-    if (np.isfinite(d_logP) and np.isfinite(d_e) and np.isfinite(d_K1)
-            and p_binom > 0):
-        log_gmf_wass = -(d_logP / sigma["logP"]
-                         + d_e   / sigma["e"]
-                         + d_K1  / sigma["K1"]) + np.log(p_binom)
+        if (np.isfinite(d_logP) and np.isfinite(d_e) and np.isfinite(d_K1)
+                and p_binom > 0):
+            log_gmf_wass = -(d_logP / sigma["logP"]
+                             + d_e   / sigma["e"]
+                             + d_K1  / sigma["K1"]) + np.log(p_binom)
+            if mode == "split":
+                if p_e_circ and p_e_circ > 0:
+                    log_gmf_wass += np.log(p_e_circ)
+                else:
+                    log_gmf_wass = -np.inf
+        else:
+            log_gmf_wass = -np.inf
+
         if mode == "split":
-            if p_e_circ and p_e_circ > 0:
-                log_gmf_wass += np.log(p_e_circ)
-            else:
-                log_gmf_wass = -np.inf
-    else:
-        log_gmf_wass = -np.inf
+            out["wass_p_e_circ"] = p_e_circ
+        out["log_gmf_wass"] = log_gmf_wass
 
-    if mode == "split":
-        out["wass_p_e_circ"] = p_e_circ
-    out["log_gmf_wass"] = log_gmf_wass
-
-    out["log_gmf"] = out["log_gmf_ks"]
+    # Convenience alias: prefer KS when it is scored (legacy), else the first
+    # active metric. Guarantees out["log_gmf"] exists for any active test set.
+    produced_tests = list(pvalue_tests) + (["wass"] if score_wass else [])
+    default_t = "ks" if "ks" in produced_tests else produced_tests[0]
+    out["log_gmf"] = out["log_gmf_%s" % default_t]
     return out

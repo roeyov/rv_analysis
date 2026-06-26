@@ -634,10 +634,24 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
             # display checkbox. The obs-side window is handled separately
             # below so the obs e=0 spike can still show through.
             if e_score_mode == "eccentric_only":
-                clip_lo = 1e-12
+                if restrict_e_to_positive and obs_s is not None \
+                        and len(obs_s) >= 2:
+                    # "As scored" view: clip the displayed sim e-CDF to the
+                    # run's fitted window = [min, max] of the observed
+                    # significant-e sample, matching clip_range["e"] in
+                    # _build_variant_inputs. obs_s is the sorted, e>0,
+                    # scope-filtered observed e, so every obs point lies
+                    # inside [lo, hi] — the obs CDF is unchanged and only the
+                    # simulated curves are tightened.
+                    clip_lo = float(obs_s[0])
+                    clip_hi = float(obs_s[-1])
+                else:
+                    # Lifted/full view (checkbox off): e>0 floor, full upper.
+                    clip_lo = 1e-12
+                    clip_hi = 1.0
             else:
                 clip_lo = 0.0
-            clip_hi = 1.0
+                clip_hi = 1.0
         elif key == "logP" and has_obs:
             clip_lo = max(0.0, logP_cutoff)
             clip_hi = float(obs_s[-1])
@@ -1375,6 +1389,12 @@ def main():
                 "Restrict eccentricity to e>0 (as scored)",
                 value=True,
                 key="restrict_e_to_positive_%s" % active_variant_tag,
+                help="On (as scored): the simulated e-CDF is clipped to the "
+                     "observed significant-e window [min e, max e] — the "
+                     "exact range the eccentric_only fit used — so the panel "
+                     "matches p(e>0). Off: show the full e axis with the obs "
+                     "e=0 spike and the sim/intrinsic CDFs lifted by the "
+                     "observed circular fraction.",
             )
         else:
             restrict_e_to_positive = True

@@ -174,6 +174,36 @@ def main():
     cfg.pop("logP_cutoff_mode", None)
     cfg.pop("split_e_circular", None)
 
+    # --- Single-variant / single-metric restriction (opt-in) -------------
+    # variant_filter subsets the 12-variant product; scored_tests subsets the
+    # 4 metrics. Both default to None ⇒ full sweep (historical behaviour), so
+    # configs that omit them are unaffected.
+    variant_filter = _bg("variant_filter")
+    if variant_filter is not None and not isinstance(variant_filter, dict):
+        raise ValueError(
+            "bias_grid.variant_filter must be a mapping with any of "
+            "{e_score_mode, logP_cutoff_mode, apply_lucy_sweeny_e}, got %r"
+            % (variant_filter,))
+    # all_variants validates the enum values and raises on an empty selection.
+    variant_list = all_variants(restrict=variant_filter)
+
+    _valid_tests = tuple(list(_ALL_TESTS) + list(_DIST_TESTS))  # ks, ad, cvm, wass
+    scored_tests_cfg = _bg("scored_tests")
+    if scored_tests_cfg is None:
+        scored_tests_active = list(_valid_tests)
+    else:
+        if isinstance(scored_tests_cfg, str):
+            scored_tests_cfg = [scored_tests_cfg]
+        scored_tests_active = list(scored_tests_cfg)
+        bad = [t for t in scored_tests_active if t not in _valid_tests]
+        if bad:
+            raise ValueError(
+                "bias_grid.scored_tests %r contains unknown metric(s) %s; "
+                "valid: %s"
+                % (scored_tests_active, bad, " | ".join(_valid_tests)))
+        if not scored_tests_active:
+            raise ValueError("bias_grid.scored_tests selected no metrics")
+
     # Sampling bounds for the log-P power law (now YAML-configurable; the
     # defaults reproduce historical runs). log_p_min is also the lower bound
     # used by the adaptive-budget F_>(π) — set it to a physical value
@@ -267,9 +297,10 @@ def main():
     logger.info("  n_stars_sample for binomial: %d (injection sample: %d)",
                 cfg["n_stars_sample"], len(star_df))
     _variant_tags = [variant_tag(em, cm, lucy)
-                     for (em, cm, lucy) in all_variants()]
-    logger.info("  All-variants run: %d variants = %s",
+                     for (em, cm, lucy) in variant_list]
+    logger.info("  Scoring %d variant(s) = %s",
                 len(_variant_tags), ", ".join(_variant_tags))
+    logger.info("  Scoring metric(s): %s", ", ".join(scored_tests_active))
     logger.info("  logP_cutoff_scope: %s (fixed across variants); "
                 "smooth_sigma=%.3f",
                 cfg["logP_cutoff_scope"],
@@ -323,8 +354,9 @@ def main():
         "n_inject": int(n_inject),
         "seed": seed,
         "n_stars_sample": cfg["n_stars_sample"],
-        "variants": [variant_tag(em, cm, lucy)
-                     for (em, cm, lucy) in all_variants()],
+        "variants": _variant_tags,
+        "variant_filter": variant_filter,
+        "scored_tests": scored_tests_active,
         "logP_cutoff_scope": cfg["logP_cutoff_scope"],
         "logP_cutoff_smooth_sigma": cfg.get("logP_cutoff_smooth_sigma", 0.15),
         "apply_lucy_sweeny_e": apply_lucy_sweeny_e,
@@ -412,6 +444,8 @@ def main():
         n_catalog_total=n_catalog_total,
         n_catalog_nonsingle=n_catalog_nonsingle,
         ostar_catalog=ostar_catalog,
+        variants=variant_list,
+        scored_tests=scored_tests_active,
     )
 
     if is_task_mode:
