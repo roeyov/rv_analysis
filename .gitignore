@@ -1,0 +1,55 @@
+# macOS
+.DS_Store
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Test / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code local-only state
+.claude/settings.local.json
+.claude/worktrees/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Pipeline output (large generated artifacts)
+bias_grid_closure/
+# Generated spectra/plot HTML written to the repo root by ad-hoc scripts
+# (outputs belong under $SCRIPTS_OUT, never in the repo).
+/*.html
+
+# Logs
+*.log
