@@ -1,0 +1,88 @@
+# =============================================================================
+# params_bias_astro3_1min3_cutoff_numerical_exclude.yaml — A/B test config
+#
+# Derived from params_bias_astro3.yaml; preset overridden to final3_1min3 and
+# logP_cutoff_mode forced to "numerical" (drops the short-period merger tail
+# from the period CDF goodness-of-fit). Counterpart of
+# params_bias_astro3_1min3_cutoff_none.yaml. Diagnostic places the elbow at
+# logP ≈ 0.54 (P ≈ 3.5 d) for the current obs sample.
+# =============================================================================
+
+plot: false
+plot_style: "paper"
+random_seed: 562
+manual_candidate_periods: []
+
+drv_threshold: 10.0
+significance_threshold: 4.0
+
+base_dir:      "/jonathan_storage/roeyovadia/bias_grid_results"
+lmfit_subdir:  &lmfit_subdir  "second_pdc"
+mcmc_subdir:   &mcmc_subdir   "mcmc_out"
+
+pipeline_io:
+  object_list: []
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  use_fwhm: true
+
+bias_grid:
+  sb1_tex: "/jonathan_storage/roeyovadia/tables/sb1_solutions.tex"
+  sb2_tex: "/jonathan_storage/roeyovadia/tables/sb2_solutions.tex"
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  rv_dir: "/jonathan_storage/roeyovadia/data/rv_csvs/"
+  sb2_analysis_dir: "/jonathan_storage/roeyovadia/data/sb2_per_star"
+  ostar_catalog: "/jonathan_storage/roeyovadia/tables/ostar_catalog.csv"
+  output_dir: "/jonathan_storage/roeyovadia/bias_grid_results/final3_1min3_cutoff_numerical_exclude/"
+
+  preset: final3_1min3
+  n_inject: null
+  seed: 42
+  n_stars_sample: null
+  e_score_mode: eccentric_only
+  logP_cutoff_mode: numerical
+  logP_cutoff_value: null
+  logP_cutoff_smooth_sigma: 0.15
+  logP_cutoff_scope: exclude   # period_only | exclude
+  detect_method: rv_threshold
+
+  n_workers: null
+  parallel_grid: true
+
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 50
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10
+  run_permutations_ls: true
+  run_permutations_pdc: true
+
+lmfit_params:
+  minimization_method: "differential_evolution"
+  search_region:
+    Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
+    GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
+    K1:           {init_value: 200.0,   min_value: 0.0,    max_value: 400.0,   vary: true}
+    OMEGA_rad:    {init_value: 3.14,    min_value: 0.0,    max_value: 6.4,     vary: true}
+    Eccentricity: {init_value: 0.0,     min_value: 0.0,    max_value: 0.9999,  vary: true}
+    T0:           {init_value: 0.0,     min_value: 0.0,    max_value: 0.0,     vary: true}
+    ln_sigmaJ:    {init_value: 0.0,     min_value: -2,     max_value: 4.5,     vary: true}
+
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+  filter_expression: ""
+  field_to_check: "bicc"
+  take_min: true

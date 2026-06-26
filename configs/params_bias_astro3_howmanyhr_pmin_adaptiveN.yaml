@@ -1,0 +1,111 @@
+# =============================================================================
+# params_bias_astro3_howmanyhr_pmin_adaptiveN.yaml
+#
+# Same as the howmany_hr exclude/numerical run, but with the two new knobs that
+# address the steep-π surviving-sample collapse:
+#
+#   1. log_p_min: 0.046  — physical lower sampling bound (observed minimum
+#      logP, P=1.11 d) instead of the default 0.0 (clamped to 1e-10). This is
+#      the ROOT-CAUSE fix: at x_min≈0 the log-P power law's normalization
+#      diverges for π<-1, dumping ~all mass below the cutoff. A physical x_min
+#      keeps F_>(π) ≳ 0.1 across the whole π grid.
+#
+#   2. adaptive_n_inject: true — scale n_inject per (π, f_bin) cell so the
+#      EXPECTED number of injected binary periods above the cutoff is held at
+#      n_above_cutoff_target. Never injects fewer than the preset baseline
+#      (final3_howmany_hr → 100). NOTE: with log_p_min=0.046 the baseline 100
+#      already yields well above target=200 across the grid, so this mostly
+#      floors to baseline — it is a safety net. Raise n_above_cutoff_target
+#      (or lower log_p_min) to make it bind at steep π.
+#
+# Disable either independently: adaptive_n_inject=false → flat n_inject;
+# log_p_min=0.0 → historical sampling.
+# =============================================================================
+
+plot: false
+plot_style: "paper"
+random_seed: 562
+manual_candidate_periods: []
+
+drv_threshold: 10.0
+significance_threshold: 4.0
+
+base_dir:      "/jonathan_storage/roeyovadia/bias_grid_results"
+lmfit_subdir:  &lmfit_subdir  "second_pdc"
+mcmc_subdir:   &mcmc_subdir   "mcmc_out"
+
+pipeline_io:
+  object_list: []
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  use_fwhm: true
+
+bias_grid:
+  sb1_tex: "/jonathan_storage/roeyovadia/tables/sb1_solutions.tex"
+  sb2_tex: "/jonathan_storage/roeyovadia/tables/sb2_solutions.tex"
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  rv_dir: "/jonathan_storage/roeyovadia/data/rv_csvs/"
+  sb2_analysis_dir: "/jonathan_storage/roeyovadia/data/sb2_per_star"
+  ostar_catalog: "/jonathan_storage/roeyovadia/tables/ostar_catalog.csv"
+  output_dir: "/jonathan_storage/roeyovadia/bias_grid_results/final3_howmanyhr_cutoff_numerical_exclude_pmin_adaptiveN/"
+
+  preset: final3_howmany_hr
+  n_inject: null
+  seed: 42
+  n_stars_sample: null
+  e_score_mode: eccentric_only
+  apply_lucy_sweeny_e: false   # keep \leq limit value as e (vs collapsing to 0)
+  logP_cutoff_mode: numerical
+  logP_cutoff_value: null
+  logP_cutoff_smooth_sigma: 0.15
+  logP_cutoff_scope: exclude   # period_only | exclude
+  detect_method: rv_threshold
+
+  # --- New sampling + adaptive-budget knobs --------------------------------
+  log_p_min: 0.046             # observed minimum logP (P=1.11 d); default 0.0
+  log_p_max: 3.5               # default 3.5 (explicit for provenance)
+  adaptive_n_inject: true      # master toggle (false → flat n_inject)
+  n_above_cutoff_target: 200   # requested N intrinsic samples above cutoff
+  n_inject_max: 50000          # hard cap on per-cell n_inject
+  adaptive_n_cutoff: null      # null ⇒ use the run's numerical cutoff
+
+  n_workers: null
+  parallel_grid: true
+
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 50
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10
+  run_permutations_ls: true
+  run_permutations_pdc: true
+
+lmfit_params:
+  minimization_method: "differential_evolution"
+  search_region:
+    Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
+    GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
+    K1:           {init_value: 200.0,   min_value: 0.0,    max_value: 400.0,   vary: true}
+    OMEGA_rad:    {init_value: 3.14,    min_value: 0.0,    max_value: 6.4,     vary: true}
+    Eccentricity: {init_value: 0.0,     min_value: 0.0,    max_value: 0.9999,  vary: true}
+    T0:           {init_value: 0.0,     min_value: 0.0,    max_value: 0.0,     vary: true}
+    ln_sigmaJ:    {init_value: 0.0,     min_value: -2,     max_value: 4.5,     vary: true}
+
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+  filter_expression: ""
+  field_to_check: "bicc"
+  take_min: true

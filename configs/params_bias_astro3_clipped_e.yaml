@@ -1,0 +1,125 @@
+# =============================================================================
+# params_bias_astro3_clipped_e.yaml — astro3 bias_grid run, clipped-e variant.
+#
+# IDENTICAL to params_bias_astro3.yaml (the config that produced
+# final4_10min_adaptive) except for output_dir. The ONLY substantive
+# difference between this run and final4_10min_adaptive is the code change in
+# bias_grid_lib/cutoffs.py: under e_score_mode="eccentric_only", the simulated
+# e-CDF window is tightened to the observed significant-e range
+# (min(obs_e_cont), max(obs_e_cont)) instead of the trivial (0, 1). Same grid
+# preset (final4_10min), same adaptive-injection / scope=exclude / seed knobs,
+# so the eccentric_only variants are directly comparable.
+#
+# Usage on astro3 (TAU VPN required; SLURM path is DEPRECATED):
+#   cd ~/Scripts
+#   nohup micromamba run -n tau_binary python -u -m simulations.bias_grid \
+#       --config configs/params_bias_astro3_clipped_e.yaml \
+#       > ~/bias_grid_results/launcher_clipped_e.log 2>&1 </dev/null &
+# =============================================================================
+
+plot: false
+plot_style: "paper"
+random_seed: 562
+manual_candidate_periods: []
+
+# RV-threshold detection (used by bias_grid + closure-generator).
+drv_threshold: 10.0
+significance_threshold: 4.0
+
+# ---- I/O paths (astro3) ----
+base_dir:      "/jonathan_storage/roeyovadia/bias_grid_results"
+lmfit_subdir:  &lmfit_subdir  "second_pdc"
+mcmc_subdir:   &mcmc_subdir   "mcmc_out"
+
+pipeline_io:
+  object_list: []
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  use_fwhm: true
+
+# ---- Bias-grid input parameters ----
+bias_grid:
+  # paths (synced from local via sync_astro3.sh)
+  sb1_tex: "/jonathan_storage/roeyovadia/tables/sb1_solutions.tex"
+  sb2_tex: "/jonathan_storage/roeyovadia/tables/sb2_solutions.tex"
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  rv_dir: "/jonathan_storage/roeyovadia/data/rv_csvs/"
+  sb2_analysis_dir: "/jonathan_storage/roeyovadia/data/sb2_per_star"
+  ostar_catalog: "/jonathan_storage/roeyovadia/tables/ostar_catalog.csv"
+  output_dir: "/jonathan_storage/roeyovadia/bias_grid_results/final4_10min_adaptive_clipped_e/"
+
+  # run shape — same preset as final4_10min_adaptive
+  preset: final4_10min
+  n_inject: null
+  seed: 42
+  n_stars_sample: null
+  # ALL-VARIANTS run (cube schema v4): one pass scores every
+  # (e_score_mode, logP_cutoff_mode) variant = {combined, split,
+  # eccentric_only} × {none, numerical}. The per-variant mode keys are no
+  # longer read; the explorer switches between mechanisms on the loaded
+  # run. The numerical elbow sits at logP ≈ 0.54 (P ≈ 3.5 d) for this sample.
+  logP_cutoff_smooth_sigma: 0.15   # Gaussian σ (dex) for the numerical cutoff
+  logP_cutoff_scope: exclude       # period_only | exclude (fixed across variants)
+  detect_method: rv_threshold
+
+  # ---- Sampling bounds + adaptive injection budget ----
+  # log_p_min is the lower bound of the log-P power-law sampler (default 0.0 is
+  # clamped to 1e-10 → normalization blow-up for π < -1). Set it to the observed
+  # minimum logP (P=1.11 d) to keep F_>(π) ≳ 0.1 across the grid — the root-cause
+  # fix for steep-π drift under scope=exclude.
+  log_p_min: 0.046
+  log_p_max: 3.5
+  # adaptive_n_inject scales n_inject per (π, f_bin) cell so the expected number
+  # of injected periods above the cutoff stays ≈ n_above_cutoff_target. Never
+  # injects below the preset baseline; capped at n_inject_max. With log_p_min
+  # physical this mostly floors to baseline (safety net). false → flat n_inject.
+  adaptive_n_inject: true
+  n_above_cutoff_target: 2200
+  n_inject_max: 50000
+  adaptive_n_cutoff: null          # null ⇒ use the run's numerical cutoff
+
+  # parallelism — null lets bias_grid pick cpu_count - 2.
+  # On a shared box, set this explicitly to a polite fraction of `nproc`.
+  n_workers: null
+  parallel_grid: true
+
+# ---- Periodogram settings (reduced for speed) ----
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 50
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10
+  run_permutations_ls: true
+  run_permutations_pdc: true
+
+# ---- lmfit search region ----
+lmfit_params:
+  minimization_method: "differential_evolution"
+  search_region:
+    Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
+    GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
+    K1:           {init_value: 200.0,   min_value: 0.0,    max_value: 400.0,   vary: true}
+    OMEGA_rad:    {init_value: 3.14,    min_value: 0.0,    max_value: 6.4,     vary: true}
+    Eccentricity: {init_value: 0.0,     min_value: 0.0,    max_value: 0.9999,  vary: true}
+    T0:           {init_value: 0.0,     min_value: 0.0,    max_value: 0.0,     vary: true}
+    ln_sigmaJ:    {init_value: 0.0,     min_value: -2,     max_value: 4.5,     vary: true}
+
+# ---- MCMC (not used in bias grid, kept for config loading compatibility) ----
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+  filter_expression: ""
+  field_to_check: "bicc"
+  take_min: true
