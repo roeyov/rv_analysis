@@ -52,29 +52,40 @@ def _get_pgrams(mjds, pmin, pmax, spp, pdc_spp, backend):
 
 
 def _branch(pgram, Y, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
-            fit_kwargs, has_err, iter_seed):
+            fit_kwargs, has_err, iter_seed, exclude=None):
     """One candidate branch (LS or PDC): fit at the peak (P free in its FWHM),
-    then apply prob_bicc>0.5 & iter_fap<fap_thresh & mass_flag_peri==0.
+    then apply prob_bicc>0.5 & mass_flag_peri==0 & iter_fap<fap_thresh.
+
+    Short-circuit: the two CHEAP gates (prob_bicc, then the Roche-lobe cut) are
+    evaluated first, and the EXPENSIVE permutation iter_fap (~80% of the cost) is
+    run ONLY for the survivors. Since the gate is an AND, this leaves the detected
+    mask unchanged (survivors' iter_fap is bit-identical — the full-batch shuffle
+    draw is preserved). ``exclude`` (bool mask) additionally drops injections
+    already detected by an earlier branch (branches are OR'd), skipping their
+    permutations too.
     Returns (detected[bool], prob_bicc, iter_fap, P_fit, e_fit, K1_fit)."""
     period, peak_pow, flo, fhi = (pgram.peak_with_fwhm(Y, errs) if has_err
                                   else pgram.peak_with_fwhm(Y))
     fit = batched_fit.fit_batch(Y, pgram.t, errs, period, flo, fhi, **(fit_kwargs or {}))
-    if has_err:
-        maxpow_fn = pgram.max_power
-        col_arg = np.repeat(errs, n_perm)
-    else:
-        maxpow_fn = pgram.max_power
-        col_arg = None
+    N = Y.shape[1]
+    # cheap gate 1: prob_bicc > 0.5
+    prob = fit["prob_bicc"] > 0.5
+    # cheap gate 2: Roche-lobe overflow, evaluated only for prob-passers
+    mass_flag = np.zeros(N, dtype=bool)
+    sp = np.where(prob)[0]
+    if sp.size:
+        mass_flag[sp] = rlof.mass_flag_peri_batch(
+            [mass_rows[i] for i in sp], fit["K1"][sp], fit["e"][sp], fit["P"][sp])
+    prelim = prob & (~mass_flag)
+    if exclude is not None:
+        prelim = prelim & (~np.asarray(exclude, dtype=bool))
+    # expensive gate: permutation iter_fap, only for the survivors
+    maxpow_fn = pgram.max_power
+    col_arg = np.repeat(errs, n_perm) if has_err else None
     ifap = batched_perm.iter_fap_fn(maxpow_fn, Y, peak_pow, n_perm,
                                     np.random.default_rng(iter_seed),
-                                    col_arg=col_arg)
-    passes = (fit["prob_bicc"] > 0.5) & (ifap < fap_thresh)
-    mass_flag = np.zeros(Y.shape[1], dtype=bool)
-    surv = np.where(passes)[0]
-    if surv.size:
-        mass_flag[surv] = rlof.mass_flag_peri_batch(
-            [mass_rows[i] for i in surv], fit["K1"][surv], fit["e"][surv], fit["P"][surv])
-    detected = passes & (~mass_flag)
+                                    col_arg=col_arg, active=prelim)
+    detected = prelim & (ifap < fap_thresh)
     return detected, fit["prob_bicc"], ifap, fit["P"], fit["e"], fit["K1"]
 
 
@@ -101,9 +112,11 @@ def detect_batch(mjds, rv_matrix, errs, mass_rows, cfg,
     ls_det, ls_pb, ls_fap, ls_P, ls_e, ls_K = _branch(
         bls, rv_matrix, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
         fit_kwargs, has_err=False, iter_seed=seed)
+    # PDC only needs to decide injections LS did NOT already detect (branches are
+    # OR'd) -> pass ls_det as `exclude` so PDC skips their permutations too.
     pdc_det, pdc_pb, pdc_fap, pdc_P, pdc_e, pdc_K = _branch(
         bpdc, rv_matrix, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
-        fit_kwargs, has_err=True, iter_seed=seed + 1)
+        fit_kwargs, has_err=True, iter_seed=seed + 1, exclude=ls_det)
 
     detected = ls_det | pdc_det
     info = {

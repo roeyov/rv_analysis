@@ -40,27 +40,48 @@ def _make_shuffles(Y, n_perm, rng):
 
 
 def iter_fap_fn(maxpow_fn, Y, peak_power, n_perm, rng, perm_chunk=20000,
-                col_arg=None):
+                col_arg=None, active=None):
     """Empirical permutation FAP per curve, for any periodogram.
 
     maxpow_fn : callable (n_epoch, m) -> (m,) max-power over the freq grid for
                 each shuffled curve (e.g. BatchedLS.max_power). If ``col_arg`` is
                 given (length n_batch*n_perm, e.g. per-column errors for PDC),
                 maxpow_fn is called as maxpow_fn(chunk, col_arg_chunk).
+    active :    optional bool mask (n_batch,). When given, the expensive
+                ``maxpow_fn`` is run ONLY for the shuffles of the active
+                (short-circuit-surviving) curves; inactive curves return
+                iter_fap = 1.0 (a definite fail — they are already excluded by
+                the cheap prob_bicc / mass_flag gates upstream). The full-batch
+                shuffle draw is kept UNCHANGED, so every active curve gets the
+                exact same iter_fap it would in a full-batch call
+                (bit-identical), while the periodogram work scales with the
+                number of survivors, not n_batch.
     Returns (n_batch,) iter_fap in [0, 1].
     """
     Y = np.asarray(Y, dtype=np.float64)
     n_epoch, n_batch = Y.shape
-    Yp = _make_shuffles(Y, n_perm, rng)             # (n_epoch, n_batch*n_perm)
-    total = Yp.shape[1]
+    Yp = _make_shuffles(Y, n_perm, rng)             # (n_epoch, n_batch*n_perm) — full draw
     ca = None if col_arg is None else np.asarray(col_arg)
+    if active is None:
+        act_inj = np.arange(n_batch)
+    else:
+        act_inj = np.flatnonzero(np.asarray(active, dtype=bool))
+    ifap = np.ones(n_batch)                          # inactive -> 1.0 (fails iter_fap<thresh)
+    if act_inj.size == 0:
+        return ifap
+    # flattened shuffle columns for curve i are i*n_perm .. i*n_perm+n_perm
+    act_cols = (act_inj[:, None] * n_perm + np.arange(n_perm)[None, :]).ravel()
+    Ya = Yp[:, act_cols]
+    caa = None if ca is None else ca[act_cols]
+    total = Ya.shape[1]
     maxp = np.empty(total)
     for s in range(0, total, perm_chunk):
         e = min(s + perm_chunk, total)
-        maxp[s:e] = (maxpow_fn(Yp[:, s:e]) if ca is None
-                     else maxpow_fn(Yp[:, s:e], ca[s:e]))
-    maxp = maxp.reshape(n_batch, n_perm)            # (n_batch, n_perm)
-    return (maxp >= peak_power[:, None]).sum(axis=1) / float(n_perm)
+        maxp[s:e] = (maxpow_fn(Ya[:, s:e]) if caa is None
+                     else maxpow_fn(Ya[:, s:e], caa[s:e]))
+    maxp = maxp.reshape(act_inj.size, n_perm)        # (n_active, n_perm)
+    ifap[act_inj] = (maxp >= peak_power[act_inj, None]).sum(axis=1) / float(n_perm)
+    return ifap
 
 
 def iter_fap(bls, Y, peak_power, n_perm, rng, perm_chunk=20000):
