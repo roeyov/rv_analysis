@@ -370,3 +370,261 @@ def _worker_star_injections_vectorized(task):
         "hist_total": hist_total,
         "hist_det": hist_det,
     }
+
+
+def _zero_err_mass_row(m1, r1):
+    """Minimal mass_row for the batched Roche-lobe check (central M/R, no error
+    spread). The bias-grid task carries only M1/R1 scalars, not the ±catalog
+    errors, so mass_flag_peri uses the central values — a small approximation
+    (mass_flag rarely fires for physical injected periods; see HANDOFF §4)."""
+    return {"Mspec": float(m1), "Mspec_er_plus": 0.0, "Mspec_er_minus": 0.0,
+            "R_star": float(r1), "R_star_er_plus": 0.0, "R_star_er_minus": 0.0}
+
+
+def _worker_star_injections_batched(task):
+    """Batched pipeline-fidelity detection for one star (detect_method
+    ``pipeline_batched``).
+
+    Same population draws as ``_worker_star_injections_vectorized``, but
+    detection is the faithful ``filter_expression`` gate evaluated over the whole
+    ``(n_epoch x n_inject)`` matrix at once via ``fast_detect.detect_batch``
+    (batched LS+PDC periodograms, permutation iter_fap, prob_bicc, Roche-lobe),
+    instead of the rv_threshold cutoff. Identical return-dict schema.
+    """
+    from fast_detect.detector import detect_batch
+
+    (star_seed, MJDs_raw, rv_err_val, M1, R1, gamma,
+     n_inject, f_bin, pi, kappa, eta, cfg, args_dict,
+     detect_method) = task
+
+    MJDs = np.asarray(MJDs_raw, dtype=np.float64)
+    rng = np.random.default_rng(star_seed)
+    n_epochs = len(MJDs)
+    backend = args_dict.get("fast_detect_backend", "numpy")
+
+    is_binary = rng.random(n_inject) < f_bin
+    n_bin = int(is_binary.sum())
+    n_single = n_inject - n_bin
+
+    hist_total = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS)) for pair in _HIST_PAIRS}
+    hist_det = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS)) for pair in _HIST_PAIRS}
+    n_physical = n_detected = 0
+    logP_det = e_det = K1_det = q_det = []
+    logP_nondet = e_nondet = K1_nondet = q_nondet = []
+
+    if n_bin > 0:
+        # --- identical draws to the vectorized worker (shared helper) ---
+        (logP, e_arr, K1_arr, q_arr, rv_obs,
+         M1_j, R1_j) = _draw_star_binaries(
+            MJDs, n_epochs, rv_err_val, M1, R1, gamma,
+            n_bin, pi, kappa, eta, cfg, rng)
+
+        # --- batched faithful detection over the (n_epoch x n_bin) matrix ---
+        mass_rows = [_zero_err_mass_row(M1_j[j], R1_j[j]) for j in range(n_bin)]
+        det_mask, _ = detect_batch(MJDs, rv_obs.T, np.full(n_bin, rv_err_val),
+                                   mass_rows, cfg, backend=backend, rng=rng)
+
+        n_physical = n_bin
+        n_detected = int(det_mask.sum())
+        logP_det = logP[det_mask].tolist(); e_det = e_arr[det_mask].tolist()
+        K1_det = K1_arr[det_mask].tolist(); q_det = q_arr[det_mask].tolist()
+        logP_nondet = logP[~det_mask].tolist(); e_nondet = e_arr[~det_mask].tolist()
+        K1_nondet = K1_arr[~det_mask].tolist(); q_nondet = q_arr[~det_mask].tolist()
+
+        vals = {"logP": logP, "e": e_arr, "K1": K1_arr, "q": q_arr}
+        for (a, b) in _HIST_PAIRS:
+            ia = np.clip(np.searchsorted(_HIST_BINS[a], vals[a]) - 1, 0, _HIST_NBINS - 1)
+            ib = np.clip(np.searchsorted(_HIST_BINS[b], vals[b]) - 1, 0, _HIST_NBINS - 1)
+            np.add.at(hist_total[(a, b)], (ia, ib), 1)
+            np.add.at(hist_det[(a, b)], (ia[det_mask], ib[det_mask]), 1)
+
+    n_false_positive = 0
+    if n_single > 0:
+        n_physical += n_single
+        rv_obs_single = gamma + rng.normal(0.0, rv_err_val, (n_single, n_epochs))
+        mass_rows_s = [_zero_err_mass_row(M1, R1)] * n_single
+        det_s, _ = detect_batch(MJDs, rv_obs_single.T, np.full(n_single, rv_err_val),
+                                mass_rows_s, cfg, backend=backend, rng=rng)
+        n_false_positive = int(det_s.sum())
+
+    return {
+        "n_physical": n_physical, "n_detected": n_detected, "n_rlof": 0,
+        "n_false_positive": n_false_positive,
+        "logP_det": logP_det, "e_det": e_det, "K1_det": K1_det, "q_det": q_det,
+        "logP_nondet": logP_nondet, "e_nondet": e_nondet,
+        "K1_nondet": K1_nondet, "q_nondet": q_nondet,
+        "logP_rlof": [], "q_rlof": [], "e_rlof": [], "M1_rlof": [], "R1_rlof": [],
+        "hist_total": hist_total, "hist_det": hist_det,
+    }
+
+
+def _draw_star_binaries(MJDs, n_epochs, rv_err_val, M1, R1, gamma,
+                        n_bin, pi, kappa, eta, cfg, rng):
+    """Draw one star's binary injections — the SAME draw sequence as the body
+    of ``_worker_star_injections_batched`` (kept verbatim so the field worker is
+    bit-identical to the per-star worker for a given seed).
+
+    Returns ``(logP, e_arr, K1_arr, q_arr, rv_obs[n_bin, n_epochs], M1_j, R1_j)``.
+    """
+    logP = powerlaw_draw(n_bin, pi, cfg["log_p_min"], cfg["log_p_max"], rng)
+    P = 10.0 ** logP
+    q_arr = powerlaw_draw(n_bin, kappa, cfg["q_min"], cfg["q_max"], rng)
+    e_arr = powerlaw_draw(n_bin, eta, 1e-6, cfg["e_max"], rng)
+    e_arr[P < cfg["p_circ"]] = 0.0
+    incl = np.arccos(rng.uniform(0, 1, n_bin))
+    omega = rng.uniform(0, TWOPI, n_bin)
+    T0_arr = np.array([rng.uniform(MJDs.min() - P[j], MJDs.min())
+                       for j in range(n_bin)])
+    M1_j = np.clip(rng.normal(M1, 0.3 * M1, n_bin), 7.0, 80.0)
+    R1_j = np.maximum(4.0, rng.normal(R1, 0.3 * R1, n_bin))
+    K1_arr = compute_K1_batch(P, e_arr, q_arr, M1_j, incl)
+
+    phase = ((MJDs[None, :] - T0_arr[:, None]) / P[:, None]) % 1.0
+    M_anom = TWOPI * phase
+    E = kepler_E_batch(M_anom, e_arr)
+    nu = 2.0 * np.arctan2(
+        np.sqrt(1.0 + e_arr[:, None]) * np.sin(E / 2.0),
+        np.sqrt(1.0 - e_arr[:, None]) * np.cos(E / 2.0))
+    circ = e_arr < 1e-8
+    if circ.any():
+        nu[circ] = M_anom[circ]
+    rv_true = gamma + K1_arr[:, None] * (
+        np.cos(nu + omega[:, None]) + e_arr[:, None] * np.cos(omega[:, None]))
+    rv_obs = rv_true + rng.normal(0.0, rv_err_val, (n_bin, n_epochs))
+    return logP, e_arr, K1_arr, q_arr, rv_obs, M1_j, R1_j
+
+
+def _worker_field_injections_batched(field_task):
+    """Field-cell batched pipeline-fidelity detection (detect_method
+    ``pipeline_batched``).
+
+    All stars in one field share ONE of the ~8 BLOeM MJD arrays, and the LS/PDC
+    periodogram design depends only on the MJDs — so this worker pools EVERY
+    star's injections in a field into ONE ``detect_batch`` call (binaries) plus
+    ONE call (singles), instead of one call per star. The periodogram objects
+    are built once (cached by MJDs in ``detector._get_pgrams``) and reused across
+    the whole field's batch.
+
+    Per star the draws are identical to ``_worker_star_injections_batched``
+    (each star seeded with its own ``star_seed``), so the injected POPULATION is
+    identical to the per-star path for the same seeds. The detection DECISION
+    differs only by permutation-FAP Monte-Carlo noise — a single field-wide
+    ``det_rng`` seeds the pooled permutation nulls here vs per-star rngs in the
+    per-star path — which is well within the per-cell detection-fraction noise
+    the bias grid consumes. It is deterministic/reproducible. Returns ONE dict with the
+    per-star schema, aggregated over all stars in the field (summed counts,
+    concatenated det/nondet arrays, summed 2D histograms).
+
+    HARD RULE: this worker must receive stars from a SINGLE field only — mixing
+    fields would apply one MJD grid's periodogram design to another's data.
+    """
+    from fast_detect.detector import detect_batch
+
+    (MJDs_raw, star_seeds, rv_err, M1, R1, gamma,
+     n_inject, f_bin, pi, kappa, eta, cfg, args_dict,
+     detect_method) = field_task
+
+    MJDs = np.asarray(MJDs_raw, dtype=np.float64)
+    n_epochs = len(MJDs)
+    n_stars = len(star_seeds)
+    backend = args_dict.get("fast_detect_backend", "numpy")
+
+    hist_total = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS)) for pair in _HIST_PAIRS}
+    hist_det = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS)) for pair in _HIST_PAIRS}
+    n_physical = 0
+    n_false_positive = 0
+
+    # Per-star collections pooled across the whole field.
+    bin_logP, bin_e, bin_K1, bin_q = [], [], [], []
+    bin_rv_rows = []       # list of (n_bin_s, n_epochs) rv_obs matrices
+    bin_err = []           # per-injection rv_err
+    bin_mass_rows = []     # per-injection zero-error mass_row
+    sng_rv_rows = []       # list of (n_single_s, n_epochs) rv_obs matrices
+    sng_err = []
+    sng_mass_rows = []
+
+    for s in range(n_stars):
+        rng = np.random.default_rng(int(star_seeds[s]))
+        rv_err_val = float(rv_err[s])
+        M1_s = float(M1[s])
+        R1_s = float(R1[s])
+        gamma_s = float(gamma[s])
+
+        # SAME binary/single decision draw as the per-star batched worker.
+        is_binary = rng.random(n_inject) < f_bin
+        n_bin = int(is_binary.sum())
+        n_single = n_inject - n_bin
+
+        if n_bin > 0:
+            (logP, e_arr, K1_arr, q_arr, rv_obs,
+             M1_j, R1_j) = _draw_star_binaries(
+                MJDs, n_epochs, rv_err_val, M1_s, R1_s, gamma_s,
+                n_bin, pi, kappa, eta, cfg, rng)
+            n_physical += n_bin
+            bin_logP.append(logP)
+            bin_e.append(e_arr)
+            bin_K1.append(K1_arr)
+            bin_q.append(q_arr)
+            bin_rv_rows.append(rv_obs)                       # (n_bin, n_epochs)
+            bin_err.append(np.full(n_bin, rv_err_val))
+            bin_mass_rows.extend(
+                _zero_err_mass_row(M1_j[j], R1_j[j]) for j in range(n_bin))
+
+        if n_single > 0:
+            n_physical += n_single
+            rv_obs_single = gamma_s + rng.normal(0.0, rv_err_val,
+                                                 (n_single, n_epochs))
+            sng_rv_rows.append(rv_obs_single)
+            sng_err.append(np.full(n_single, rv_err_val))
+            sng_mass_rows.extend([_zero_err_mass_row(M1_s, R1_s)] * n_single)
+
+    # One field-wide rng seeds the two detect_batch calls (permutation nulls).
+    det_rng = np.random.default_rng(
+        int(star_seeds[0]) ^ 0x9E3779B97F4A7C15 if n_stars else 0)
+
+    # --- Binary branch: ONE detect_batch over the whole field's binaries -----
+    n_detected = 0
+    logP_det = e_det = K1_det = q_det = []
+    logP_nondet = e_nondet = K1_nondet = q_nondet = []
+    if bin_rv_rows:
+        logP_all = np.concatenate(bin_logP)
+        e_all = np.concatenate(bin_e)
+        K1_all = np.concatenate(bin_K1)
+        q_all = np.concatenate(bin_q)
+        rv_all = np.concatenate(bin_rv_rows, axis=0)          # (N_bin, n_epochs)
+        err_all = np.concatenate(bin_err)
+        det_mask, _ = detect_batch(MJDs, rv_all.T, err_all, bin_mass_rows,
+                                   cfg, backend=backend, rng=det_rng)
+
+        n_detected = int(det_mask.sum())
+        logP_det = logP_all[det_mask].tolist(); e_det = e_all[det_mask].tolist()
+        K1_det = K1_all[det_mask].tolist(); q_det = q_all[det_mask].tolist()
+        logP_nondet = logP_all[~det_mask].tolist()
+        e_nondet = e_all[~det_mask].tolist()
+        K1_nondet = K1_all[~det_mask].tolist()
+        q_nondet = q_all[~det_mask].tolist()
+
+        vals = {"logP": logP_all, "e": e_all, "K1": K1_all, "q": q_all}
+        for (a, b) in _HIST_PAIRS:
+            ia = np.clip(np.searchsorted(_HIST_BINS[a], vals[a]) - 1, 0, _HIST_NBINS - 1)
+            ib = np.clip(np.searchsorted(_HIST_BINS[b], vals[b]) - 1, 0, _HIST_NBINS - 1)
+            np.add.at(hist_total[(a, b)], (ia, ib), 1)
+            np.add.at(hist_det[(a, b)], (ia[det_mask], ib[det_mask]), 1)
+
+    # --- Single branch: ONE detect_batch over the whole field's singles ------
+    if sng_rv_rows:
+        rv_s_all = np.concatenate(sng_rv_rows, axis=0)        # (N_single, n_epochs)
+        err_s_all = np.concatenate(sng_err)
+        det_s, _ = detect_batch(MJDs, rv_s_all.T, err_s_all, sng_mass_rows,
+                                cfg, backend=backend, rng=det_rng)
+        n_false_positive = int(det_s.sum())
+
+    return {
+        "n_physical": n_physical, "n_detected": n_detected, "n_rlof": 0,
+        "n_false_positive": n_false_positive,
+        "logP_det": logP_det, "e_det": e_det, "K1_det": K1_det, "q_det": q_det,
+        "logP_nondet": logP_nondet, "e_nondet": e_nondet,
+        "K1_nondet": K1_nondet, "q_nondet": q_nondet,
+        "logP_rlof": [], "q_rlof": [], "e_rlof": [], "M1_rlof": [], "R1_rlof": [],
+        "hist_total": hist_total, "hist_det": hist_det,
+    }

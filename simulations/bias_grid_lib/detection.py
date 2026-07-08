@@ -42,4 +42,10 @@ def _detect_rv_threshold(MJDs, rv_obs, rv_err, args_dict):
 DETECTION_METHODS = {
     "pipeline": _detect_full_pipeline,
     "rv_threshold": _detect_rv_threshold,
+    # Batched, backend-pluggable re-implementation of the faithful
+    # filter_expression detection (fast_detect package). The per-system callable
+    # here is only a fallback for schema validation / the non-batched worker; the
+    # batched worker (injection._worker_star_injections_batched) calls
+    # fast_detect.detect_batch over the whole (n_epoch x n_inject) matrix instead.
+    "pipeline_batched": _detect_full_pipeline,
 }

@@ -1,0 +1,115 @@
+"""detect_batch — the full faithful detection gate, batched over a population.
+
+Reproduces the bias-grid detection's *true* criterion (the production
+``filter_expression``, configs/params.yaml): a system is detected iff its
+candidate solution satisfies
+
+    prob_bicc > 0.5  AND  mass_flag_peri == 0  AND  iter_fap < 0.2
+
+evaluated for a whole batch of injected RV curves that share one field's MJDs.
+(The current ``detect_method: pipeline`` applies only prob_bicc > 0.5; this is
+the faithful gate the fast detector implements.)
+
+v1 reproduces the **LS** candidate branch. The PDC branch
+(``PDC_iter_fap < 0.2``) is a follow-up (batched PDC periodogram); LS is the
+cheaper, dominant branch and the one validated first.
+"""
+
+import numpy as np
+
+from fast_detect.backends import get_xp
+from fast_detect.batched_ls import BatchedLS
+from fast_detect.batched_pdc import BatchedPDC
+from fast_detect import batched_fit, batched_perm, rlof
+
+
+def _peri_params(cfg):
+    p = cfg.get("periodogram_params", {})
+    return (float(p.get("min_period", 0.4)),
+            float(p.get("max_period", 10000.0)),
+            int(p.get("ls_sample_per_peak", 50)),
+            int(p.get("window_iterations", 10)),
+            int(p.get("pdc_samples_per_peak", 10)))
+
+
+# The LS/PDC periodogram objects depend only on (MJDs, bounds, sampling) — NOT on
+# the RV data — so they are identical for every star in a field and every grid
+# cell. Cache them (there are only ~8 distinct BLOeM MJD arrays) so a per-star
+# batched detect call doesn't rebuild the 96k/19k-frequency grids each time.
+_PGRAM_CACHE = {}
+
+
+def _get_pgrams(mjds, pmin, pmax, spp, pdc_spp, backend):
+    mjds = np.asarray(mjds, dtype=np.float64)
+    key = (mjds.tobytes(), pmin, pmax, spp, pdc_spp, backend)
+    hit = _PGRAM_CACHE.get(key)
+    if hit is None:
+        xp = get_xp(backend)
+        hit = (BatchedLS(mjds, pmin, pmax, samples_per_peak=spp, xp=xp),
+               BatchedPDC(mjds, pmin, pmax, samples_per_peak=pdc_spp, xp=xp))
+        _PGRAM_CACHE[key] = hit
+    return hit
+
+
+def _branch(pgram, Y, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
+            fit_kwargs, has_err, iter_seed):
+    """One candidate branch (LS or PDC): fit at the peak (P free in its FWHM),
+    then apply prob_bicc>0.5 & iter_fap<fap_thresh & mass_flag_peri==0.
+    Returns (detected[bool], prob_bicc, iter_fap, P_fit, e_fit, K1_fit)."""
+    period, peak_pow, flo, fhi = (pgram.peak_with_fwhm(Y, errs) if has_err
+                                  else pgram.peak_with_fwhm(Y))
+    fit = batched_fit.fit_batch(Y, pgram.t, errs, period, flo, fhi, **(fit_kwargs or {}))
+    if has_err:
+        maxpow_fn = pgram.max_power
+        col_arg = np.repeat(errs, n_perm)
+    else:
+        maxpow_fn = pgram.max_power
+        col_arg = None
+    ifap = batched_perm.iter_fap_fn(maxpow_fn, Y, peak_pow, n_perm,
+                                    np.random.default_rng(iter_seed),
+                                    col_arg=col_arg)
+    passes = (fit["prob_bicc"] > 0.5) & (ifap < fap_thresh)
+    mass_flag = np.zeros(Y.shape[1], dtype=bool)
+    surv = np.where(passes)[0]
+    if surv.size:
+        mass_flag[surv] = rlof.mass_flag_peri_batch(
+            [mass_rows[i] for i in surv], fit["K1"][surv], fit["e"][surv], fit["P"][surv])
+    detected = passes & (~mass_flag)
+    return detected, fit["prob_bicc"], ifap, fit["P"], fit["e"], fit["K1"]
+
+
+def detect_batch(mjds, rv_matrix, errs, mass_rows, cfg,
+                 backend="numpy", rng=None, fap_thresh=0.2, fit_kwargs=None):
+    """Detected/not-detected for each injected curve.
+
+    mjds       : (n_epoch,) shared MJDs of the field.
+    rv_matrix  : (n_epoch, n_batch) noisy injected RV curves.
+    errs       : (n_batch,) per-injection (per-star, uniform) RV error.
+    mass_rows  : per-injection star rows for the Roche-lobe check.
+    cfg        : pipeline config dict (periodogram_params used).
+    Returns (detected[bool, n_batch], info dict of arrays).
+    """
+    rng = rng or np.random.default_rng()
+    pmin, pmax, spp, n_perm, pdc_spp = _peri_params(cfg)
+    rv_matrix = np.asarray(rv_matrix, dtype=np.float64)
+    errs = np.asarray(errs, dtype=np.float64)
+    seed = int(rng.integers(0, 2 ** 31))
+
+    bls, bpdc = _get_pgrams(mjds, pmin, pmax, spp, pdc_spp, backend)
+
+    # filter_expression = (LS candidate passes) OR (PDC candidate passes)
+    ls_det, ls_pb, ls_fap, ls_P, ls_e, ls_K = _branch(
+        bls, rv_matrix, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
+        fit_kwargs, has_err=False, iter_seed=seed)
+    pdc_det, pdc_pb, pdc_fap, pdc_P, pdc_e, pdc_K = _branch(
+        bpdc, rv_matrix, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
+        fit_kwargs, has_err=True, iter_seed=seed + 1)
+
+    detected = ls_det | pdc_det
+    info = {
+        "detected_ls": ls_det, "detected_pdc": pdc_det,
+        "prob_bicc_ls": ls_pb, "LS_iter_fap": ls_fap,
+        "prob_bicc_pdc": pdc_pb, "PDC_iter_fap": pdc_fap,
+        "P_fit_ls": ls_P, "P_fit_pdc": pdc_P,
+    }
+    return detected, info

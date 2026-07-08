@@ -18,8 +18,87 @@ from simulations.bias_grid_lib.checkpointing import (
 )
 from simulations.bias_grid_lib.injection import (
     _worker_star_injections, _worker_star_injections_vectorized,
+    _worker_star_injections_batched, _worker_field_injections_batched,
 )
 from simulations.bias_grid_lib.scoring import _compute_scores
+
+
+# Per-star worker keyed by detect_method. 'pipeline' falls through to the default
+# (per-injection loop); 'rv_threshold' and 'pipeline_batched' are batched.
+_WORKER_BY_METHOD = {
+    "rv_threshold": _worker_star_injections_vectorized,
+    "pipeline_batched": _worker_star_injections_batched,
+    "pipeline": _worker_star_injections,
+}
+
+# Detection methods that build ONE task per FIELD (pooling all the field's stars
+# into a single batched detect_batch call) rather than one task per star. Only
+# 'pipeline_batched' benefits: all stars in a field share one MJD grid, so their
+# injections can be detected in one batched call. Everything else stays per-star.
+_FIELD_WORKER_BY_METHOD = {
+    "pipeline_batched": _worker_field_injections_batched,
+}
+
+
+def _build_injection_tasks(detect_method, field_mjds, field_arr, rv_err_arr,
+                           M1_arr, R1_arr, gamma_arr, cfg, args_dict,
+                           n_inject, f_bin, pi, kappa, eta, rng):
+    """Build the per-grid-point injection tasks + pick the matching worker.
+
+    For ``pipeline_batched`` this emits ONE task per field (all stars pooled),
+    routed to ``_worker_field_injections_batched`` — the field's shared MJD grid
+    lets one batched ``detect_batch`` handle every star's injections at once.
+    For every other method it emits one task per star (historical behaviour),
+    routed through ``_WORKER_BY_METHOD``.
+
+    Seeds are drawn one-per-star from ``rng`` in field→star order in BOTH paths,
+    so the random stream (and therefore the injected population) is identical
+    regardless of the batching granularity.
+
+    Returns ``(tasks, worker_fn)``.
+    """
+    field_task = detect_method in _FIELD_WORKER_BY_METHOD
+    tasks = []
+    for fld in sorted(field_mjds.keys()):
+        fld_mask = (field_arr == fld)
+        if not fld_mask.any():
+            continue
+        MJDs = field_mjds[fld]
+        star_idxs = np.where(fld_mask)[0]
+        # One seed per star, drawn in a fixed field→star order (identical
+        # stream for the per-star and per-field paths).
+        star_seeds = np.array([int(rng.integers(0, 2**63))
+                               for _ in star_idxs], dtype=np.int64)
+        if field_task:
+            tasks.append((
+                MJDs,
+                star_seeds,
+                rv_err_arr[star_idxs].astype(float),
+                M1_arr[star_idxs].astype(float),
+                R1_arr[star_idxs].astype(float),
+                gamma_arr[star_idxs].astype(float),
+                n_inject, f_bin, pi, kappa, eta,
+                cfg, args_dict, detect_method,
+            ))
+        else:
+            for pos, star_idx in enumerate(star_idxs):
+                tasks.append((
+                    int(star_seeds[pos]),
+                    MJDs,
+                    float(rv_err_arr[star_idx]),
+                    float(M1_arr[star_idx]),
+                    float(R1_arr[star_idx]),
+                    float(gamma_arr[star_idx]),
+                    n_inject, f_bin, pi, kappa, eta,
+                    cfg, args_dict, detect_method,
+                ))
+
+    if field_task:
+        worker_fn = _FIELD_WORKER_BY_METHOD[detect_method]
+    else:
+        worker_fn = _WORKER_BY_METHOD.get(detect_method,
+                                          _worker_star_injections)
+    return tasks, worker_fn
 
 
 # ---------------------------------------------------------------------------
@@ -143,30 +222,14 @@ def _worker_grid_point(task):
 
     rng = np.random.default_rng(seed + step * 137)
 
-    # Build one task per star (same logic as _run_one_grid_point).
-    star_tasks = []
-    for fld in sorted(field_mjds.keys()):
-        fld_mask = (field_arr == fld)
-        if not fld_mask.any():
-            continue
-        MJDs = field_mjds[fld]
-        for star_idx in np.where(fld_mask)[0]:
-            star_seed = int(rng.integers(0, 2**63))
-            star_tasks.append((
-                star_seed, MJDs,
-                float(rv_err_arr[star_idx]),
-                float(M1_arr[star_idx]),
-                float(R1_arr[star_idx]),
-                float(gamma_arr[star_idx]),
-                n_inject, f_bin, pi, kappa, eta,
-                cfg, args_dict, detect_method,
-            ))
-
-    # Run stars sequentially (parallelism is at the grid-point level).
-    worker_fn = (_worker_star_injections_vectorized
-                 if detect_method == "rv_threshold"
-                 else _worker_star_injections)
-    results = [worker_fn(t) for t in star_tasks]
+    # Build injection tasks (one per star, or one per field for
+    # pipeline_batched) + the matching worker. Parallelism is at the
+    # grid-point level, so these run sequentially inside the worker.
+    injection_tasks, worker_fn = _build_injection_tasks(
+        detect_method, field_mjds, field_arr, rv_err_arr,
+        M1_arr, R1_arr, gamma_arr, cfg, args_dict,
+        n_inject, f_bin, pi, kappa, eta, rng)
+    results = [worker_fn(t) for t in injection_tasks]
 
     # Aggregate across stars.
     all_logP_det = []

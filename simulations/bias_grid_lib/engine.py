@@ -39,14 +39,11 @@ from simulations.bias_grid_lib.constants import (
 from simulations.bias_grid_lib.cutoffs import (
     _build_variant_inputs, _resolve_logP_cutoff_scope,
 )
-from simulations.bias_grid_lib.injection import (
-    _worker_star_injections, _worker_star_injections_vectorized,
-)
 from simulations.bias_grid_lib.logging_utils import logger
 from simulations.bias_grid_lib.physics import n_inject_for_budget
 from simulations.bias_grid_lib.parallel import (
-    _init_grid_worker, _init_resume_worker, _resume_score_worker,
-    _worker_grid_point,
+    _build_injection_tasks, _init_grid_worker,
+    _init_resume_worker, _resume_score_worker, _worker_grid_point,
 )
 from simulations.bias_grid_lib.scoring import (
     _compute_scores, _make_scoring_ctx,
@@ -118,36 +115,20 @@ class GridSearchEngine:
         """
         cfg = self.cfg
 
-        # Build one task per star.  Each task gets a unique deterministic
-        # seed drawn from `rng` so the random sequence is fully determined
-        # by the parent seed, independent of parallelism.
-        tasks = []
-        for fld in sorted(self.field_mjds.keys()):
-            fld_mask = (self.field_arr == fld)
-            if not fld_mask.any():
-                continue
-            MJDs = self.field_mjds[fld]
-            for star_idx in np.where(fld_mask)[0]:
-                star_seed = int(rng.integers(0, 2**63))
-                tasks.append((
-                    star_seed,
-                    MJDs,
-                    float(self.rv_err_arr[star_idx]),
-                    float(self.M1_arr[star_idx]),
-                    float(self.R1_arr[star_idx]),
-                    float(self.gamma_arr[star_idx]),
-                    n_inject,
-                    f_bin,
-                    pi, kappa, eta,
-                    cfg,
-                    self.args_dict,
-                    self.detect_method,
-                ))
+        # Build injection tasks + the matching worker. Each star gets a
+        # unique deterministic seed drawn from `rng` (in field→star order)
+        # so the random sequence is fully determined by the parent seed,
+        # independent of parallelism or batching granularity. For
+        # detect_method='pipeline_batched' this yields ONE task per field
+        # (all stars pooled into one batched detect_batch call); every other
+        # method yields one task per star.
+        tasks, worker_fn = _build_injection_tasks(
+            self.detect_method, self.field_mjds, self.field_arr,
+            self.rv_err_arr, self.M1_arr, self.R1_arr, self.gamma_arr,
+            cfg, self.args_dict,
+            n_inject, f_bin, pi, kappa, eta, rng)
 
         # Run tasks — parallel or sequential.
-        worker_fn = (_worker_star_injections_vectorized
-                     if self.detect_method == "rv_threshold"
-                     else _worker_star_injections)
         if n_workers > 1 and len(tasks) > 1:
             import multiprocessing as _mp
             ctx = _mp.get_context("forkserver")
