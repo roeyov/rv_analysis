@@ -374,9 +374,9 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
         }
         }
     for per in ls_sig_periods:
-        append_period_results(results, "LS", per, periodogram_res, pmin, pmax,include_harmonics=False,include_fwhm=use_fwhm)
+        append_period_results(results, "LS", per, periodogram_res, pmin, pmax,include_harmonics=True,include_fwhm=use_fwhm)
     for per in pdc_sig_periods:
-        append_period_results(results, "PDC", per, periodogram_res, pmin, pmax,include_harmonics=False, include_fwhm=use_fwhm)
+        append_period_results(results, "PDC", per, periodogram_res, pmin, pmax,include_harmonics=True, include_fwhm=use_fwhm)
 
     results_df = pd.DataFrame(results)
 

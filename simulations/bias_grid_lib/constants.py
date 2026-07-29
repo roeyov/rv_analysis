@@ -171,12 +171,53 @@ def all_variants(restrict=None):
 #                 (v5 readers use the per-variant value). v4 (2-part tags,
 #                 lucy from the shared scalar) and v3 (single-mode) cubes
 #                 remain readable.
-CUBE_SCHEMA_VERSION = 5
+#   v6 (2026-07): adds obs_qmin_sb1 (SB1 minimum mass ratios from the
+#                 q_min column of the SB1 table; NaN where unavailable).
+#                 Display-only — scoring never uses q. The explorer reads
+#                 it as an optional key, so v3–v5 cubes remain readable.
+#   v7 (2026-07): det shards gain kill_flag_nondet (int8, aligned with the
+#                 *_nondet arrays: which gate killed each nondetected
+#                 injection — see KILL_FLAG_LABELS) and checkpoint_results.csv
+#                 gains n_kill_rlof/bicc/fap/tech/drv columns (-1 where
+#                 unknown). Display-only — scoring is unaffected. Optional
+#                 keys on read, so v3–v6 runs remain readable.
+CUBE_SCHEMA_VERSION = 7
 
 # Minimum cube schema the explorer can still render (v3 single-mode cubes
 # load as one synthetic variant; v4 carries the full 6-variant namespace).
 EXPLORER_MIN_SCHEMA_VERSION = 3
 
+
+# ---------------------------------------------------------------------------
+# Per-injection kill flags (which gate killed a nondetection)
+# ---------------------------------------------------------------------------
+# Codes 0-3 must match fast_detect/detector.py (KILL_DETECTED/RLOF/BICC/FAP —
+# duplicated there because fast_detect is deliberately standalone). Codes 4-5
+# only occur outside fast_detect:
+#   4 = technical failure in detect_method='pipeline' (period_search_failed /
+#       no_candidates / ls_fap_nan / all_fits_failed / null_fit_failed);
+#   5 = the single ΔRV gate of detect_method='rv_threshold'.
+# NOTE detect_method='pipeline' applies ONLY the prob_bicc gate, so its
+# nondetections can only carry codes 2 or 4 (never 1 or 3).
+KILL_DETECTED = 0
+KILL_RLOF = 1
+KILL_BICC = 2
+KILL_FAP = 3
+KILL_TECH = 4
+KILL_DRV = 5
+
+KILL_FLAG_LABELS = {
+    KILL_DETECTED: "detected",
+    KILL_RLOF: "rocheLobe",
+    KILL_BICC: "bicc",
+    KILL_FAP: "fap",
+    KILL_TECH: "technical",
+    KILL_DRV: "drv",
+}
+
+# n_kill_* CSV columns / scalar keys, in code order 1..5.
+KILL_COUNT_KEYS = ("n_kill_rlof", "n_kill_bicc", "n_kill_fap",
+                   "n_kill_tech", "n_kill_drv")
 
 # ---------------------------------------------------------------------------
 # Shard-storage layout

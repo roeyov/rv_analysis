@@ -91,10 +91,22 @@ def aggregate_tasks(base_dir, output_dir=None):
     logger.info("aggregate_tasks: found %d task dirs in %s",
                 len(task_dirs), base_dir)
 
-    # Load first task to get grid shapes, the variant set, and the shared
-    # metadata block.
+    # Load the first COMPLETE task to get grid shapes, the variant set, and
+    # the shared metadata block. A task that exhausted its retries before
+    # its first checkpoint leaves a dir with only run_config.yaml + log —
+    # it must not be the seed (or crash the merge; the per-task loop below
+    # already skips such dirs with a warning).
+    first_dir = next(
+        (td for td in task_dirs
+         if os.path.exists(os.path.join(td, "checkpoint_cubes.npz"))
+         and os.path.exists(os.path.join(td, "checkpoint_results.csv"))),
+        None)
+    if first_dir is None:
+        raise RuntimeError(
+            "No task dir in %s contains checkpoint_cubes.npz + "
+            "checkpoint_results.csv — nothing to merge." % base_dir)
     first_npz = np.load(
-        os.path.join(task_dirs[0], "checkpoint_cubes.npz"),
+        os.path.join(first_dir, "checkpoint_cubes.npz"),
         allow_pickle=True)
     pi_grid = first_npz["pi_grid"]
     kappa_grid = first_npz["kappa_grid"]
@@ -104,7 +116,7 @@ def aggregate_tasks(base_dir, output_dir=None):
         raise RuntimeError(
             "Task checkpoint %s predates the all-variants schema (no "
             "'variants' key). Re-run the tasks with the updated bias_grid."
-            % task_dirs[0])
+            % first_dir)
     tags = [str(t) for t in first_npz["variants"]]
     # Metrics actually present in the cube — single-metric runs persist only
     # their scored set. Probe tags[0]; default test keeps "ks" when scored.
@@ -113,7 +125,7 @@ def aggregate_tasks(base_dir, output_dir=None):
     if not scored_tests:
         raise RuntimeError(
             "No gmf_<test>_cube keys for variant %s in %s — cannot merge."
-            % (tags[0], task_dirs[0]))
+            % (tags[0], first_dir))
     default_test = "ks" if "ks" in scored_tests else scored_tests[0]
     shape = first_npz["v__%s__gmf_%s_cube" % (tags[0], default_test)].shape
     has_e_circ = {tag: _variant_has_e_circ(first_npz, tag) for tag in tags}
@@ -210,17 +222,39 @@ def aggregate_tasks(base_dir, output_dir=None):
     merged_df = pd.concat(all_results_dfs, ignore_index=True)
     total_expected = len(pi_grid) * len(kappa_grid) * len(eta_grid) * \
         len(fbin_grid)
+    # Overlapping task ranges (e.g. one run-id submitted with two different
+    # chunk sizes -> task_0_16 AND task_0_64) would double-count cells in
+    # the additive merges above. That is silent data corruption — refuse
+    # and leave the task dirs untouched.
+    if "step" in merged_df.columns and merged_df["step"].duplicated().any():
+        dups = sorted(
+            merged_df.loc[merged_df["step"].duplicated(), "step"]
+            .astype(int).unique())
+        raise RuntimeError(
+            "Duplicate step indices across task dirs (%d steps, e.g. %s) — "
+            "task ranges overlap (chunk-size mismatch between submissions?). "
+            "The additive cube merge would double-count these cells. "
+            "Remove the overlapping task_*/ dirs and re-aggregate."
+            % (len(dups), dups[:10]))
+    if len(merged_df) > total_expected:
+        raise RuntimeError(
+            "Merged %d rows but the grid only has %d points — task ranges "
+            "overlap; refusing to write a double-counted cube."
+            % (len(merged_df), total_expected))
     if len(merged_df) < total_expected:
         logger.warning(
             "Merged %d rows but expected %d — some tasks may be incomplete",
             len(merged_df), total_expected)
 
-    # Best fit per variant (KS) for logging.
+    # Best fit per variant (default metric) for logging. Single-metric runs
+    # (e.g. scored_tests: [cvm]) have no "ks" cube — default_test resolved
+    # above from the metrics actually present in the checkpoints.
     for tag in tags:
-        gc = gmf_cubes_v[tag]["ks"]
+        gc = gmf_cubes_v[tag][default_test]
         idx = np.unravel_index(np.nanargmax(gc), gc.shape)
-        logger.info("Best fit [%s] (KS): π=%.2f, κ=%.2f, η=%.2f, f_bin=%.2f",
-                    tag, float(pi_grid[idx[0]]), float(kappa_grid[idx[1]]),
+        logger.info("Best fit [%s] (%s): π=%.2f, κ=%.2f, η=%.2f, f_bin=%.2f",
+                    tag, default_test.upper(),
+                    float(pi_grid[idx[0]]), float(kappa_grid[idx[1]]),
                     float(eta_grid[idx[2]]), float(fbin_grid[idx[3]]))
 
     variant_meta = _reconstruct_variant_meta(first_npz, tags)
@@ -250,8 +284,10 @@ def aggregate_tasks(base_dir, output_dir=None):
                 "aggregate_tasks: task checkpoints lack %s — merged cube "
                 "will fail the explorer's schema check. Re-run tasks with "
                 "the updated bias_grid.py.", k)
-    # Adaptive injection-budget provenance (optional; absent in legacy runs).
-    for k in ("adaptive_n_inject", "adaptive_n_above_target",
+    # Optional keys (absent in legacy runs): SB1 minimum mass ratios +
+    # adaptive injection-budget provenance.
+    for k in ("obs_qmin_sb1",
+              "adaptive_n_inject", "adaptive_n_above_target",
               "adaptive_n_inject_max", "adaptive_log_p_min",
               "adaptive_log_p_max", "adaptive_cutoff",
               "adaptive_n_inject_grid"):
@@ -293,7 +329,7 @@ def aggregate_tasks(base_dir, output_dir=None):
     try:
         _check = np.load(merged_cubes_path, allow_pickle=True)
         for tag in tags:
-            assert "v__%s__gmf_ks_cube" % tag in _check.files
+            assert "v__%s__gmf_%s_cube" % (tag, default_test) in _check.files
         assert "variants" in _check.files
     except Exception as exc:  # noqa: BLE001 — guard before irreversible delete
         logger.error(

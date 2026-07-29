@@ -47,6 +47,9 @@ env/
 
 # Pipeline output (large generated artifacts)
 bias_grid_closure/
+# Staged Docker build-context data (cloud/stage_data.sh) — copies of external
+# inputs, never sources of truth
+cloud_data/
 # Generated spectra/plot HTML written to the repo root by ad-hoc scripts
 # (outputs belong under $SCRIPTS_OUT, never in the repo).
 /*.html

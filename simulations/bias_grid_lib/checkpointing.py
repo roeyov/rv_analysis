@@ -35,6 +35,11 @@ def _save_det_shard(checkpoint_dir, step, i, j, k, l, res):
     """
     shard_dir = os.path.join(checkpoint_dir, _DET_SHARDS_DIR)
     os.makedirs(shard_dir, exist_ok=True)
+    save_kw = {}
+    if "kill_flag_nondet" in res:
+        # v7: which gate killed each nondetection (aligned with *_nondet).
+        save_kw["kill_flag_nondet"] = np.asarray(res["kill_flag_nondet"],
+                                                 dtype=np.int8)
     np.savez(
         _det_shard_path(checkpoint_dir, step),
         logP=res["logP_det"],
@@ -50,6 +55,7 @@ def _save_det_shard(checkpoint_dir, step, i, j, k, l, res):
         n_rlof=np.int64(res.get("n_rlof", 0)),
         n_false_positive=np.int64(res.get("n_false_positive", 0)),
         ijkl=np.array([i, j, k, l]),
+        **save_kw,
     )
 
 
@@ -78,6 +84,9 @@ def _load_det_shard(checkpoint_dir, step):
         result["e_nondet"] = d["e_nondet"]
         result["K1_nondet"] = d["K1_nondet"]
         result["q_nondet"] = d["q_nondet"]
+    # v7: per-nondetection kill flag (absent in pre-v7 shards).
+    if "kill_flag_nondet" in d.files:
+        result["kill_flag_nondet"] = d["kill_flag_nondet"]
     # Scalar population counts (added later — fall back to
     # len(arrays) if absent).
     for key in ("n_physical", "n_detected", "n_rlof", "n_false_positive"):
@@ -228,6 +237,8 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
             obs_n_sb1=np.array(int(obs["n_sb1"])),
             obs_n_sb2=np.array(int(obs["n_sb2"])),
         )
+        if "q_min_sb1" in obs:
+            save_kw["obs_qmin_sb1"] = np.asarray(obs["q_min_sb1"])
     if n_catalog_total is not None:
         save_kw["obs_n_catalog_total"] = np.array(int(n_catalog_total))
     if n_catalog_nonsingle is not None:
@@ -274,6 +285,13 @@ def _save_checkpoint(checkpoint_dir, completed_steps,
         for (a, b) in _HIST_PAIRS:
             save_kw["hist_total_%s_%s" % (a, b)] = global_hists["total"][(a, b)]
             save_kw["hist_det_%s_%s" % (a, b)] = global_hists["det"][(a, b)]
+        # Step set the hists cover, stored IN the same npz so hists and
+        # their bookkeeping can never diverge across a kill (the separate
+        # det_index.npz is written later and can lag; resume gates hist
+        # re-accumulation on this set to avoid double counting).
+        if "steps" in global_hists:
+            save_kw["hist_steps"] = np.asarray(
+                sorted(global_hists["steps"]), dtype=np.int64)
         np.savez(
             os.path.join(checkpoint_dir, "checkpoint_hists.npz"),
             **save_kw,

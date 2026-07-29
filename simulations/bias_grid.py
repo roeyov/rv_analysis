@@ -212,6 +212,11 @@ def main():
     cfg["log_p_min"] = float(_bg("log_p_min"))
     cfg["log_p_max"] = float(_bg("log_p_max"))
 
+    # Mass-ratio sampling bounds for the q power law (YAML-configurable; the
+    # defaults q ∈ [0.1, 1.0] reproduce historical runs).
+    cfg["q_min"] = float(_bg("q_min"))
+    cfg["q_max"] = float(_bg("q_max"))
+
     # Adaptive injection budget (opt-in; default OFF). See DEFAULT_BIAS_CFG
     # and engine.run for the n_inject(π, f_bin) scaling.
     cfg["adaptive_n_inject"] = bool(_bg("adaptive_n_inject"))
@@ -220,6 +225,10 @@ def main():
     _adaptive_cutoff = _bg("adaptive_n_cutoff")
     cfg["adaptive_n_cutoff"] = (None if _adaptive_cutoff is None
                                 else float(_adaptive_cutoff))
+
+    # Roche-lobe gate of pipeline_batched. Must be plumbed into cfg explicitly:
+    # detect_batch reads cfg, and YAML keys not copied here never reach it.
+    cfg["apply_rlof_gate"] = bool(_bg("apply_rlof_gate"))
 
     # Paths
     sb1_tex = _bg("sb1_tex")
@@ -367,6 +376,7 @@ def main():
         "n_inject_max": cfg["n_inject_max"],
         "adaptive_n_cutoff": cfg["adaptive_n_cutoff"],
         "detect_method": detect_method,
+        "apply_rlof_gate": cfg["apply_rlof_gate"],
         "n_workers": n_workers_cfg,
         "parallel_grid": parallel_grid,
     }
@@ -478,6 +488,7 @@ def main():
         obs_e_is_upper_limit=np.asarray(obs["e_is_upper_limit"], dtype=bool),
         obs_K1=np.asarray(obs["K1"]),
         obs_q_sb2=np.asarray(obs["q_sb2"]),
+        obs_qmin_sb1=np.asarray(obs["q_min_sb1"]),
         obs_n_sb1=np.array(int(obs["n_sb1"])),
         obs_n_sb2=np.array(int(obs["n_sb2"])),
         obs_n_catalog_total=np.array(int(n_catalog_total)),

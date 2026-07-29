@@ -32,6 +32,7 @@ push() {
         --exclude='.claude/' \
         --exclude='.venv/' \
         --exclude='.idea/' \
+        --exclude='cloud_data/' \
         "${LOCAL_REPO}/" \
         "${REMOTE}:~/Scripts/"
 

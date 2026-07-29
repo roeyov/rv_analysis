@@ -12,7 +12,9 @@ locate them by qualified name across process boundaries.
 import os
 import numpy as np
 
-from simulations.bias_grid_lib.constants import _HIST_NBINS, _HIST_PAIRS
+from simulations.bias_grid_lib.constants import (
+    _HIST_NBINS, _HIST_PAIRS, KILL_COUNT_KEYS,
+)
 from simulations.bias_grid_lib.checkpointing import (
     _load_det_shard, _save_det_shard,
 )
@@ -171,6 +173,16 @@ def _resume_score_worker(task):
     n_rlof = int(shard.get("n_rlof", 0))
     n_false_positive = int(shard.get("n_false_positive", 0))
     p_det = n_detected / max(n_physical, 1)
+    # Kill-count scalars from the shard's kill_flag_nondet (v7); -1 sentinel
+    # ("unknown") for legacy shards written before the flag existed.
+    kill_arr = shard.get("kill_flag_nondet")
+    if kill_arr is not None:
+        kill_counts = np.bincount(np.asarray(kill_arr, dtype=np.int64),
+                                  minlength=6)
+        kill_scalars = {keyname: int(kill_counts[code])
+                        for code, keyname in enumerate(KILL_COUNT_KEYS, 1)}
+    else:
+        kill_scalars = {keyname: -1 for keyname in KILL_COUNT_KEYS}
     res_for_scoring = {
         "p_det": p_det,
         "n_physical": n_physical,
@@ -190,6 +202,7 @@ def _resume_score_worker(task):
         "n_physical": n_physical,
         "n_rlof": n_rlof,
         "n_false_positive": n_false_positive,
+        **kill_scalars,
         "hist_total": hist_total,
         "hist_det": hist_det,
         "scores_by_variant": scores_by_variant,
@@ -240,6 +253,7 @@ def _worker_grid_point(task):
     all_e_nondet = []
     all_K1_nondet = []
     all_q_nondet = []
+    all_kill_nondet = []
     all_logP_rlof = []
     all_q_rlof = []
     all_e_rlof = []
@@ -267,6 +281,7 @@ def _worker_grid_point(task):
         all_e_nondet.extend(r["e_nondet"])
         all_K1_nondet.extend(r["K1_nondet"])
         all_q_nondet.extend(r["q_nondet"])
+        all_kill_nondet.extend(r["kill_flag_nondet"])
         all_logP_rlof.extend(r["logP_rlof"])
         all_q_rlof.extend(r["q_rlof"])
         all_e_rlof.extend(r["e_rlof"])
@@ -277,6 +292,10 @@ def _worker_grid_point(task):
             agg_hist_det[pair] += r["hist_det"][pair]
 
     p_det = n_detected / max(n_physical, 1)
+
+    kill_arr = np.asarray(all_kill_nondet, dtype=np.int8)
+    kill_counts = np.bincount(kill_arr, minlength=6) if kill_arr.size \
+        else np.zeros(6, dtype=int)
 
     res = {
         "p_det": p_det,
@@ -292,6 +311,7 @@ def _worker_grid_point(task):
         "e_nondet": np.array(all_e_nondet),
         "K1_nondet": np.array(all_K1_nondet),
         "q_nondet": np.array(all_q_nondet),
+        "kill_flag_nondet": kill_arr,
         "logP_rlof": np.array(all_logP_rlof),
         "q_rlof": np.array(all_q_rlof),
         "e_rlof": np.array(all_e_rlof),
@@ -300,6 +320,9 @@ def _worker_grid_point(task):
         "hist_total": agg_hist_total,
         "hist_det": agg_hist_det,
     }
+    # Kill-count scalars (codes 1..5) survive the IPC strip -> CSV columns.
+    for _code, _keyname in enumerate(KILL_COUNT_KEYS, start=1):
+        res[_keyname] = int(kill_counts[_code])
 
     # When running inside a parallel-grid worker, save the shard here
     # and strip heavy arrays so only lightweight data travels through
@@ -324,6 +347,7 @@ def _worker_grid_point(task):
         # and main only reads p_det, n_*, and the small histograms.
         for _key in ("logP_det", "e_det", "K1_det", "q_det",
                      "logP_nondet", "e_nondet", "K1_nondet", "q_nondet",
+                     "kill_flag_nondet",
                      "logP_rlof", "q_rlof", "e_rlof",
                      "M1_rlof", "R1_rlof"):
             res.pop(_key, None)

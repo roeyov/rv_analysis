@@ -19,6 +19,7 @@ import numpy as np
 
 from simulations.bias_grid_lib.constants import (
     TWOPI, _HIST_BINS, _HIST_NBINS, _HIST_PAIRS,
+    KILL_BICC, KILL_TECH, KILL_DRV,
 )
 from simulations.bias_grid_lib.detection import (
     DETECTION_METHODS, _detect_full_pipeline,
@@ -74,6 +75,21 @@ def detect_single_star(MJDs, rv_err, gamma, rng, args_dict,
     return detected, info
 
 
+def _kill_code_from_reason(reason):
+    """Map a nondetection's ``info['reason']`` string to a kill-flag code.
+
+    detect_method='pipeline' reasons: 'prob_bicc=…' (the only real gate) or a
+    technical failure (period_search_failed / no_candidates / ls_fap_nan /
+    all_fits_failed / null_fit_failed). detect_method='rv_threshold' sets
+    reason='' — its only gate is the ΔRV threshold.
+    """
+    if reason.startswith("prob_bicc"):
+        return KILL_BICC
+    if reason == "":
+        return KILL_DRV
+    return KILL_TECH
+
+
 def _worker_star_injections(task):
     """Process all injections for one star (top-level for multiprocessing).
 
@@ -114,6 +130,7 @@ def _worker_star_injections(task):
     e_nondet = []
     K1_nondet = []
     q_nondet = []
+    kill_flag_nondet = []
     logP_rlof = []
     q_rlof = []
     e_rlof = []
@@ -197,6 +214,8 @@ def _worker_star_injections(task):
                     e_nondet.append(e)
                     K1_nondet.append(K1_val)
                     q_nondet.append(q)
+                    kill_flag_nondet.append(
+                        _kill_code_from_reason(info.get("reason", "")))
         else:
             det, info = detect_single_star(
                 MJDs, rv_err, gamma, rng, args_dict,
@@ -219,6 +238,7 @@ def _worker_star_injections(task):
         "e_nondet": e_nondet,
         "K1_nondet": K1_nondet,
         "q_nondet": q_nondet,
+        "kill_flag_nondet": kill_flag_nondet,
         "logP_rlof": logP_rlof,
         "q_rlof": q_rlof,
         "e_rlof": e_rlof,
@@ -314,6 +334,8 @@ def _worker_star_injections_vectorized(task):
         e_nondet = e_arr[~det_mask].tolist()
         K1_nondet = K1_arr[~det_mask].tolist()
         q_nondet = q_arr[~det_mask].tolist()
+        # Single ΔRV gate — every nondetection is killed by it.
+        kill_flag_nondet = [KILL_DRV] * len(logP_nondet)
 
         # Batch histogram binning
         hist_total = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS))
@@ -334,6 +356,7 @@ def _worker_star_injections_vectorized(task):
         n_detected = 0
         logP_det, e_det, K1_det, q_det = [], [], [], []
         logP_nondet, e_nondet, K1_nondet, q_nondet = [], [], [], []
+        kill_flag_nondet = []
         hist_total = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS))
                       for pair in _HIST_PAIRS}
         hist_det = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS))
@@ -362,6 +385,7 @@ def _worker_star_injections_vectorized(task):
         "e_nondet": e_nondet,
         "K1_nondet": K1_nondet,
         "q_nondet": q_nondet,
+        "kill_flag_nondet": kill_flag_nondet,
         "logP_rlof": [],
         "q_rlof": [],
         "e_rlof": [],
@@ -411,6 +435,7 @@ def _worker_star_injections_batched(task):
     n_physical = n_detected = 0
     logP_det = e_det = K1_det = q_det = []
     logP_nondet = e_nondet = K1_nondet = q_nondet = []
+    kill_flag_nondet = []
 
     if n_bin > 0:
         # --- identical draws to the vectorized worker (shared helper) ---
@@ -421,8 +446,8 @@ def _worker_star_injections_batched(task):
 
         # --- batched faithful detection over the (n_epoch x n_bin) matrix ---
         mass_rows = [_zero_err_mass_row(M1_j[j], R1_j[j]) for j in range(n_bin)]
-        det_mask, _ = detect_batch(MJDs, rv_obs.T, np.full(n_bin, rv_err_val),
-                                   mass_rows, cfg, backend=backend, rng=rng)
+        det_mask, det_info = detect_batch(MJDs, rv_obs.T, np.full(n_bin, rv_err_val),
+                                          mass_rows, cfg, backend=backend, rng=rng)
 
         n_physical = n_bin
         n_detected = int(det_mask.sum())
@@ -430,6 +455,7 @@ def _worker_star_injections_batched(task):
         K1_det = K1_arr[det_mask].tolist(); q_det = q_arr[det_mask].tolist()
         logP_nondet = logP[~det_mask].tolist(); e_nondet = e_arr[~det_mask].tolist()
         K1_nondet = K1_arr[~det_mask].tolist(); q_nondet = q_arr[~det_mask].tolist()
+        kill_flag_nondet = det_info["kill_flag"][~det_mask].tolist()
 
         vals = {"logP": logP, "e": e_arr, "K1": K1_arr, "q": q_arr}
         for (a, b) in _HIST_PAIRS:
@@ -453,6 +479,7 @@ def _worker_star_injections_batched(task):
         "logP_det": logP_det, "e_det": e_det, "K1_det": K1_det, "q_det": q_det,
         "logP_nondet": logP_nondet, "e_nondet": e_nondet,
         "K1_nondet": K1_nondet, "q_nondet": q_nondet,
+        "kill_flag_nondet": kill_flag_nondet,
         "logP_rlof": [], "q_rlof": [], "e_rlof": [], "M1_rlof": [], "R1_rlof": [],
         "hist_total": hist_total, "hist_det": hist_det,
     }
@@ -586,6 +613,7 @@ def _worker_field_injections_batched(field_task):
     n_detected = 0
     logP_det = e_det = K1_det = q_det = []
     logP_nondet = e_nondet = K1_nondet = q_nondet = []
+    kill_flag_nondet = []
     if bin_rv_rows:
         logP_all = np.concatenate(bin_logP)
         e_all = np.concatenate(bin_e)
@@ -593,8 +621,8 @@ def _worker_field_injections_batched(field_task):
         q_all = np.concatenate(bin_q)
         rv_all = np.concatenate(bin_rv_rows, axis=0)          # (N_bin, n_epochs)
         err_all = np.concatenate(bin_err)
-        det_mask, _ = detect_batch(MJDs, rv_all.T, err_all, bin_mass_rows,
-                                   cfg, backend=backend, rng=det_rng)
+        det_mask, det_info = detect_batch(MJDs, rv_all.T, err_all, bin_mass_rows,
+                                          cfg, backend=backend, rng=det_rng)
 
         n_detected = int(det_mask.sum())
         logP_det = logP_all[det_mask].tolist(); e_det = e_all[det_mask].tolist()
@@ -603,6 +631,7 @@ def _worker_field_injections_batched(field_task):
         e_nondet = e_all[~det_mask].tolist()
         K1_nondet = K1_all[~det_mask].tolist()
         q_nondet = q_all[~det_mask].tolist()
+        kill_flag_nondet = det_info["kill_flag"][~det_mask].tolist()
 
         vals = {"logP": logP_all, "e": e_all, "K1": K1_all, "q": q_all}
         for (a, b) in _HIST_PAIRS:
@@ -625,6 +654,7 @@ def _worker_field_injections_batched(field_task):
         "logP_det": logP_det, "e_det": e_det, "K1_det": K1_det, "q_det": q_det,
         "logP_nondet": logP_nondet, "e_nondet": e_nondet,
         "K1_nondet": K1_nondet, "q_nondet": q_nondet,
+        "kill_flag_nondet": kill_flag_nondet,
         "logP_rlof": [], "q_rlof": [], "e_rlof": [], "M1_rlof": [], "R1_rlof": [],
         "hist_total": hist_total, "hist_det": hist_det,
     }

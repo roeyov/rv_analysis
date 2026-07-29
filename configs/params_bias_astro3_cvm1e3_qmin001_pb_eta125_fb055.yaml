@@ -1,0 +1,151 @@
+# =============================================================================
+# params_bias_astro3_cvm1e3_qmin001_pb_eta125_fb055.yaml — astro3 bias_grid run.
+#
+# pipeline_batched rerun of final5_cvm_1e3_qmin001_drv20_fb099: IDENTICAL knobs
+# (q_min=0.01, single variant eccentric_only/numerical/lucyT, CvM only,
+# adaptive_n_inject, log_p_min=0.046, seed 42), except:
+#   - detect_method: pipeline_batched (was rv_threshold) — full pipeline-fidelity
+#     detection via fast_detect (batched LS/PDC + lmfit + prob_bicc/RLOF gates,
+#     numpy backend on astro3). drv_threshold is INERT under this method; it is
+#     kept below only for provenance vs the drv20 parent run.
+#   - preset: final5_fast_eta125_fb055 — per-axis counts matched to
+#     final5_cvm_1e3_fast_batched (14×28×15×11 = 64,680 pts): π/κ bounds
+#     unchanged, η lower bound -1.75 → -1.25, f_bin lower bound 0.55
+#     (upper stays 0.99).
+#   - output_dir: .../final5_cvm_1e3_qmin001_pb_eta125_fb055/
+#
+# Reference: final5_cvm_1e3_fast_batched took ~19 days wall over three
+# launches (2026-07-02 → 07-21); its clean final segment ran ~29 min/pt/
+# worker (30,116 pts in ~6.4 days on 94 workers). The "~13.6 min total"
+# formerly quoted here was a misread of its stitched, date-less log.
+# With this config's rlof-gate-off + q_min=0.01 knobs expect ~60 min per
+# grid point per worker (measured on ed_hoc_rlof_check_ext) → 64,680 pts
+# ≈ 4 weeks wall.
+#
+# Usage on astro3 (TAU VPN required; SLURM path is DEPRECATED):
+#   cd ~/Scripts
+#   OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
+#   nohup micromamba run -n tau_binary python -u -m simulations.bias_grid \
+#       --config configs/params_bias_astro3_cvm1e3_qmin001_pb_eta125_fb055.yaml \
+#       > ~/bias_grid_results/launcher_cvm1e3_qmin001_pb_eta125_fb055.log 2>&1 </dev/null &
+# =============================================================================
+
+plot: false
+plot_style: "paper"
+random_seed: 562
+fast_detect_backend: numpy
+manual_candidate_periods: []
+
+# RV-threshold detection knobs — UNUSED by pipeline_batched (kept for
+# provenance/compat with the drv20 parent config).
+drv_threshold: 20.0
+significance_threshold: 4.0
+
+# ---- I/O paths (astro3) ----
+base_dir:      "/jonathan_storage/roeyovadia/bias_grid_results"
+lmfit_subdir:  &lmfit_subdir  "second_pdc"
+mcmc_subdir:   &mcmc_subdir   "mcmc_out"
+
+pipeline_io:
+  object_list: []
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  use_fwhm: true
+
+# ---- Bias-grid input parameters ----
+bias_grid:
+  # paths (synced from local via sync_astro3.sh)
+  sb1_tex: "/jonathan_storage/roeyovadia/tables/sb1_solutions.tex"
+  sb2_tex: "/jonathan_storage/roeyovadia/tables/sb2_solutions.tex"
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  rv_dir: "/jonathan_storage/roeyovadia/data/rv_csvs/"
+  sb2_analysis_dir: "/jonathan_storage/roeyovadia/data/sb2_per_star"
+  ostar_catalog: "/jonathan_storage/roeyovadia/tables/ostar_catalog.csv"
+  output_dir: "/jonathan_storage/roeyovadia/bias_grid_results/final5_cvm_1e3_qmin001_pb_eta125_fb055/"
+
+  # run shape — fast per-axis counts, η/f_bin narrowed (see header).
+  preset: final5_fast_eta125_fb055
+  n_inject: null
+  seed: 42
+  n_stars_sample: null
+
+  # SINGLE-VARIANT / SINGLE-METRIC restriction (opt-in). Without these keys the
+  # run would score all 12 variants × 4 metrics (the historical behaviour).
+  # variant_filter subsets the (e_score_mode, logP_cutoff_mode,
+  # apply_lucy_sweeny_e) product; scored_tests subsets (ks, ad, cvm, wass).
+  variant_filter:
+    e_score_mode: eccentric_only
+    logP_cutoff_mode: numerical
+    apply_lucy_sweeny_e: true
+  scored_tests: [cvm]
+
+  # The numerical elbow sits at logP ≈ 0.54 (P ≈ 3.5 d) for this sample.
+  logP_cutoff_smooth_sigma: 0.15   # Gaussian σ (dex) for the numerical cutoff
+  logP_cutoff_scope: exclude       # period_only | exclude (fixed across variants)
+  detect_method: pipeline_batched
+
+  # ---- Sampling bounds + adaptive injection budget ----
+  # log_p_min is the lower bound of the log-P power-law sampler (default 0.0 is
+  # clamped to 1e-10 → normalization blow-up for π < -1). Set it to the observed
+  # minimum logP (P=1.11 d) to keep F_>(π) ≳ 0.1 across the grid — the root-cause
+  # fix for steep-π drift under scope=exclude.
+  log_p_min: 0.046
+  log_p_max: 3.5
+  # Mass-ratio sampling bounds for the q power law (q_min=0.01 inherited from
+  # the qmin001 lineage this run mirrors).
+  q_min: 0.01
+  q_max: 1.0
+  # adaptive_n_inject scales n_inject per (π, f_bin) cell so the expected number
+  # of injected periods above the cutoff stays ≈ n_above_cutoff_target. Never
+  # injects below the preset baseline; capped at n_inject_max. With log_p_min
+  # physical this mostly floors to baseline (safety net). false → flat n_inject.
+  adaptive_n_inject: true
+  n_above_cutoff_target: 2200
+  n_inject_max: 50000
+  adaptive_n_cutoff: null          # null ⇒ use the run's numerical cutoff
+
+  # parallelism — null lets bias_grid pick cpu_count - 2.
+  # On a shared box, set this explicitly to a polite fraction of `nproc`.
+  n_workers: null
+  parallel_grid: true
+
+# ---- Periodogram settings (reduced for speed) ----
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 50
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10
+  run_permutations_ls: true
+  run_permutations_pdc: true
+
+# ---- lmfit search region ----
+lmfit_params:
+  minimization_method: "differential_evolution"
+  search_region:
+    Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
+    GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
+    K1:           {init_value: 200.0,   min_value: 0.0,    max_value: 400.0,   vary: true}
+    OMEGA_rad:    {init_value: 3.14,    min_value: 0.0,    max_value: 6.4,     vary: true}
+    Eccentricity: {init_value: 0.0,     min_value: 0.0,    max_value: 0.9999,  vary: true}
+    T0:           {init_value: 0.0,     min_value: 0.0,    max_value: 0.0,     vary: true}
+    ln_sigmaJ:    {init_value: 0.0,     min_value: -2,     max_value: 4.5,     vary: true}
+
+# ---- MCMC (not used in bias grid, kept for config loading compatibility) ----
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+  filter_expression: ""
+  field_to_check: "bicc"
+  take_min: true

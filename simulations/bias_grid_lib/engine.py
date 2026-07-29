@@ -34,7 +34,7 @@ from simulations.bias_grid_lib.checkpointing import (
     _DET_SHARDS_DIR, _save_checkpoint, _save_det_index, _save_det_shard,
 )
 from simulations.bias_grid_lib.constants import (
-    _HIST_NBINS, _HIST_PAIRS, all_variants, variant_tag,
+    _HIST_NBINS, _HIST_PAIRS, KILL_COUNT_KEYS, all_variants, variant_tag,
 )
 from simulations.bias_grid_lib.cutoffs import (
     _build_variant_inputs, _resolve_logP_cutoff_scope,
@@ -146,6 +146,7 @@ class GridSearchEngine:
         all_e_nondet = []
         all_K1_nondet = []
         all_q_nondet = []
+        all_kill_nondet = []
         all_logP_rlof = []
         all_q_rlof = []
         all_e_rlof = []
@@ -173,6 +174,7 @@ class GridSearchEngine:
             all_e_nondet.extend(r["e_nondet"])
             all_K1_nondet.extend(r["K1_nondet"])
             all_q_nondet.extend(r["q_nondet"])
+            all_kill_nondet.extend(r["kill_flag_nondet"])
             all_logP_rlof.extend(r["logP_rlof"])
             all_q_rlof.extend(r["q_rlof"])
             all_e_rlof.extend(r["e_rlof"])
@@ -189,12 +191,19 @@ class GridSearchEngine:
                      pi, kappa, eta, f_bin,
                      n_detected, n_physical, n_rlof, n_false_positive, p_det)
 
+        kill_arr = np.asarray(all_kill_nondet, dtype=np.int8)
+        kill_counts = np.bincount(kill_arr, minlength=6) if kill_arr.size \
+            else np.zeros(6, dtype=int)
+        kill_scalars = {keyname: int(kill_counts[code])
+                        for code, keyname in enumerate(KILL_COUNT_KEYS, 1)}
+
         return {
             "p_det": p_det,
             "n_detected": n_detected,
             "n_physical": n_physical,
             "n_rlof": n_rlof,
             "n_false_positive": n_false_positive,
+            **kill_scalars,
             "logP_det": np.array(all_logP_det),
             "e_det": np.array(all_e_det),
             "K1_det": np.array(all_K1_det),
@@ -203,6 +212,7 @@ class GridSearchEngine:
             "e_nondet": np.array(all_e_nondet),
             "K1_nondet": np.array(all_K1_nondet),
             "q_nondet": np.array(all_q_nondet),
+            "kill_flag_nondet": kill_arr,
             "logP_rlof": np.array(all_logP_rlof),
             "q_rlof": np.array(all_q_rlof),
             "e_rlof": np.array(all_e_rlof),
@@ -503,12 +513,27 @@ class GridSearchEngine:
         # Set of step indices already present in checkpoint_results.csv;
         # gates incremental CSV appends to avoid duplicate rows on resume.
         m_csv = set()
+        # Step set already covered by the restored histograms (from
+        # checkpoint_hists.npz `hist_steps`); gates hist re-accumulation
+        # in the gap re-score so a kill between the hists save and the
+        # det_index save cannot double-count.
+        m_hist = set()
         start_step = 0
         if checkpoint_dir:
             os.makedirs(checkpoint_dir, exist_ok=True)
             ckpt_npz = os.path.join(checkpoint_dir, "checkpoint_cubes.npz")
             ckpt_csv = os.path.join(checkpoint_dir,
                                     "checkpoint_results.csv")
+            # CSV state loads independently of the cubes file: the periodic
+            # checkpoint writes the CSV before the cubes, so a kill in that
+            # window leaves a CSV with no (or stale) cubes. If m_csv were
+            # left empty here, the gap re-score would re-append a duplicate
+            # row for every shard already in the CSV.
+            if os.path.exists(ckpt_csv):
+                prev_df = pd.read_csv(ckpt_csv)
+                all_results = prev_df.to_dict("records")
+                if "step" in prev_df.columns:
+                    m_csv = set(int(s) for s in prev_df["step"].tolist())
             if os.path.exists(ckpt_npz) and os.path.exists(ckpt_csv):
                 ckpt = np.load(ckpt_npz, allow_pickle=True)
 
@@ -639,10 +664,8 @@ class GridSearchEngine:
                 ks_e_cube = test_cubes[default_test]["e"]
                 ks_K1_cube = test_cubes[default_test]["K1"]
                 start_step = int(ckpt["completed_steps"])
-                prev_df = pd.read_csv(ckpt_csv)
-                all_results = prev_df.to_dict("records")
-                if "step" in prev_df.columns:
-                    m_csv = set(int(s) for s in prev_df["step"].tolist())
+                # (CSV state — all_results / m_csv — was already loaded
+                # above, independent of the cubes file.)
                 # Restore global histograms from checkpoint
                 hists_ckpt = os.path.join(checkpoint_dir,
                                           "checkpoint_hists.npz")
@@ -654,6 +677,8 @@ class GridSearchEngine:
                         if key_t in hdata.files:
                             global_hist_total[(a, b)] = hdata[key_t]
                             global_hist_det[(a, b)] = hdata[key_d]
+                    if "hist_steps" in hdata.files:
+                        m_hist = set(int(s) for s in hdata["hist_steps"])
                 # Restore step_to_ijkl from det_index
                 det_idx_path = os.path.join(checkpoint_dir,
                                             "det_index.npz")
@@ -662,6 +687,10 @@ class GridSearchEngine:
                     step_to_ijkl = [
                         tuple(row) for row in idx_data["step_to_ijkl"]
                     ]
+                # Legacy checkpoints (no hist_steps key): fall back to the
+                # det_index step set — reproduces historical behaviour.
+                if not m_hist:
+                    m_hist = {row[0] for row in step_to_ijkl}
                 logger.info("Resumed from checkpoint at step %d/%d",
                             start_step, total)
 
@@ -686,14 +715,37 @@ class GridSearchEngine:
         _pending_csv_rows = []
 
         def _flush_csv_rows():
-            """Append any buffered rows to checkpoint_results.csv."""
+            """Append any buffered rows to checkpoint_results.csv.
+
+            Appending is header-blind, so when resuming a run whose CSV was
+            written by an older code version the pending rows may not match
+            the on-disk header (e.g. the v7 n_kill_* columns). Align first:
+            new columns trigger a ONE-TIME rewrite of the old file with the
+            union of columns (legacy rows get the -1 'unknown' sentinel),
+            and the pending rows are reindexed to the on-disk column order —
+            otherwise the append writes ragged lines that break every later
+            pd.read_csv (resume, aggregate_tasks).
+            """
             if not _pending_csv_rows or not checkpoint_dir:
                 return
             _csv = os.path.join(checkpoint_dir, "checkpoint_results.csv")
-            header = not os.path.exists(_csv)
-            pd.DataFrame(_pending_csv_rows).to_csv(
-                _csv, mode="a", index=False, header=header,
-            )
+            df_new = pd.DataFrame(_pending_csv_rows)
+            if os.path.exists(_csv):
+                cols = list(pd.read_csv(_csv, nrows=0).columns)
+                extra = [c for c in df_new.columns if c not in cols]
+                if extra:
+                    logger.info(
+                        "checkpoint_results.csv: migrating legacy header "
+                        "(+%d columns: %s)", len(extra), ", ".join(extra))
+                    old = pd.read_csv(_csv)
+                    cols = cols + extra
+                    old.reindex(columns=cols, fill_value=-1).to_csv(
+                        _csv, index=False)
+                df_new.reindex(columns=cols).to_csv(
+                    _csv, mode="a", index=False, header=False,
+                )
+            else:
+                df_new.to_csv(_csv, mode="a", index=False, header=True)
             _pending_csv_rows.clear()
 
         # Helper: write one grid-point result into cubes / hists / CSV,
@@ -701,7 +753,8 @@ class GridSearchEngine:
         # (parallel paths), reuse the worker-computed scores; otherwise
         # score inline here (one _compute_scores per variant).
         def _score_and_accumulate(step, i, j, k, l, pi, kappa, eta, fbin,
-                                  res, scores_by_variant=None):
+                                  res, scores_by_variant=None,
+                                  add_hists=True):
             p_det = res["p_det"]
             pdet_cube[i, j, k, l] = p_det
 
@@ -726,10 +779,14 @@ class GridSearchEngine:
                     gc[tname][i, j, k, l] = scores["log_gmf_%s" % tname]
 
             # Accumulate 2D histograms (fixed-size, negligible memory).
-            # Variant-independent — done once.
-            for pair in _HIST_PAIRS:
-                global_hist_total[pair] += res["hist_total"][pair]
-                global_hist_det[pair] += res["hist_det"][pair]
+            # Variant-independent — done once. Cube writes above are
+            # idempotent assignments, but these are increments: the gap
+            # re-score passes add_hists=False for steps the restored
+            # checkpoint_hists already cover.
+            if add_hists:
+                for pair in _HIST_PAIRS:
+                    global_hist_total[pair] += res["hist_total"][pair]
+                    global_hist_det[pair] += res["hist_det"][pair]
 
             # Flush per-grid-point detected arrays to a shard file on
             # disk in serial mode. In parallel modes the shard was already
@@ -753,6 +810,9 @@ class GridSearchEngine:
                 "n_rlof": int(res.get("n_rlof", 0)),
                 "n_false_positive": int(res.get("n_false_positive", 0)),
             }
+            # Kill-count columns (v7); -1 = unknown (legacy shard on resume).
+            for keyname in KILL_COUNT_KEYS:
+                row[keyname] = int(res.get(keyname, -1))
             for tag in tags:
                 for tname in scored_tests:
                     row["log_gmf_%s__%s" % (tname, tag)] = \
@@ -765,6 +825,19 @@ class GridSearchEngine:
                 m_csv.add(step)
 
             return p_det, scores_by_variant[default_tag]["log_gmf_%s" % default_test]
+
+        def _hists_payload():
+            """Histograms + the step set they cover, for _save_checkpoint.
+
+            step_to_ijkl mirrors the hist-covered set exactly: every
+            accumulated step is appended there, and gap steps whose hists
+            were restored (m_hist) are appended too with add_hists=False.
+            """
+            return {
+                "total": global_hist_total,
+                "det": global_hist_det,
+                "steps": [t[0] for t in step_to_ijkl],
+            }
 
         t0 = time.time()
         steps_done = 0
@@ -858,11 +931,14 @@ class GridSearchEngine:
                                 "hist_total": r["hist_total"],
                                 "hist_det": r["hist_det"],
                             }
+                            for _kk in KILL_COUNT_KEYS:
+                                res[_kk] = r.get(_kk, -1)
                             _score_and_accumulate(
                                 r["step"], r["i"], r["j"], r["k"], r["l"],
                                 r["pi"], r["kappa"], r["eta"], r["fbin"],
                                 res,
-                                scores_by_variant=r["scores_by_variant"])
+                                scores_by_variant=r["scores_by_variant"],
+                                add_hists=(r["step"] not in m_hist))
                             rescored += 1
                             # Periodic CSV flush so re-score progress
                             # survives a kill mid-resume.
@@ -892,19 +968,22 @@ class GridSearchEngine:
                     tags=tags,
                     logP_cutoff_scope=logP_cutoff_scope,
                     apply_lucy_sweeny_e=apply_lucy_sweeny_e,
-                    global_hists={
-                        "total": global_hist_total,
-                        "det": global_hist_det,
-                    },
+                    global_hists=_hists_payload(),
                     **_ckpt_extra,
                 )
                 _save_det_index(checkpoint_dir, step_to_ijkl)
 
             # ---- Forward pass: run new tasks ------------------------
+            # NOTE: no start_step gate here. In parallel mode
+            # `completed_steps` is a COUNT of consumed imap_unordered
+            # results (completion order, up to 2*n_pool in flight), not a
+            # watermark — skipping `step < start_step` would silently drop
+            # any slow low-index step that had no shard at kill time. The
+            # on-disk shards (+ m_csv) are the resume source of truth.
             pending_tasks = []
             for step, ((i, pi), (j, kappa), (k, eta), (l, fbin)) in \
                     enumerate(grid_points):
-                if step < max(start_step, grid_start):
+                if step < grid_start:
                     continue
                 if step >= grid_end:
                     break
@@ -998,10 +1077,7 @@ class GridSearchEngine:
                                 tags=tags,
                                 logP_cutoff_scope=logP_cutoff_scope,
                                 apply_lucy_sweeny_e=apply_lucy_sweeny_e,
-                                global_hists={
-                                    "total": global_hist_total,
-                                    "det": global_hist_det,
-                                },
+                                global_hists=_hists_payload(),
                                 **_ckpt_extra,
                             )
                             _save_det_index(checkpoint_dir, step_to_ijkl)
@@ -1029,10 +1105,7 @@ class GridSearchEngine:
                     tags=tags,
                     logP_cutoff_scope=logP_cutoff_scope,
                     apply_lucy_sweeny_e=apply_lucy_sweeny_e,
-                    global_hists={
-                        "total": global_hist_total,
-                        "det": global_hist_det,
-                    },
+                    global_hists=_hists_payload(),
                     **_ckpt_extra,
                 )
                 _save_det_index(checkpoint_dir, step_to_ijkl)
@@ -1090,10 +1163,7 @@ class GridSearchEngine:
                         tags=tags,
                         logP_cutoff_scope=logP_cutoff_scope,
                         apply_lucy_sweeny_e=apply_lucy_sweeny_e,
-                        global_hists={
-                            "total": global_hist_total,
-                            "det": global_hist_det,
-                        },
+                        global_hists=_hists_payload(),
                         **_ckpt_extra,
                     )
                     _save_det_index(checkpoint_dir, step_to_ijkl)

@@ -14,13 +14,13 @@ Scripts/
 ├── period_search/    # Periodogram (Lomb-Scargle + PDC) & permutation FAP tests
 ├── orbital/          # Kepler physics, lmfit fitting, statistical tests
 ├── mcmc/             # Stage 4: emcee posterior sampling, Lucy-Sweeney test
-├── cloud/            # Google Cloud Batch infrastructure for simulations
+├── cloud/            # Google Cloud Batch launcher for the bias grid (one task per grid-point chunk)
 ├── simulations/      # Synthetic binary RV generation & population synthesis
 ├── PDC/              # Phase-Distance Correlation (Numba-accelerated)
 ├── utils/            # Constants, plotting style, Roche lobe calculations
 ├── configs/          # All pipeline / bias-grid / cloud / SLURM YAML configs
 │   ├── params.yaml       # Main pipeline config (local)
-│   ├── params_cloud.yaml # Cloud pipeline config (container paths)
+│   ├── params_bias_cloud.yaml # Cloud Batch bias-grid config (container paths)
 │   ├── params_bias*.yaml # Bias-grid presets (local / astro3 / SLURM / smoke)
 ```
 
@@ -39,8 +39,9 @@ streamlit run mcmc/selector_app.py
 # Stage 4: MCMC posterior sampling
 python -m mcmc.batch --config configs/params.yaml
 
-# Cloud batch simulations
-python -m cloud.run_cloud_batch --n-per-field 10 --run-id my-run-001
+# Bias grid on Google Cloud Batch (stage data once: ./cloud/stage_data.sh)
+python -m cloud.run_bias_grid_batch --run-id my-run-001 --build
+# then aggregate locally: rsync from GCS + python -m simulations.bias_grid --aggregate <dir>
 ```
 
 ## Key Files

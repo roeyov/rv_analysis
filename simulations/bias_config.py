@@ -93,6 +93,10 @@ DEFAULT_BIAS_CFG = {
     # Detection thresholds (must match pipeline)
     "prob_bicc_threshold": 0.5,
     "fap_threshold": 0.2,
+    # Roche-lobe cut of detect_method=pipeline_batched (mass_flag_peri == 0
+    # in the production filter_expression). False drops the cut, so detection
+    # reduces to prob_bicc AND iter_fap. Other detect_methods ignore it.
+    "apply_rlof_gate": True,
 
     # Observed data paths
     "sb1_tex": "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb1_solutions.tex",
@@ -330,6 +334,58 @@ GRID_PRESETS = {
         "kappa": np.linspace(-3.05, 1.80, 28),
         "eta":   np.linspace(-1.75, 0.55, 15),
         "fbin":  np.linspace(0.40, 0.80, 11),
+        "n_inject_per_star": 100,
+    },
+    # IDENTICAL to final5_cvm_1e3_fast except the f_bin axis extends to 0.99
+    # at the same ~0.04 step (11 → 16 pts). For the q_min=0.01 fast_batched
+    # rerun: low-q injections drop detection efficiency, pushing the f_bin
+    # posterior up toward/past the old 0.80 edge. 14×28×15×16 = 94,080 pts.
+    "final5_cvm_1e3_fast_fb099": {
+        "pi":    np.linspace(-1.70, 0.20, 14),
+        "kappa": np.linspace(-3.05, 1.80, 28),
+        "eta":   np.linspace(-1.75, 0.55, 15),
+        "fbin":  np.linspace(0.40, 0.99, 16),
+        "n_inject_per_star": 100,
+    },
+    # pipeline_batched rerun of the qmin001_drv20_fb099 grid at the FAST
+    # per-axis counts (14×28×15×11 = 64,680 pts, matching final5_cvm_1e3_fast):
+    # π and κ bounds unchanged, η lower bound narrowed -1.75 → -1.25 and
+    # f_bin lower bound narrowed 0.55 (upper stays 0.99).
+    "final5_fast_eta125_fb055": {
+        "pi":    np.linspace(-1.70, 0.20, 14),
+        "kappa": np.linspace(-3.05, 1.80, 28),
+        "eta":   np.linspace(-1.25, 0.55, 15),
+        "fbin":  np.linspace(0.55, 0.99, 11),
+        "n_inject_per_star": 100,
+    },
+    # IDENTICAL to final5_cvm_1e3 except the f_bin axis extends to 0.99 at the
+    # same step (~0.029 → 21 pts instead of 15). For the drv_threshold=20 km/s
+    # sensitivity run: the higher ΔRV cutoff lowers detection efficiency, so the
+    # f_bin posterior shifts up and may cross the old 0.80 edge.
+    # 24×44×24×21 = 532,224 pts (1.4× final5_cvm_1e3).
+    "final5_cvm_1e3_fb099": {
+        "pi":    np.linspace(-1.70, 0.20, 24),
+        "kappa": np.linspace(-3.05, 1.80, 44),
+        "eta":   np.linspace(-1.75, 0.55, 24),
+        "fbin":  np.linspace(0.40, 0.99, 21),
+        "n_inject_per_star": 100,
+    },
+    "ed_hoc_rlof_check": {
+        "pi":    np.linspace(-0.823, -0.820, 1),
+        "kappa": np.linspace(-0.895, -0.89, 1),
+        "eta":   np.linspace(-0.27, -0.26, 1),
+        "fbin":  np.linspace(0.40, 0.99999, 21),
+        "n_inject_per_star": 100,
+    },
+    # ed_hoc_rlof_check with the power-law axes opened up to the
+    # final5_cvm_1e3_fast_batched ranges — π/κ bounds unchanged, η lower bound
+    # -1.25 as in final5_fast_eta125_fb055 — and f_bin narrowed to 0.45..0.85.
+    # Equal per-axis counts: 16⁴ = 65,536 pts (≈ the fast_batched 64,680).
+    "ed_hoc_rlof_check_ext": {
+        "pi":    np.linspace(-1.70, 0.20, 16),
+        "kappa": np.linspace(-3.05, 1.80, 16),
+        "eta":   np.linspace(-1.25, 0.55, 16),
+        "fbin":  np.linspace(0.45, 0.85, 16),
         "n_inject_per_star": 100,
     },
     # FINE×2 — IDENTICAL bounds to final5_cvm_1e3, doubled point count on every

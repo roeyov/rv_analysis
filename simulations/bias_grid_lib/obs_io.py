@@ -58,6 +58,10 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         'e_is_upper_limit' : boolean mask, True for Lucy-Sweeney rows
         'K1'               : array of K1 [km/s]
         'q_sb2'            : array of mass ratios (SB2 only)
+        'q_min_sb1'        : array of minimum mass ratios (SB1 only,
+                             lower limits from f(M) + M1; NaN where the
+                             table has no value), aligned with the SB1
+                             rows of 'logP'
         'n_sb1'            : number of usable SB1 systems
         'n_sb2'            : number of SB2 systems
     """
@@ -67,6 +71,7 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
     all_e_upper = []
     all_K1 = []
     sb2_q = []
+    sb1_q_min = []
 
     # --- Parse SB1 table ---
     with open(sb1_path, "r") as f:
@@ -103,6 +108,8 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         P_val = _parse_val_with_errors(cols[2])
         e_val = _parse_val_with_errors(cols[5])
         K1_val = _parse_val_with_errors(cols[6])
+        q_min_val = (_parse_val_with_errors(cols[10])
+                     if len(cols) >= 11 else np.nan)
 
         # Skip systems with P >= baseline (flagged as negative by parser)
         if P_val < 0 or np.isnan(P_val):
@@ -115,6 +122,7 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
             continue
 
         all_logP.append(np.log10(P_val))
+        sb1_q_min.append(q_min_val)
         e_is_upper_limit = r"\leq" in cols[5]
         if np.isnan(e_val):
             e_to_append = 0.0
@@ -199,6 +207,7 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         "e_is_upper_limit": np.array(all_e_upper, dtype=bool),
         "K1": np.array(all_K1),
         "q_sb2": np.array(sb2_q),
+        "q_min_sb1": np.array(sb1_q_min),
         "n_sb1": n_sb1,
         "n_sb2": n_sb2,
     }

@@ -31,6 +31,7 @@ from simulations.bias_grid import (
     CUBE_SCHEMA_VERSION, EXPLORER_MIN_SCHEMA_VERSION,
     variant_tag, split_variant_tag,
 )
+from simulations.bias_grid_lib.constants import KILL_FLAG_LABELS
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +238,9 @@ def load_grid_data(output_dir):
                                        dtype=bool),
         "K1": np.asarray(cubes["obs_K1"]),
         "q_sb2": np.asarray(cubes["obs_q_sb2"]),
+        # SB1 minimum mass ratios (v6+; empty for older cubes).
+        "q_min_sb1": (np.asarray(cubes["obs_qmin_sb1"])
+                      if "obs_qmin_sb1" in cubes.files else np.array([])),
         "n_sb1": int(cubes["obs_n_sb1"]),
         "n_sb2": int(cubes["obs_n_sb2"]),
     }
@@ -535,13 +539,17 @@ def plot_corner(prob, grids, best_fit, current_vals, smooth=True):
 
 def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
               use_empirical=False, p_det=None, e_score_mode="combined",
-              logP_cutoff=0.0, restrict_e_to_positive=True):
+              logP_cutoff=0.0, restrict_e_to_positive=True,
+              restrict_obs_q_min=True):
     """Plot CDF + PDF comparison: observed vs synthetic detected vs intrinsic.
 
     Layout: 2 rows x 4 cols.
       Row 1: CDFs  for logP, e, K1, q
       Row 2: PDFs  for logP, e, K1, q
-    Observed PDF/CDF shown for logP, e, K1 (not q).
+    Observed PDF/CDF shown for all four; the q panel pools SB2 mass
+    ratios with SB1 minimum mass ratios (q_min lower limits plotted at
+    their limit value), so its observed curve is an upper bound on the
+    true q CDF.
     Intrinsic + sim. detected shown for all four.
 
     The detected/observed CDFs are scaled by the detection completeness so
@@ -596,6 +604,24 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
                        and not restrict_e_to_positive
                        and f_circ_obs > 0.0)
 
+    # Observed q: pool SB2 mass ratios with SB1 minimum mass ratios
+    # (lower limits, plotted at their limit value). Empty/absent arrays
+    # (pre-v6 cubes) degrade to SB2-only or no observed curve. q > q_max
+    # lower limits are always dropped (the simulated population only
+    # spans q <= 1, and the observed CDF must reach 1 by q = 1); the
+    # injection sampling floor is applied when *restrict_obs_q_min* is
+    # on, matching the window the simulated q is drawn from. Raw values
+    # stay in the cube.
+    obs_q_min = np.asarray(obs.get("q_min_sb1", np.array([])), dtype=float)
+    obs_q_arr = np.concatenate([
+        np.asarray(obs.get("q_sb2", np.array([])), dtype=float),
+        obs_q_min[np.isfinite(obs_q_min)],
+    ])
+    obs_q_arr = obs_q_arr[np.isfinite(obs_q_arr)]
+    obs_q_arr = obs_q_arr[obs_q_arr <= cfg["q_max"]]
+    if restrict_obs_q_min:
+        obs_q_arr = obs_q_arr[obs_q_arr >= cfg["q_min"]]
+
     # (key, obs_array_or_None, xlabel, color, alpha, xmin, xmax, n_bins)
     param_configs = [
         ("logP", obs["logP"], "log\u2081\u2080(P/d)", "#4393c3",
@@ -604,7 +630,7 @@ def plot_cdfs(det_params, obs, current_vals, ks_pvals, test_label="KS",
          eta_val, 1e-6, cfg["e_max"], 15),
         ("K1", obs["K1"], "K\u2081 [km/s]", "#5aae61",
          None, None, None, 15),
-        ("q", None, "q", "#8073ac",
+        ("q", obs_q_arr if len(obs_q_arr) >= 2 else None, "q", "#8073ac",
          kappa_val, cfg["q_min"], cfg["q_max"], 12),
     ]
 
@@ -1363,7 +1389,7 @@ def main():
         cutoff_active = logP_cutoff_data > 0.0
         cube_lucy = bool(data.get("apply_lucy_sweeny_e", True))
 
-        col_cb1, col_cb2, col_cb3 = st.columns(3)
+        col_cb1, col_cb2, col_cb3, col_cb4 = st.columns(4)
 
         if logP_cutoff_scope == "period_only":
             cutoff_help = (
@@ -1415,6 +1441,17 @@ def main():
                 "with apply_lucy_sweeny_e=%s. CDFs below use %s." % (
                     cube_lucy, display_lucy))
 
+        restrict_obs_q_min = col_cb4.checkbox(
+            "Restrict obs q to q ≥ %.1f (injection window)"
+            % DEFAULT_BIAS_CFG["q_min"],
+            value=True,
+            key="restrict_obs_q_min",
+            help="Drop observed systems (SB2 q, SB1 q_min) below the "
+                 "injection sampling floor, so the observed q CDF spans "
+                 "the same window the simulated population is drawn "
+                 "from. q > 1 lower limits are always dropped.",
+        )
+
         # Build the obs dict the rest of the section consumes: apply
         # display-time Lucy-Sweeney, then (if requested) the scope-aware
         # logP cutoff filter.
@@ -1425,6 +1462,8 @@ def main():
                                   display_lucy),
             "K1": np.asarray(obs_cube["K1"]),
             "q_sb2": np.asarray(obs_cube["q_sb2"]),
+            "q_min_sb1": np.asarray(obs_cube.get("q_min_sb1",
+                                                 np.array([]))),
             "n_sb1": obs_cube["n_sb1"],
             "n_sb2": obs_cube["n_sb2"],
         }
@@ -1432,12 +1471,14 @@ def main():
             keep = obs["logP"] >= logP_cutoff_data
             if logP_cutoff_scope == "exclude":
                 # Joint mask: drop the same rows from P, e, K1 — matches
-                # bias_grid.py:1733-1735 under scope='exclude'.
+                # bias_grid.py:1733-1735 under scope='exclude'. q stays
+                # unfiltered (same convention as q_sb2 historically).
                 obs = {
                     "logP": obs["logP"][keep],
                     "e": obs["e"][keep],
                     "K1": obs["K1"][keep],
                     "q_sb2": obs["q_sb2"],
+                    "q_min_sb1": obs["q_min_sb1"],
                     "n_sb1": obs["n_sb1"],
                     "n_sb2": obs["n_sb2"],
                 }
@@ -1471,7 +1512,7 @@ def main():
             if len(nondet_logP):
                 keep_nondet = nondet_logP >= logP_cutoff_data
                 for _k in ("logP_nondet", "e_nondet",
-                           "K1_nondet", "q_nondet"):
+                           "K1_nondet", "q_nondet", "kill_flag_nondet"):
                     arr = det_params.get(_k)
                     if arr is not None and len(arr) == len(nondet_logP):
                         det_params[_k] = np.asarray(arr)[keep_nondet]
@@ -1498,11 +1539,28 @@ def main():
                 e_score_mode=e_mode_data,
                 logP_cutoff=(logP_cutoff_data if apply_logP_cutoff else 0.0),
                 restrict_e_to_positive=restrict_e_to_positive,
+                restrict_obs_q_min=restrict_obs_q_min,
             )
             st.plotly_chart(fig_cdf, use_container_width=True)
         else:
             st.info("No detected systems for this grid point "
                     "(or fewer than 2 detections).")
+
+        # Nondetection kill-reason breakdown (v7 shards; silently absent
+        # for runs written before kill_flag_nondet existed). Reflects the
+        # same logP-cutoff filtering as the displayed CDFs.
+        if det_params is not None and "kill_flag_nondet" in det_params:
+            _kf = np.asarray(det_params["kill_flag_nondet"])
+            if _kf.size:
+                _kc = np.bincount(_kf.astype(np.int64), minlength=6)
+                _parts = [
+                    "%s: %d (%.1f%%)" % (KILL_FLAG_LABELS.get(_c, str(_c)),
+                                         int(_kc[_c]),
+                                         100.0 * _kc[_c] / _kf.size)
+                    for _c in range(1, len(_kc)) if _kc[_c]
+                ]
+                st.caption("Nondetection kill flags (%d nondetected): %s"
+                           % (_kf.size, " · ".join(_parts)))
     else:
         st.info("CDF comparison unavailable: detected arrays missing. "
                 "Re-run bias_grid to generate per-grid-point shards.")

@@ -1,0 +1,18 @@
+# Pip constraints for the Cloud Batch image (Dockerfile: pip install
+# -r requirements.txt -c constraints.txt). Pinned from the working
+# tau_binary env (2026-07-29) so cloud results match local/astro3 numerics.
+# NOTE: numpy is intentionally <2 — numba 0.63/llvmlite 0.46 + the whole
+# pipeline were validated on 1.26.x.
+astropy==6.1.3
+corner==2.2.3
+emcee==3.1.6
+llvmlite==0.46.0
+lmfit==1.3.2
+matplotlib==3.9.2
+numba==0.63.1
+numpy==1.26.4
+pandas==2.2.3
+plotly==6.3.1
+PyYAML==6.0.2
+scipy==1.14.1
+tqdm==4.66.5
