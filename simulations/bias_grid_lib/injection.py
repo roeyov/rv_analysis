@@ -445,7 +445,8 @@ def _worker_star_injections_batched(task):
             n_bin, pi, kappa, eta, cfg, rng)
 
         # --- batched faithful detection over the (n_epoch x n_bin) matrix ---
-        mass_rows = [_zero_err_mass_row(M1_j[j], R1_j[j]) for j in range(n_bin)]
+        mass_rows = ([_zero_err_mass_row(M1_j[j], R1_j[j]) for j in range(n_bin)]
+                     if cfg.get("apply_rlof_gate", True) else None)
         det_mask, det_info = detect_batch(MJDs, rv_obs.T, np.full(n_bin, rv_err_val),
                                           mass_rows, cfg, backend=backend, rng=rng)
 
@@ -472,7 +473,8 @@ def _worker_star_injections_batched(task):
         if cfg.get("count_false_positives", True):
             rv_obs_single = gamma + rng.normal(0.0, rv_err_val,
                                                (n_single, n_epochs))
-            mass_rows_s = [_zero_err_mass_row(M1, R1)] * n_single
+            mass_rows_s = ([_zero_err_mass_row(M1, R1)] * n_single
+                           if cfg.get("apply_rlof_gate", True) else None)
             det_s, _ = detect_batch(MJDs, rv_obs_single.T,
                                     np.full(n_single, rv_err_val),
                                     mass_rows_s, cfg, backend=backend, rng=rng)
@@ -560,6 +562,9 @@ def _worker_field_injections_batched(field_task):
     n_epochs = len(MJDs)
     n_stars = len(star_seeds)
     backend = args_dict.get("fast_detect_backend", "numpy")
+    # mass_rows feed only the Roche-lobe gate inside detect_batch; with the
+    # gate off, skip building the per-injection dicts and pass None.
+    apply_rlof = bool(cfg.get("apply_rlof_gate", True))
 
     hist_total = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS)) for pair in _HIST_PAIRS}
     hist_det = {pair: np.zeros((_HIST_NBINS, _HIST_NBINS)) for pair in _HIST_PAIRS}
@@ -599,8 +604,9 @@ def _worker_field_injections_batched(field_task):
             bin_q.append(q_arr)
             bin_rv_rows.append(rv_obs)                       # (n_bin, n_epochs)
             bin_err.append(np.full(n_bin, rv_err_val))
-            bin_mass_rows.extend(
-                _zero_err_mass_row(M1_j[j], R1_j[j]) for j in range(n_bin))
+            if apply_rlof:
+                bin_mass_rows.extend(
+                    _zero_err_mass_row(M1_j[j], R1_j[j]) for j in range(n_bin))
 
         if n_single > 0:
             # The singles COUNT always feeds n_physical (p_det denominator).
@@ -615,8 +621,9 @@ def _worker_field_injections_batched(field_task):
                                                      (n_single, n_epochs))
                 sng_rv_rows.append(rv_obs_single)
                 sng_err.append(np.full(n_single, rv_err_val))
-                sng_mass_rows.extend(
-                    [_zero_err_mass_row(M1_s, R1_s)] * n_single)
+                if apply_rlof:
+                    sng_mass_rows.extend(
+                        [_zero_err_mass_row(M1_s, R1_s)] * n_single)
 
     # One field-wide rng seeds the two detect_batch calls (permutation nulls).
     det_rng = np.random.default_rng(
@@ -634,8 +641,10 @@ def _worker_field_injections_batched(field_task):
         q_all = np.concatenate(bin_q)
         rv_all = np.concatenate(bin_rv_rows, axis=0)          # (N_bin, n_epochs)
         err_all = np.concatenate(bin_err)
-        det_mask, det_info = detect_batch(MJDs, rv_all.T, err_all, bin_mass_rows,
-                                          cfg, backend=backend, rng=det_rng)
+        det_mask, det_info = detect_batch(
+            MJDs, rv_all.T, err_all,
+            bin_mass_rows if apply_rlof else None,
+            cfg, backend=backend, rng=det_rng)
 
         n_detected = int(det_mask.sum())
         logP_det = logP_all[det_mask].tolist(); e_det = e_all[det_mask].tolist()
@@ -657,7 +666,8 @@ def _worker_field_injections_batched(field_task):
     if sng_rv_rows:
         rv_s_all = np.concatenate(sng_rv_rows, axis=0)        # (N_single, n_epochs)
         err_s_all = np.concatenate(sng_err)
-        det_s, _ = detect_batch(MJDs, rv_s_all.T, err_s_all, sng_mass_rows,
+        det_s, _ = detect_batch(MJDs, rv_s_all.T, err_s_all,
+                                sng_mass_rows if apply_rlof else None,
                                 cfg, backend=backend, rng=det_rng)
         n_false_positive = int(det_s.sum())
 

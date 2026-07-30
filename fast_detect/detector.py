@@ -89,6 +89,7 @@ def _branch(pgram, Y, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
         period, peak_pow, flo, fhi = (pgram.peak_with_fwhm(Y, errs) if has_err
                                       else pgram.peak_with_fwhm(Y))
         fit = batched_fit.fit_batch(Y, pgram.t, errs, period, flo, fhi,
+                                    track_best=apply_rlof,
                                     **(fit_kwargs or {}))
     else:
         # Branches are OR'd, so a column already detected by an earlier branch
@@ -105,6 +106,7 @@ def _branch(pgram, Y, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
                                           if has_err
                                           else pgram.peak_with_fwhm(Yk))
         fit_k = batched_fit.fit_batch(Yk, pgram.t, ek, period_k, flo_k, fhi_k,
+                                      track_best=apply_rlof,
                                       **(fit_kwargs or {}))
         peak_pow = np.zeros(N)
         peak_pow[keep] = peak_k

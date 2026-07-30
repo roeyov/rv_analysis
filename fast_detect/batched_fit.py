@@ -57,7 +57,8 @@ def _llh_bicc(SSR, err2, N, nvarys):
 
 
 def fit_batch(Y, t, err, period, fwhm_lo, fwhm_hi,
-              n_e=10, n_omega=12, n_phase=12, n_period=3, e_max=0.95):
+              n_e=10, n_omega=12, n_phase=12, n_period=3, e_max=0.95,
+              track_best=True):
     """Batched orbital fit + null -> detection-fit quantities.
 
     Y        : (n_epoch, n_batch) observed RV curves (host numpy, one field).
@@ -66,6 +67,13 @@ def fit_batch(Y, t, err, period, fwhm_lo, fwhm_hi,
     period   : (n_batch,) candidate period (periodogram peak).
     fwhm_lo/hi : (n_batch,) FWHM period bounds (Period varies within these).
     n_e,n_omega,n_phase,n_period : template-grid resolution.
+    track_best : record WHICH template won (best P/e/omega + the template
+               itself for the K,gamma solve). Only the Roche-lobe gate
+               consumes those; prob_bicc depends on best_ssr alone, so
+               callers with the gate off pass False and skip the per-template
+               bookkeeping + the K,gamma solve (P/e/omega/K1/gamma become
+               placeholders). best_ssr — and therefore prob_bicc — is
+               bit-identical either way (masked assign vs elementwise min).
 
     Returns dict with prob_bicc, orb_bicc, null_bicc, and best-fit P,e,omega,K,
     gamma (for the downstream Roche-lobe / mass_flag_peri check).
@@ -92,7 +100,8 @@ def fit_batch(Y, t, err, period, fwhm_lo, fwhm_hi,
     best_e = np.zeros(n_batch)
     best_w = np.zeros(n_batch)
     best_P = period.copy()
-    best_s = np.zeros((n_epoch, n_batch))   # template at the best combo (for K,gamma)
+    if track_best:
+        best_s = np.zeros((n_epoch, n_batch))  # template at the best combo (for K,gamma)
 
     for P in P_levels:
         Pc = np.clip(P, 1e-6, None)
@@ -108,6 +117,9 @@ def fit_batch(Y, t, err, period, fwhm_lo, fwhm_hi,
                 for iw, w in enumerate(omega_grid):
                     s = (np.cos(nu + w) + ecosw_grid[iw]).T    # (E,B)
                     ssr = _ssr_linear(Y, s, SYY, oY, N)
+                    if not track_best:
+                        np.minimum(best_ssr, ssr, out=best_ssr)
+                        continue
                     upd = ssr < best_ssr
                     if upd.any():
                         best_ssr[upd] = ssr[upd]
@@ -116,12 +128,16 @@ def fit_batch(Y, t, err, period, fwhm_lo, fwhm_hi,
                         best_P[upd] = Pc[upd]
                         best_s[:, upd] = s[:, upd]
 
-    # K, gamma at the best template (linear solve) -> for RLOF / mass check.
-    Ss = best_s.sum(axis=0); Sss = (best_s * best_s).sum(axis=0)
-    Ssy = (best_s * Y).sum(axis=0)
-    det = np.where(np.abs(N * Sss - Ss * Ss) < 1e-12, 1e-12, N * Sss - Ss * Ss)
-    K_fit = (N * Ssy - Ss * oY) / det          # slope on s == K1
-    gamma_fit = (oY - Ss * K_fit) / N
+    if track_best:
+        # K, gamma at the best template (linear solve) -> for RLOF / mass check.
+        Ss = best_s.sum(axis=0); Sss = (best_s * best_s).sum(axis=0)
+        Ssy = (best_s * Y).sum(axis=0)
+        det = np.where(np.abs(N * Sss - Ss * Ss) < 1e-12, 1e-12, N * Sss - Ss * Ss)
+        K_fit = (N * Ssy - Ss * oY) / det      # slope on s == K1
+        gamma_fit = (oY - Ss * K_fit) / N
+    else:
+        K_fit = np.zeros(n_batch)
+        gamma_fit = np.zeros(n_batch)
 
     ssr_null = SYY - oY * oY / N
     llh_orb, orb_bicc = _llh_bicc(best_ssr, err2, N, nvarys=6)
