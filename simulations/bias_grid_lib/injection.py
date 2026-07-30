@@ -507,8 +507,11 @@ def _draw_star_binaries(MJDs, n_epochs, rv_err_val, M1, R1, gamma,
     e_arr[P < cfg["p_circ"]] = 0.0
     incl = np.arccos(rng.uniform(0, 1, n_bin))
     omega = rng.uniform(0, TWOPI, n_bin)
-    T0_arr = np.array([rng.uniform(MJDs.min() - P[j], MJDs.min())
-                       for j in range(n_bin)])
+    # Array-valued uniform consumes the identical RNG stream as the historical
+    # per-injection scalar loop (one double per draw, same order) -> the drawn
+    # T0 values are bit-identical.
+    mjd_min = MJDs.min()
+    T0_arr = rng.uniform(mjd_min - P, mjd_min)
     M1_j = np.clip(rng.normal(M1, 0.3 * M1, n_bin), 7.0, 80.0)
     R1_j = np.maximum(4.0, rng.normal(R1, 0.3 * R1, n_bin))
     K1_arr = compute_K1_batch(P, e_arr, q_arr, M1_j, incl)

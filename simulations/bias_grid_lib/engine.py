@@ -1025,7 +1025,11 @@ class GridSearchEngine:
                               self.detect_method,
                               checkpoint_dir,
                               scoring_ctxs),
-                    maxtasksperchild=500,
+                    # High enough that workers essentially never respawn over a
+                    # 65k-point run (respawns cold-start the per-process
+                    # periodogram cache + numba JIT); per-worker memory is
+                    # bounded (shards on disk, heavy arrays stripped pre-IPC).
+                    maxtasksperchild=4000,
             ) as pool:
                 for task_result in pool.imap_unordered(
                         _worker_grid_point, _throttled(pending_tasks)):
