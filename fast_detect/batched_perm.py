@@ -40,7 +40,7 @@ def _make_shuffles(Y, n_perm, rng):
 
 
 def iter_fap_fn(maxpow_fn, Y, peak_power, n_perm, rng, perm_chunk=20000,
-                col_arg=None, active=None):
+                col_arg=None, active=None, fail_thresh=None):
     """Empirical permutation FAP per curve, for any periodogram.
 
     maxpow_fn : callable (n_epoch, m) -> (m,) max-power over the freq grid for
@@ -56,6 +56,16 @@ def iter_fap_fn(maxpow_fn, Y, peak_power, n_perm, rng, perm_chunk=20000,
                 exact same iter_fap it would in a full-batch call
                 (bit-identical), while the periodogram work scales with the
                 number of survivors, not n_batch.
+    fail_thresh : the downstream detection gate (iter_fap < fail_thresh).
+                When given, shuffles are scored in stages and a curve stops as
+                soon as its exceedance count reaches
+                ``ceil(fail_thresh * n_perm)`` — at that point the gate outcome
+                is already a definite FAIL, so the remaining shuffles cannot
+                change the detected mask. Early-stopped curves report the
+                CENSORED count/n_perm (a lower bound, guaranteed >=
+                fail_thresh); curves that pass the gate always score all
+                n_perm shuffles and report the exact value. None = score
+                everything (historical behaviour).
     Returns (n_batch,) iter_fap in [0, 1].
     """
     Y = np.asarray(Y, dtype=np.float64)
@@ -69,18 +79,53 @@ def iter_fap_fn(maxpow_fn, Y, peak_power, n_perm, rng, perm_chunk=20000,
     ifap = np.ones(n_batch)                          # inactive -> 1.0 (fails iter_fap<thresh)
     if act_inj.size == 0:
         return ifap
+
+    def _score_cols(cols):
+        """maxpow over the given flattened shuffle columns, perm_chunk-ed."""
+        Ya = Yp[:, cols]
+        caa = None if ca is None else ca[cols]
+        total = Ya.shape[1]
+        maxp = np.empty(total)
+        for s in range(0, total, perm_chunk):
+            e = min(s + perm_chunk, total)
+            maxp[s:e] = (maxpow_fn(Ya[:, s:e]) if caa is None
+                         else maxpow_fn(Ya[:, s:e], caa[s:e]))
+        return maxp
+
     # flattened shuffle columns for curve i are i*n_perm .. i*n_perm+n_perm
-    act_cols = (act_inj[:, None] * n_perm + np.arange(n_perm)[None, :]).ravel()
-    Ya = Yp[:, act_cols]
-    caa = None if ca is None else ca[act_cols]
-    total = Ya.shape[1]
-    maxp = np.empty(total)
-    for s in range(0, total, perm_chunk):
-        e = min(s + perm_chunk, total)
-        maxp[s:e] = (maxpow_fn(Ya[:, s:e]) if caa is None
-                     else maxpow_fn(Ya[:, s:e], caa[s:e]))
-    maxp = maxp.reshape(act_inj.size, n_perm)        # (n_active, n_perm)
-    ifap[act_inj] = (maxp >= peak_power[act_inj, None]).sum(axis=1) / float(n_perm)
+    if fail_thresh is None:
+        act_cols = (act_inj[:, None] * n_perm
+                    + np.arange(n_perm)[None, :]).ravel()
+        maxp = _score_cols(act_cols).reshape(act_inj.size, n_perm)
+        ifap[act_inj] = (maxp >= peak_power[act_inj, None]).sum(axis=1) \
+            / float(n_perm)
+        return ifap
+
+    # Staged exact-safe early-stop: two probe stages of fail_k shuffles, then
+    # the remainder. Per-column max-powers are identical to the one-shot path
+    # (columns are scored independently), so surviving curves' iter_fap stays
+    # bit-identical; only definite-fails skip their leftover shuffles.
+    fail_k = max(int(np.ceil(fail_thresh * n_perm)), 1)
+    edges = sorted({0, min(fail_k, n_perm), min(2 * fail_k, n_perm), n_perm})
+    peaks = peak_power[act_inj]
+    counts = np.zeros(act_inj.size, dtype=np.int64)
+    alive = np.ones(act_inj.size, dtype=bool)        # not yet a definite fail
+    for s0, s1 in zip(edges[:-1], edges[1:]):
+        rows = np.flatnonzero(alive)
+        if rows.size == 0:
+            break
+        cols = (act_inj[rows][:, None] * n_perm
+                + np.arange(s0, s1)[None, :]).ravel()
+        m = _score_cols(cols).reshape(rows.size, s1 - s0)
+        counts[rows] += (m >= peaks[rows, None]).sum(axis=1)
+        if s1 < n_perm:
+            newly = counts[rows] >= fail_k
+            if newly.any():
+                dead = rows[newly]
+                ifap[act_inj[dead]] = counts[dead] / float(n_perm)
+                alive[dead] = False
+    rows = np.flatnonzero(alive)                     # scored all n_perm
+    ifap[act_inj[rows]] = counts[rows] / float(n_perm)
     return ifap
 
 

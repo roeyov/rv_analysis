@@ -133,7 +133,8 @@ def _branch(pgram, Y, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
     col_arg = np.repeat(errs, n_perm) if has_err else None
     ifap = batched_perm.iter_fap_fn(maxpow_fn, Y, peak_pow, n_perm,
                                     np.random.default_rng(iter_seed),
-                                    col_arg=col_arg, active=prelim)
+                                    col_arg=col_arg, active=prelim,
+                                    fail_thresh=fap_thresh)
     detected = prelim & (ifap < fap_thresh)
     return detected, fit["prob_bicc"], ifap, fit["P"], fit["e"], fit["K1"], mass_flag
 
