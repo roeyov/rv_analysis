@@ -1,0 +1,159 @@
+# =============================================================================
+# params_bias_astro3_ed_hoc_rlof_check_ext_fast.yaml — astro3 bias_grid run.
+#
+# SPEEDUP relaunch of params_bias_astro3_ed_hoc_rlof_check_ext.yaml (killed
+# 2026-07-30 at 1,423/65,536 shards; its output dir is kept for the paired
+# old-vs-new comparison). Same science knobs: preset ed_hoc_rlof_check_ext
+# (16^4 = 65,536 pts), pipeline_batched, apply_rlof_gate false, single
+# variant eccentric_only/numerical/lucyT, CvM only, q_min 0.01,
+# log_p_min 0.046, adaptive_n_inject, seed 42. Changes vs the killed run:
+#
+#   Tier A (bit-identical detection; commits 6101333..5e6004b):
+#     fused numba LS/PDC kernels, PDC column-subset, RLOF-off dead-work skip,
+#     permutation early-stop, T0 vectorize, maxtasksperchild 4000.
+#     Verified: 21-pt E2E old-vs-new cubes + shards BITWISE EQUAL; 2.09x.
+#   count_false_positives false: skips the noise-only detect_batch whose only
+#     product (n_false_positive) no score reads. Cubes exactly preserved.
+#   B1 min_period 0.4 -> 1.0: injected floor is P=10^0.046=1.11 d; ~64% of
+#     the old LS/PDC frequency grids lay above the injectable band. Paired
+#     A/B (fast_detect/ab_levers.py, 2026-07-30): |dp_det|<=0.006 and
+#     non-significant in 5/6 grid corners; caveat pi=+0.2/kappa=-3.05:
+#     dp_det=-0.011 (9% rel., McNemar p=4e-4).
+#   B2 ls_sample_per_peak 50 -> 20: statistically free everywhere
+#     (|dp_det|<=0.001, all McNemar ns).
+#   B4 half injection budget (n_above_cutoff_target 2200->1100, baseline
+#     n_inject 100->50): half-budget logGMF jitter == seed-to-seed MC noise
+#     (median 0.74 vs 0.71), far below neighbor-cell contrast (median 2.10).
+#   B3 (run_pdc false) REJECTED: systematic p_det loss 1.7-6 pts everywhere.
+#
+# Projected ~7 min/pt/worker, 94 workers -> ~3.5 days wall (vs ~29 days).
+# Gate C measures the real rate on configs/params_bias_astro3_speed_check_fast.yaml
+# before this launch.
+#
+# NOTE: periodogram_params now actually reaches detect_batch
+# (cfg["periodogram_params"] plumbing in bias_grid.main). Only min_period,
+# max_period, ls_sample_per_peak, window_iterations (= the permutation count),
+# pdc_samples_per_peak and run_pdc are consumed by pipeline_batched; the other
+# keys are legacy for the non-batched pipeline.
+#
+# Usage on astro3 (TAU VPN required):
+#   cd ~/Scripts
+#   OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
+#   nohup micromamba run -n tau_binary python -u -m simulations.bias_grid \
+#       --config configs/params_bias_astro3_ed_hoc_rlof_check_ext_fast.yaml \
+#       > ~/bias_grid_results/launcher_ed_hoc_rlof_check_ext_fast.log 2>&1 </dev/null &
+# =============================================================================
+
+plot: false
+plot_style: "paper"
+random_seed: 562
+fast_detect_backend: numpy
+manual_candidate_periods: []
+
+# RV-threshold detection knobs — UNUSED by pipeline_batched (provenance).
+drv_threshold: 10.0
+significance_threshold: 4.0
+
+# ---- I/O paths (astro3) ----
+base_dir:      "/jonathan_storage/roeyovadia/bias_grid_results"
+lmfit_subdir:  &lmfit_subdir  "second_pdc"
+mcmc_subdir:   &mcmc_subdir   "mcmc_out"
+
+pipeline_io:
+  object_list: []
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  use_fwhm: true
+
+# ---- Bias-grid input parameters ----
+bias_grid:
+  # paths (synced from local via sync_astro3.sh)
+  sb1_tex: "/jonathan_storage/roeyovadia/tables/sb1_solutions.tex"
+  sb2_tex: "/jonathan_storage/roeyovadia/tables/sb2_solutions.tex"
+  mass_file: "/jonathan_storage/roeyovadia/data/mass_bloem.csv"
+  rv_dir: "/jonathan_storage/roeyovadia/data/rv_csvs/"
+  sb2_analysis_dir: "/jonathan_storage/roeyovadia/data/sb2_per_star"
+  ostar_catalog: "/jonathan_storage/roeyovadia/tables/ostar_catalog.csv"
+  # FRESH output dir (mandatory: the resume validator does not check
+  # periodogram_params, so reusing the old dir would silently mix shards).
+  output_dir: "/jonathan_storage/roeyovadia/bias_grid_results/ed_hoc_rlof_check_ext_fast/"
+
+  # run shape — full power-law grid, f_bin 0.45..0.85; 16^4 pts.
+  preset: ed_hoc_rlof_check_ext
+  # B4: baseline floor halved (overrides the preset's n_inject_per_star=100).
+  n_inject: 50
+  seed: 42
+  n_stars_sample: null
+  # SINGLE-VARIANT run: eccentric_only e-scoring, numerical logP cutoff,
+  # Lucy-Sweeney limits treated as circular; CvM metric only.
+  variant_filter:
+    e_score_mode: eccentric_only
+    logP_cutoff_mode: numerical
+    apply_lucy_sweeny_e: true
+  scored_tests: [cvm]
+  logP_cutoff_smooth_sigma: 0.15   # Gaussian σ (dex) for the numerical cutoff
+  logP_cutoff_scope: exclude       # period_only | exclude (fixed across variants)
+  detect_method: pipeline_batched
+  # Detection is prob_bicc > 0.5 AND iter_fap < 0.2 only (Roche-lobe cut off).
+  apply_rlof_gate: false
+  # Skip the noise-only detect_batch (diagnostic n_false_positive only; no
+  # score reads it — cubes exactly preserved).
+  count_false_positives: false
+
+  # ---- Sampling bounds + adaptive injection budget ----
+  log_p_min: 0.046
+  log_p_max: 3.5
+  q_min: 0.01
+  q_max: 1.0
+  # B4: expected above-cutoff detections per cell halved (2200 -> 1100);
+  # with the halved baseline this keeps the adaptive scaling shape intact.
+  adaptive_n_inject: true
+  n_above_cutoff_target: 1100
+  n_inject_max: 50000
+  adaptive_n_cutoff: null          # null ⇒ use the run's numerical cutoff
+
+  # parallelism — explicit 94 (= astro3 cpu_count - 2).
+  n_workers: 94
+  parallel_grid: true
+
+# ---- Periodogram settings (B1 + B2 applied; consumed by pipeline_batched) ----
+periodogram_params:
+  min_period: 1.0                  # B1: injected floor is P = 1.11 d
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 20           # B2: 50 is ~10x the astropy default
+  n_bootsraps: 50                  # legacy (batched path uses window_iterations)
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10            # = the permutation count of the batched FAP
+  run_pdc: true                    # B3 rejected: PDC contributes real detections
+  run_permutations_ls: true        # legacy (ignored by the batched path)
+  run_permutations_pdc: true       # legacy (ignored by the batched path)
+
+# ---- lmfit search region (UNUSED by pipeline_batched; config-loading compat) ----
+lmfit_params:
+  minimization_method: "differential_evolution"
+  search_region:
+    Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
+    GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
+    K1:           {init_value: 200.0,   min_value: 0.0,    max_value: 400.0,   vary: true}
+    OMEGA_rad:    {init_value: 3.14,    min_value: 0.0,    max_value: 6.4,     vary: true}
+    Eccentricity: {init_value: 0.0,     min_value: 0.0,    max_value: 0.9999,  vary: true}
+    T0:           {init_value: 0.0,     min_value: 0.0,    max_value: 0.0,     vary: true}
+    ln_sigmaJ:    {init_value: 0.0,     min_value: -2,     max_value: 4.5,     vary: true}
+
+# ---- MCMC (not used in bias grid, kept for config loading compatibility) ----
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+  filter_expression: ""
+  field_to_check: "bicc"
+  take_min: true
