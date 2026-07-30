@@ -24,9 +24,33 @@ host (float64); only the frequency GEMM uses the pluggable backend.
 """
 
 import numpy as np
+from numba import njit
 from scipy import special
 
 from period_search.periodogram import make_pdc_freq_grid
+
+
+@njit(cache=True)
+def _fused_pdc_peak(num, denB, denA, tiny, start, best_pow, best_idx):
+    """Fused PDC power + running peak for one frequency block (numpy path).
+
+    Mirrors the generic path's ``where(denom > 0, num / maximum(denom, tiny),
+    0.0)`` + strict-> running max/argmax element-for-element, without
+    materializing the (n_block, n_batch) outer/denom/power temporaries.
+    Updates best_pow/best_idx (n_batch,) in place.
+    """
+    n_block, n_batch = num.shape
+    for f in range(n_block):
+        for b in range(n_batch):
+            denom = np.sqrt(denB[f] * denA[b])
+            if denom > 0.0:
+                d = denom if denom > tiny else tiny
+                p = num[f, b] / d
+            else:
+                p = 0.0
+            if p > best_pow[b]:
+                best_pow[b] = p
+                best_idx[b] = start + f
 
 
 def _u_center(a):
@@ -100,6 +124,20 @@ class BatchedPDC:
         n_batch = A.shape[0]
         A_flat = A.reshape(n_batch, -1)
         denA = (A_flat * A_flat).sum(axis=1)              # host float64 (returned)
+        if xp.name == "numpy":
+            # Fast path: BLAS GEMM + fused numba peak kernel (no
+            # outer/denom/power temporaries). Same operands and evaluation
+            # order as the generic path -> bit-identical peak power/index.
+            best_pow_h = np.full(n_batch, -1e30)
+            best_idx_h = np.zeros(n_batch, dtype=np.int64)
+            A_T = A_flat.T
+            for s in range(0, self.n_freq, self.freq_chunk):
+                e = min(s + self.freq_chunk, self.n_freq)
+                B_flat, denB = self._B_flat_chunk(self.freqs[s:e])
+                num = np.matmul(B_flat, A_T)              # (n_block, B)
+                _fused_pdc_peak(num, denB, denA, 1e-30, s,
+                                best_pow_h, best_idx_h)
+            return best_idx_h.astype(int), best_pow_h, A, denA
         A_x = xp.asarray(A_flat.T)                        # uploaded once
         denA_x = xp.asarray(denA)                         # uploaded once (B,)
         best_pow = xp.full((n_batch,), -1e30)

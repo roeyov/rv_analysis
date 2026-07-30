@@ -23,6 +23,38 @@ max-powers for the permutation FAP).
 """
 
 import numpy as np
+from numba import njit
+
+
+@njit(cache=True)
+def _fused_ls_peak(cY, sY, oY, SYY, i00, i11, i22, i01, i02, i12,
+                   ff, start, best_pow, best_idx):
+    """Fused power assembly + running peak for one frequency block.
+
+    Replaces the ~12 full (n_block, n_batch) float64 temporaries of the
+    unfused numpy expression in ``_power_chunk`` (DRAM-bandwidth bound) with
+    one streaming pass. The arithmetic mirrors ``_power_chunk`` term-for-term
+    in the same evaluation order (numba default: no FMA contraction, no
+    reassociation), and ties resolve exactly like the chunked
+    max/argmax + strict-> running update -> bit-identical peak power/index.
+    Updates best_pow/best_idx (n_batch,) in place.
+    """
+    n_block, n_batch = cY.shape
+    for f in range(n_block):
+        for b in range(n_batch):
+            cYf = cY[f, b]
+            sYf = sY[f, b]
+            oYb = oY[b]
+            SYYb = SYY[b]
+            Q = (i00[f] * cYf * cYf + i11[f] * sYf * sYf + i22[f] * oYb * oYb
+                 + 2.0 * i01[f] * cYf * sYf + 2.0 * i02[f] * cYf * oYb
+                 + 2.0 * i12[f] * sYf * oYb)
+            chi2_0 = SYYb - oYb * oYb / ff
+            chi2 = SYYb - Q
+            p = (chi2_0 - chi2) / chi2
+            if p > best_pow[b]:
+                best_pow[b] = p
+                best_idx[b] = start + f
 
 
 def autopower_grid(times, pmin, pmax, samples_per_peak=50):
@@ -59,6 +91,44 @@ class BatchedLS:
         self.n_freq = self.freqs.size
         self.freq_chunk = int(freq_chunk)
         self._periods_xp = self.xp.asarray(1.0 / self.freqs)
+        self._design_inv_cache = None
+
+    def _design_inv(self):
+        """Data-independent 3x3 normal-matrix inverse entries per frequency.
+
+        Depends only on (t, freqs) so it is computed once per instance (the
+        instances are cached per field). Computed with the SAME chunking and
+        reduction order as ``_power_chunk`` -> bit-identical values.
+        Returns (i00, i11, i22, i01, i02, i12), each (n_freq,) float64.
+        """
+        if self._design_inv_cache is None:
+            n = self.n_freq
+            out = tuple(np.empty(n) for _ in range(6))
+            t = self.t
+            ff = float(self.n_epoch)
+            for start in range(0, n, self.freq_chunk):
+                stop = min(start + self.freq_chunk, n)
+                w = 2.0 * np.pi * self.freqs[start:stop]
+                ang = w[:, None] * t[None, :]
+                C = np.cos(ang)
+                S = np.sin(ang)
+                a = np.sum(C * C, axis=1)
+                d = np.sum(S * S, axis=1)
+                bb = np.sum(C * S, axis=1)
+                cc = np.sum(C, axis=1)
+                ee = np.sum(S, axis=1)
+                det = (a * (d * ff - ee * ee)
+                       - bb * (bb * ff - ee * cc)
+                       + cc * (bb * ee - d * cc))
+                inv = 1.0 / det
+                out[0][start:stop] = (d * ff - ee * ee) * inv
+                out[1][start:stop] = (a * ff - cc * cc) * inv
+                out[2][start:stop] = (a * d - bb * bb) * inv
+                out[3][start:stop] = (cc * ee - bb * ff) * inv
+                out[4][start:stop] = (bb * ee - cc * d) * inv
+                out[5][start:stop] = (bb * cc - a * ee) * inv
+            self._design_inv_cache = out
+        return self._design_inv_cache
 
     # -- core ---------------------------------------------------------------
     def _power_chunk(self, f_block, Y, SYY, oY):
@@ -110,6 +180,34 @@ class BatchedLS:
         """Chunked frequency scan. Returns (best_idx, best_pow, SYY, oY) with
         Y kept as a backend array. best_idx/best_pow are host numpy."""
         xp = self.xp
+        if xp.name == "numpy":
+            # Fast path: BLAS projections + the fused numba peak kernel — the
+            # (n_block, n_batch) power matrix is never materialized. The C/S
+            # trig + GEMMs are computed per chunk exactly as _power_chunk does,
+            # so results are bit-identical to the generic path below.
+            Yh = np.asarray(Y, dtype=np.float64)
+            SYY = np.sum(Yh * Yh, axis=0)
+            oY = np.sum(Yh, axis=0)
+            n_batch = Yh.shape[1]
+            i00, i11, i22, i01, i02, i12 = self._design_inv()
+            best_pow = np.full(n_batch, -1e30)
+            best_idx = np.zeros(n_batch, dtype=np.int64)
+            t = self.t
+            ff = float(self.n_epoch)
+            for start in range(0, self.n_freq, self.freq_chunk):
+                stop = min(start + self.freq_chunk, self.n_freq)
+                w = 2.0 * np.pi * self.freqs[start:stop]
+                ang = w[:, None] * t[None, :]
+                C = np.cos(ang)
+                S = np.sin(ang)
+                cY = np.matmul(C, Yh)
+                sY = np.matmul(S, Yh)
+                _fused_ls_peak(cY, sY, oY, SYY,
+                               i00[start:stop], i11[start:stop],
+                               i22[start:stop], i01[start:stop],
+                               i02[start:stop], i12[start:stop],
+                               ff, start, best_pow, best_idx)
+            return best_idx.astype(int), best_pow, Yh, SYY, oY
         Yx = xp.asarray(Y)
         SYY = xp.sum(Yx * Yx, axis=0)                # (n_batch,)
         oY = xp.sum(Yx, axis=0)
