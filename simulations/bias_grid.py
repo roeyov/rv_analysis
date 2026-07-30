@@ -230,6 +230,9 @@ def main():
     # detect_batch reads cfg, and YAML keys not copied here never reach it.
     cfg["apply_rlof_gate"] = bool(_bg("apply_rlof_gate"))
 
+    # Noise-only false-positive measurement (diagnostic; no score reads it).
+    cfg["count_false_positives"] = bool(_bg("count_false_positives"))
+
     # Paths
     sb1_tex = _bg("sb1_tex")
     sb2_tex = _bg("sb2_tex")
@@ -377,6 +380,7 @@ def main():
         "adaptive_n_cutoff": cfg["adaptive_n_cutoff"],
         "detect_method": detect_method,
         "apply_rlof_gate": cfg["apply_rlof_gate"],
+        "count_false_positives": cfg["count_false_positives"],
         "n_workers": n_workers_cfg,
         "parallel_grid": parallel_grid,
     }

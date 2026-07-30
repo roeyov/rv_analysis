@@ -466,12 +466,17 @@ def _worker_star_injections_batched(task):
 
     n_false_positive = 0
     if n_single > 0:
+        # Same contract as the field worker: the count always enters
+        # n_physical; the noise detect_batch is diagnostic-only.
         n_physical += n_single
-        rv_obs_single = gamma + rng.normal(0.0, rv_err_val, (n_single, n_epochs))
-        mass_rows_s = [_zero_err_mass_row(M1, R1)] * n_single
-        det_s, _ = detect_batch(MJDs, rv_obs_single.T, np.full(n_single, rv_err_val),
-                                mass_rows_s, cfg, backend=backend, rng=rng)
-        n_false_positive = int(det_s.sum())
+        if cfg.get("count_false_positives", True):
+            rv_obs_single = gamma + rng.normal(0.0, rv_err_val,
+                                               (n_single, n_epochs))
+            mass_rows_s = [_zero_err_mass_row(M1, R1)] * n_single
+            det_s, _ = detect_batch(MJDs, rv_obs_single.T,
+                                    np.full(n_single, rv_err_val),
+                                    mass_rows_s, cfg, backend=backend, rng=rng)
+            n_false_positive = int(det_s.sum())
 
     return {
         "n_physical": n_physical, "n_detected": n_detected, "n_rlof": 0,
@@ -598,12 +603,20 @@ def _worker_field_injections_batched(field_task):
                 _zero_err_mass_row(M1_j[j], R1_j[j]) for j in range(n_bin))
 
         if n_single > 0:
+            # The singles COUNT always feeds n_physical (p_det denominator).
+            # Their detection only produces the diagnostic n_false_positive,
+            # which no score consumes — count_false_positives=False skips the
+            # noise draw + detect_batch entirely. This star's rng has no
+            # consumer after this draw, so skipping it leaves every binary
+            # draw (this star and all others) bit-identical.
             n_physical += n_single
-            rv_obs_single = gamma_s + rng.normal(0.0, rv_err_val,
-                                                 (n_single, n_epochs))
-            sng_rv_rows.append(rv_obs_single)
-            sng_err.append(np.full(n_single, rv_err_val))
-            sng_mass_rows.extend([_zero_err_mass_row(M1_s, R1_s)] * n_single)
+            if cfg.get("count_false_positives", True):
+                rv_obs_single = gamma_s + rng.normal(0.0, rv_err_val,
+                                                     (n_single, n_epochs))
+                sng_rv_rows.append(rv_obs_single)
+                sng_err.append(np.full(n_single, rv_err_val))
+                sng_mass_rows.extend(
+                    [_zero_err_mass_row(M1_s, R1_s)] * n_single)
 
     # One field-wide rng seeds the two detect_batch calls (permutation nulls).
     det_rng = np.random.default_rng(

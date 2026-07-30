@@ -97,6 +97,11 @@ DEFAULT_BIAS_CFG = {
     # in the production filter_expression). False drops the cut, so detection
     # reduces to prob_bicc AND iter_fap. Other detect_methods ignore it.
     "apply_rlof_gate": True,
+    # Run the noise-only (single-star) detect_batch that measures the
+    # diagnostic n_false_positive. No score consumes it (p_det uses only the
+    # singles COUNT, which always enters n_physical), so production grid runs
+    # can set False and skip that entire second detection pass.
+    "count_false_positives": True,
 
     # Observed data paths
     "sb1_tex": "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb1_solutions.tex",
