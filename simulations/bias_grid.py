@@ -233,6 +233,15 @@ def main():
     # Noise-only false-positive measurement (diagnostic; no score reads it).
     cfg["count_false_positives"] = bool(_bg("count_false_positives"))
 
+    # Periodogram knobs for fast_detect. detect_batch reads
+    # cfg["periodogram_params"]; without this copy the YAML block never
+    # reaches it and _peri_params silently falls back to its hard-coded
+    # defaults (min_period 0.4, max_period 10000, ls_sample_per_peak 50,
+    # window_iterations 10, pdc_samples_per_peak 10, run_pdc true — which
+    # happen to equal the historical YAML values, so adding this copy is
+    # behavior-preserving for existing configs).
+    cfg["periodogram_params"] = dict(args_dict.get("periodogram_params") or {})
+
     # Paths
     sb1_tex = _bg("sb1_tex")
     sb2_tex = _bg("sb2_tex")

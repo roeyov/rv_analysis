@@ -166,10 +166,24 @@ def detect_batch(mjds, rv_matrix, errs, mass_rows, cfg,
         fit_kwargs, has_err=False, iter_seed=seed, apply_rlof=apply_rlof)
     # PDC only needs to decide injections LS did NOT already detect (branches are
     # OR'd) -> pass ls_det as `exclude` so PDC skips their permutations too.
-    pdc_det, pdc_pb, pdc_fap, pdc_P, pdc_e, pdc_K, pdc_mf = _branch(
-        bpdc, rv_matrix, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
-        fit_kwargs, has_err=True, iter_seed=seed + 1, exclude=ls_det,
-        apply_rlof=apply_rlof)
+    # periodogram_params.run_pdc=false drops the PDC branch entirely (detection
+    # = LS only); placeholders keep the info schema and make stage_pdc=0 so the
+    # kill flag reflects the LS stage alone.
+    run_pdc = bool(cfg.get("periodogram_params", {}).get("run_pdc", True))
+    if run_pdc:
+        pdc_det, pdc_pb, pdc_fap, pdc_P, pdc_e, pdc_K, pdc_mf = _branch(
+            bpdc, rv_matrix, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
+            fit_kwargs, has_err=True, iter_seed=seed + 1, exclude=ls_det,
+            apply_rlof=apply_rlof)
+    else:
+        n_b = rv_matrix.shape[1]
+        pdc_det = np.zeros(n_b, dtype=bool)
+        pdc_pb = np.zeros(n_b)
+        pdc_fap = np.ones(n_b)
+        pdc_P = np.ones(n_b)
+        pdc_e = np.zeros(n_b)
+        pdc_K = np.zeros(n_b)
+        pdc_mf = np.zeros(n_b, dtype=bool)
 
     detected = ls_det | pdc_det
     # Per-injection kill flag: the gate that killed detection, taken from the
