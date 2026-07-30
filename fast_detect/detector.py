@@ -85,6 +85,13 @@ def _branch(pgram, Y, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
         excl = np.asarray(exclude, dtype=bool)
         if not excl.any():
             excl = None
+        elif excl.all():
+            # Every column already detected by the earlier branch: nothing
+            # left to decide — pure placeholders, no scan/fit/permutation
+            # (the periodograms cannot take an empty batch).
+            zeros = np.zeros(N)
+            return (np.zeros(N, dtype=bool), zeros, np.ones(N),
+                    np.ones(N), zeros, zeros, np.zeros(N, dtype=bool))
     if excl is None:
         period, peak_pow, flo, fhi = (pgram.peak_with_fwhm(Y, errs) if has_err
                                       else pgram.peak_with_fwhm(Y))

@@ -1009,10 +1009,20 @@ class GridSearchEngine:
             # of unbounded backlog. n_pool*2 keeps every worker busy
             # plus a small buffer for IPC slack.
             inflight = threading.Semaphore(n_pool * 2)
+            # Set when the consumer loop below exits (normally or via an
+            # exception). Without it, an exception in the consumer deadlocks
+            # pool teardown: Pool.__exit__ -> terminate() joins the
+            # _handle_tasks thread, which sits inside _throttled waiting on
+            # a semaphore permit only the (dead) consumer would release —
+            # and the original exception is never surfaced. (Bit us on
+            # 2026-07-30: a worker ValueError hung the run silently.)
+            feeder_abort = threading.Event()
 
             def _throttled(tasks):
                 for t in tasks:
-                    inflight.acquire()
+                    while not inflight.acquire(timeout=5.0):
+                        if feeder_abort.is_set():
+                            return
                     yield t
 
             with ctx_mp.Pool(
@@ -1031,6 +1041,7 @@ class GridSearchEngine:
                     # bounded (shards on disk, heavy arrays stripped pre-IPC).
                     maxtasksperchild=4000,
             ) as pool:
+              try:
                 for task_result in pool.imap_unordered(
                         _worker_grid_point, _throttled(pending_tasks)):
                     try:
@@ -1093,6 +1104,11 @@ class GridSearchEngine:
                         # just queued tasks. This is what stops workers
                         # from running ahead and orphaning shards.
                         inflight.release()
+              finally:
+                # Unblock _throttled (see feeder_abort above) so pool
+                # teardown can join _handle_tasks and any pending
+                # exception propagates instead of deadlocking.
+                feeder_abort.set()
 
             # Save one final checkpoint after all grid points complete.
             if checkpoint_dir:
