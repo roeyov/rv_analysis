@@ -79,10 +79,41 @@ def _branch(pgram, Y, errs, mass_rows, cfg, n_perm, rng, fap_thresh,
     permutations too.
     Returns (detected[bool], prob_bicc, iter_fap, P_fit, e_fit, K1_fit,
     mass_flag[bool])."""
-    period, peak_pow, flo, fhi = (pgram.peak_with_fwhm(Y, errs) if has_err
-                                  else pgram.peak_with_fwhm(Y))
-    fit = batched_fit.fit_batch(Y, pgram.t, errs, period, flo, fhi, **(fit_kwargs or {}))
     N = Y.shape[1]
+    excl = None
+    if exclude is not None:
+        excl = np.asarray(exclude, dtype=bool)
+        if not excl.any():
+            excl = None
+    if excl is None:
+        period, peak_pow, flo, fhi = (pgram.peak_with_fwhm(Y, errs) if has_err
+                                      else pgram.peak_with_fwhm(Y))
+        fit = batched_fit.fit_batch(Y, pgram.t, errs, period, flo, fhi,
+                                    **(fit_kwargs or {}))
+    else:
+        # Branches are OR'd, so a column already detected by an earlier branch
+        # cannot change the outcome — the candidate scan + fit run on the
+        # remaining columns only, and placeholders (prob=0 -> fails the cheap
+        # gate, exactly like a sub-threshold fit) are scattered back. The
+        # permutation below still sees the FULL Y: its full-batch shuffle draw
+        # + `active` mask keep every surviving column's iter_fap bit-identical
+        # to a no-exclude call.
+        keep = np.flatnonzero(~excl)
+        Yk = Y[:, keep]
+        ek = errs[keep]
+        period_k, peak_k, flo_k, fhi_k = (pgram.peak_with_fwhm(Yk, ek)
+                                          if has_err
+                                          else pgram.peak_with_fwhm(Yk))
+        fit_k = batched_fit.fit_batch(Yk, pgram.t, ek, period_k, flo_k, fhi_k,
+                                      **(fit_kwargs or {}))
+        peak_pow = np.zeros(N)
+        peak_pow[keep] = peak_k
+        fit = {}
+        for key, fill in (("prob_bicc", 0.0), ("P", 1.0), ("e", 0.0),
+                          ("K1", 0.0)):
+            full = np.full(N, fill)
+            full[keep] = fit_k[key]
+            fit[key] = full
     # cheap gate 1: prob_bicc > 0.5
     prob = fit["prob_bicc"] > 0.5
     # cheap gate 2: Roche-lobe overflow, evaluated only for prob-passers
