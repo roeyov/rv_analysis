@@ -17,7 +17,7 @@ from utils.constants import (
     PERI_LS_NORM, PERI_LS_METHOD, PERI_LS_FA_METHOD,
     PERI_RANDOM_STATE, N_SIG_PERIODS, MIN_SEP, WINDOW_ITERATIONS,
     PERI_PDC_SAMPLES_PER_PEAK, PERI_RUN_PERMUTATIONS_LS,PERI_RUN_PERMUTATIONS_PDC,
-    PERI_SHOW_PERM_PROGRESS, PLOT_STYLE,
+    PERI_SHOW_PERM_PROGRESS, PERI_INCLUDE_HARMONICS, PLOT_STYLE,
 )
 from period_search.periodogram import ls, pdc_opt, plot_periodogram_plotly
 from period_search.permutation import ls_permutation_max_powers_mp, pdc_permutation_max_powers
@@ -373,10 +373,11 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
             "fap_by_iter": np.array(pdc_iterations)
         }
         }
+    include_harmonics = peri_params.get(PERI_INCLUDE_HARMONICS, True)
     for per in ls_sig_periods:
-        append_period_results(results, "LS", per, periodogram_res, pmin, pmax,include_harmonics=True,include_fwhm=use_fwhm)
+        append_period_results(results, "LS", per, periodogram_res, pmin, pmax,include_harmonics=include_harmonics,include_fwhm=use_fwhm)
     for per in pdc_sig_periods:
-        append_period_results(results, "PDC", per, periodogram_res, pmin, pmax,include_harmonics=True, include_fwhm=use_fwhm)
+        append_period_results(results, "PDC", per, periodogram_res, pmin, pmax,include_harmonics=include_harmonics, include_fwhm=use_fwhm)
 
     results_df = pd.DataFrame(results)
 

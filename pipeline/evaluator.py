@@ -67,6 +67,12 @@ def _ensure_star_out_dir(path_to_out, star_name, plot=True):
     return star_out_path
 
 
+def _rv_cols_from_args(args_dict):
+    """RV/error column names from pipeline_io (defaults: 'Mean RV'/'Mean RVsig')."""
+    pio = args_dict.get("pipeline_io", {}) or {}
+    return pio.get("rv_col", "Mean RV"), pio.get("rverr_col", "Mean RVsig")
+
+
 def _find_candidates(rvs, mjds, err_vs, args_dict, star_name, out_dir, use_fwhm):
     """
     Wrapper around find_periods. Returns:
@@ -853,8 +859,9 @@ def main_single(path_to_csv, path_to_out=None, massdf=None, use_fwhm=False,
     # per-star output dir
     star_out_path = _ensure_star_out_dir(path_to_out, star_name, args_dict[PLOT])
     # 1) load & clean
-    data = _load_and_clean_csv(path_to_csv)
-    _rename_to_internal_cols(data)
+    rv_col, rverr_col = _rv_cols_from_args(args_dict)
+    data = _load_and_clean_csv(path_to_csv, rv_col=rv_col, rverr_col=rverr_col)
+    _rename_to_internal_cols(data, rv_col=rv_col, rverr_col=rverr_col)
 
     # 2) prepare arrays & SNR stats
     rvs, mjds, err_vs, median_snr_calc, median_snr_obs = _prepare_inputs_for_period_search(data)
@@ -1024,7 +1031,8 @@ def manual_append_dispatcher(
             massdf=massdf,
         )
 
-def main_multiple(path_to_ccf_out_dir, out_dir=None, obj_list=None, massdf=None):
+def main_multiple(path_to_ccf_out_dir, out_dir=None, obj_list=None, massdf=None,
+                  json_param_file=PARAM_FILE):
     list_of_csvs = glob.glob(os.path.join(path_to_ccf_out_dir, '*_CCF_RVs.csv'))
     if obj_list:
         filtered_list_of_csvs = []
@@ -1038,7 +1046,8 @@ def main_multiple(path_to_ccf_out_dir, out_dir=None, obj_list=None, massdf=None)
             continue
         print(csv)
         path_to_csv = os.path.join(path_to_ccf_out_dir, csv)
-        res_df = main_single(path_to_csv, out_dir,massdf=massdf, use_fwhm=True)
+        res_df = main_single(path_to_csv, out_dir, massdf=massdf, use_fwhm=True,
+                             json_param_file=json_param_file)
 
 def _get_next_solution_id(existing_df: pd.DataFrame) -> int:
     if existing_df is None or existing_df.empty or "solution_id" not in existing_df.columns:
@@ -1105,8 +1114,9 @@ def append_manual_candidate_solution(
     star_out_path = _ensure_star_out_dir(path_to_out, star_name, args_dict[PLOT])
 
     # load & prep data
-    data = _load_and_clean_csv(path_to_csv)
-    _rename_to_internal_cols(data)
+    rv_col, rverr_col = _rv_cols_from_args(args_dict)
+    data = _load_and_clean_csv(path_to_csv, rv_col=rv_col, rverr_col=rverr_col)
+    _rename_to_internal_cols(data, rv_col=rv_col, rverr_col=rverr_col)
     rvs, mjds, err_vs, median_snr_calc, median_snr_obs = _prepare_inputs_for_period_search(data)
 
     # args
@@ -1279,7 +1289,9 @@ if __name__ == "__main__":
 
     if not obj_list:
         # process all stars
-        main_multiple(rv_input_dir, out_dir=output_dir, massdf=massdf)
+        main_multiple(rv_input_dir, out_dir=output_dir, massdf=massdf,
+                      json_param_file=cli.config)
     else:
         main_multiple(rv_input_dir, out_dir=output_dir,
-                      obj_list=obj_list, massdf=massdf)
+                      obj_list=obj_list, massdf=massdf,
+                      json_param_file=cli.config)

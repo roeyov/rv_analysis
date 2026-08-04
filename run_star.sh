@@ -185,6 +185,9 @@ from mcmc.batch import run_mcmc_single_star, run_mcmc_null_full, load_rv_csv
 from mcmc.selector_app import get_best_row
 
 args_dict = load_args('$PARAMS')
+pio = args_dict.get('pipeline_io', {}) or {}
+rv_col = pio.get('rv_col', 'Mean RV')
+rverr_col = pio.get('rverr_col', 'Mean RVsig')
 
 with open('$PARAMS') as f:
     import yaml
@@ -199,7 +202,7 @@ rv_path = f'{base_dir}/{star}_CCF_RVs.csv'
 mcmc_out = f'{base_dir}/{lmfit_subdir}/{star}/mcmc'
 
 results_df = pd.read_csv(csv_path)
-MJDs, rv_obs, rv_sigmas = load_rv_csv(rv_path)
+MJDs, rv_obs, rv_sigmas = load_rv_csv(rv_path, rv_col=rv_col, rverr_col=rverr_col)
 
 mcmc_cfg = cfg.get('mcmc_params', {})
 expr = mcmc_cfg.get('filter_expression', '')

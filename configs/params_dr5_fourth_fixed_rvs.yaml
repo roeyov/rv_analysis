@@ -1,0 +1,119 @@
+# =============================================================================
+# params_dr5_fourth_fixed_rvs.yaml — Stage 2 rerun of dr5_neb_div_from_coadded
+# using the per-field, per-epoch RV zero-point-corrected columns
+# ("fixed Mean RV" / "fixed Mean RVsig"), produced from RVcorrectionsDR5.csv by
+#
+#   python -m spectroscopy.apply_rv_corrections \
+#       --corrections <base_dir>/RVcorrectionsDR5.csv --input-dir <base_dir>
+#
+# fixed Mean RV    = Mean RV + rv_correction
+# fixed Mean RVsig = sqrt(Mean RVsig^2 + Error^2)
+#
+#   Stage 2:  python -m pipeline.evaluator --config configs/params_dr5_fourth_fixed_rvs.yaml
+#   Stage 4:  python -m mcmc.batch         --config configs/params_dr5_fourth_fixed_rvs.yaml
+#
+# include_harmonics: false — candidate generation comparable to second_pdc
+# (no P/2 or 2P harmonic candidates).
+# =============================================================================
+
+plot: true
+plot_style: "paper"
+random_seed: 562
+manual_candidate_periods: [30]
+
+base_dir:      "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded"
+lmfit_subdir:  "fourth_fixed_rvs"  # stage 2 writes here, stage 4 reads
+mcmc_subdir:   "mcmc_out"          # stage 4 writes here (nested under lmfit_subdir)
+
+pipeline_io:
+  object_list: []                  # empty list = process all stars
+  mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"
+  use_fwhm: true
+  rv_col:    "fixed Mean RV"       # default when absent: "Mean RV"
+  rverr_col: "fixed Mean RVsig"    # default when absent: "Mean RVsig"
+
+# ---- Periodogram settings ----
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 1000
+  random_state: 123
+  n_sig_periods: 4
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10000
+  run_permutations_ls: true
+  run_permutations_pdc: true
+  include_harmonics: false         # default when absent: true
+  show_permutation_progress: false # keep the batch log readable (display only)
+
+# ---- Simulated data parameters (unused here; keys expected by loaders) ----
+simulated_params:
+  T0: 0.0
+  Period: 250.0
+  Eccentricity: 0.3
+  OMEGA_rad: 1.0
+  K1: 15.0
+  K2: 7.0
+  GAMMA: 10.0
+  number_of_samples: 25
+  noise_sigma: 3.0
+
+# ---- lmfit search region ----
+lmfit_params:
+  possible_minimization_method:
+    - leastsq
+    - least_squares
+    - nelder
+    - lbfgsb
+    - powell
+    - cg
+    - newton
+    - cobyla
+    - bfgs
+    - tnc
+    - trust-constr
+    - slsqp
+    - emcee
+    - ampgo
+    - basinhopping
+    - differential_evolution
+    - brute
+  minimization_method: "differential_evolution"
+  search_region:
+    Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
+    GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
+    K1:           {init_value: 200.0,   min_value: 0.0,    max_value: 400.0,   vary: true}
+    OMEGA_rad:    {init_value: 3.14,    min_value: 0.0,    max_value: 6.4,     vary: true}
+    Eccentricity: {init_value: 0.0,     min_value: 0.0,    max_value: 0.9999,  vary: true}
+    T0:           {init_value: 0.0,     min_value: 0.0,    max_value: 0.0,     vary: true}
+    ln_sigmaJ:    {init_value: 0.0,     min_value: -2,     max_value: 4.5,     vary: true}
+
+# ---- MCMC posterior sampling ----
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+
+  # Best-row selection: prob_bicc > 0.5, mass_flag_peri == 0, and the
+  # period-method-matched iterative FAP < 0.2; best (minimum) BICc.
+  filter_expression: >-
+    ~candidate_method.str.contains('MANUAL')
+    & ~candidate_method.str.contains('null')
+    & candidate_method.str.contains('jitter')
+    & (prob_bicc > 0.5)
+    & (mass_flag_peri == 0)
+    & ((candidate_method.str.contains('LS')
+    & (LS_iter_fap < 0.2))
+    | (candidate_method.str.contains('PDC')
+    & (PDC_iter_fap < 0.2)))
+  field_to_check: "bicc"
+  take_min: true

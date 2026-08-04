@@ -218,6 +218,10 @@ def run_mcmc_batch(args_dict, rv_dir, lmfit_dir, out_dir,
     rv_files = sorted(glob.glob(rv_pattern))
     print(f"Found {len(rv_files)} RV files to scan in {rv_dir}")
 
+    pio = args_dict.get("pipeline_io", {}) or {}
+    rv_col = pio.get("rv_col", "Mean RV")
+    rverr_col = pio.get("rverr_col", "Mean RVsig")
+
     if filter_expression is None:
         filter_expression = (
             "~candidate_method.str.contains('MANUAL')"
@@ -260,7 +264,8 @@ def run_mcmc_batch(args_dict, rv_dir, lmfit_dir, out_dir,
             continue
 
         try:
-            MJDs, rv_obs, rv_sigmas = load_rv_csv(rv_path)
+            MJDs, rv_obs, rv_sigmas = load_rv_csv(rv_path, rv_col=rv_col,
+                                                  rverr_col=rverr_col)
         except Exception as e:
             print(f"  Failed to load RVs from {rv_path}: {e}, skipping.")
             continue

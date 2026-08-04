@@ -56,6 +56,11 @@ TAKE_MIN = True
 
 def main():
     args_dict = load_args("configs/params.yaml")  # walker/step settings only
+    # The second_pdc lmfit solutions were fit on the uncorrected columns —
+    # pin them so a future rv_col in params.yaml cannot mix fixed/unfixed RVs.
+    args_dict.setdefault("pipeline_io", {})
+    args_dict["pipeline_io"]["rv_col"] = "Mean RV"
+    args_dict["pipeline_io"]["rverr_col"] = "Mean RVsig"
 
     # ---- Build the subset: relaxed-pass but strict-fail ----
     subset = []

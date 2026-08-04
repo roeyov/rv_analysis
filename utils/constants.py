@@ -46,6 +46,7 @@ PERI_PDC_SAMPLES_PER_PEAK = "pdc_samples_per_peak"
 PERI_RUN_PERMUTATIONS_LS = "run_permutations_ls"
 PERI_RUN_PERMUTATIONS_PDC = "run_permutations_pdc"
 PERI_SHOW_PERM_PROGRESS = "show_permutation_progress"
+PERI_INCLUDE_HARMONICS = "include_harmonics"
 
 LMFIT_PARAMS = "lmfit_params"
 SEARCH_REGION = "search_region"

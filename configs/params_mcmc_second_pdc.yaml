@@ -1,0 +1,45 @@
+# =============================================================================
+# params_mcmc_second_pdc.yaml — Stage 4 MCMC rerun over the second_pdc
+# lmfit solutions (dr5_neb_div_from_coadded), with the jitter-combined
+# errorbar phase plots.
+#
+#   python -m mcmc.batch --config configs/params_mcmc_second_pdc.yaml
+# =============================================================================
+
+plot: true
+plot_style: "paper"
+random_seed: 562
+
+base_dir:      "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded"
+lmfit_subdir:  "second_pdc"        # stage 4 reads lmfit summaries from here
+mcmc_subdir:   "mcmc_out3"         # stage 4 writes here (nested under lmfit_subdir)
+
+pipeline_io:
+  object_list: []
+  mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"
+  use_fwhm: true
+
+# ---- MCMC posterior sampling ----
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+
+  # Best-row selection: prob_bicc > 0.5, mass_flag_peri == 0, and the
+  # period-method-matched iterative FAP < 0.2; best (minimum) BICc.
+  filter_expression: >-
+    ~candidate_method.str.contains('MANUAL')
+    & ~candidate_method.str.contains('null')
+    & candidate_method.str.contains('jitter')
+    & (prob_bicc > 0.5)
+    & (mass_flag_peri == 0)
+    & ((candidate_method.str.contains('LS')
+    & (LS_iter_fap < 0.2))
+    | (candidate_method.str.contains('PDC')
+    & (PDC_iter_fap < 0.2)))
+  field_to_check: "bicc"
+  take_min: true

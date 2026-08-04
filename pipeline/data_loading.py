@@ -37,24 +37,30 @@ def get_bloem_object_name(path_to_csv):
         return 'No_named_object'
 
 
-def _load_and_clean_csv(path_to_csv):
+def _load_and_clean_csv(path_to_csv, rv_col='Mean RV', rverr_col='Mean RVsig'):
     """Read CSV, drop rows with missing RV/time/sigma, return cleaned df and dropped info."""
     data = pd.read_csv(path_to_csv, sep=',')
-    mask = data[['Mean RV', 'MJD', 'Mean RVsig']].isna().any(axis=1)
+    required = [rv_col, 'MJD', rverr_col]
+    missing = [c for c in required if c not in data.columns]
+    if missing:
+        raise KeyError(
+            f"{path_to_csv}: missing columns {missing} "
+            f"(if using fixed columns, run spectroscopy/apply_rv_corrections.py first)")
+    mask = data[required].isna().any(axis=1)
     if mask.any():
         print("Dropped indices:", data.index[mask].tolist())
-        print("Causes:\n", data.loc[mask, ['Mean RV', 'MJD', 'Mean RVsig']].isna())
-    data = data.dropna(subset=['Mean RV', 'MJD', 'Mean RVsig']).reset_index(drop=True)
+        print("Causes:\n", data.loc[mask, required].isna())
+    data = data.dropna(subset=required).reset_index(drop=True)
     # data = data[data.MJD <60300]
     # data = data.iloc[9:].reset_index(drop=True)
     return data
 
 
-def _rename_to_internal_cols(data):
+def _rename_to_internal_cols(data, rv_col='Mean RV', rverr_col='Mean RVsig'):
     """Standardize column names to internal constants."""
     data.rename(columns={'MJD': TIME_STAMPS,
-                         'Mean RV': RADIAL_VELS,
-                         'Mean RVsig': ERRORS}, inplace=True)
+                         rv_col: RADIAL_VELS,
+                         rverr_col: ERRORS}, inplace=True)
 
 
 def _prepare_inputs_for_period_search(data):
