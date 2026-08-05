@@ -6,7 +6,7 @@
 #   python -m spectroscopy.apply_rv_corrections \
 #       --corrections <base_dir>/RVcorrectionsDR5.csv --input-dir <base_dir>
 #
-# fixed Mean RV    = Mean RV + rv_correction
+# fixed Mean RV    = Mean RV - rv_correction   (offset subtracted)
 # fixed Mean RVsig = sqrt(Mean RVsig^2 + Error^2)
 #
 #   Stage 2:  python -m pipeline.evaluator --config configs/params_dr5_fourth_fixed_rvs.yaml

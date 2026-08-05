@@ -8,9 +8,10 @@ where config = F<field>_E<epoch>, is joined per field onto each star's CSV by
 nearest MJD (the correction MJDs are the CCF MJDs rounded to ~4 decimals, so
 exact matching is impossible; the default tolerance of 5e-3 d is far above the
 rounding error and below half the closest epoch pair, 0.0185 d in field 8).
-Two columns are appended to each CSV:
+Two columns are appended to each CSV (default sign = -1, i.e. the observed
+per-epoch offset is SUBTRACTED from the measured RV):
 
-    fixed Mean RV    = Mean RV + sign * rv_correction
+    fixed Mean RV    = Mean RV + sign * rv_correction   (default: minus)
     fixed Mean RVsig = sqrt(Mean RVsig**2 + Error**2)
 
 NaNs in the input RV columns propagate to the fixed columns. The script runs
@@ -128,8 +129,8 @@ def main(argv=None):
     ap.add_argument("--rverr-col", default="Mean RVsig")
     ap.add_argument("--out-rv-col", default="fixed Mean RV")
     ap.add_argument("--out-rverr-col", default="fixed Mean RVsig")
-    ap.add_argument("--sign", type=float, default=1.0,
-                    help="fixed = rv + sign*correction (default: +1)")
+    ap.add_argument("--sign", type=float, default=-1.0,
+                    help="fixed = rv + sign*correction (default: -1, subtract)")
     ap.add_argument("--tolerance", type=float, default=5e-3,
                     help="max |MJD_csv - MJD_corr| in days (default: 5e-3)")
     ap.add_argument("--dry-run", action="store_true",
