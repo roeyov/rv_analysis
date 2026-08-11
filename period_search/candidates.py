@@ -18,9 +18,13 @@ from utils.constants import (
     PERI_RANDOM_STATE, N_SIG_PERIODS, MIN_SEP, WINDOW_ITERATIONS,
     PERI_PDC_SAMPLES_PER_PEAK, PERI_RUN_PERMUTATIONS_LS,PERI_RUN_PERMUTATIONS_PDC,
     PERI_SHOW_PERM_PROGRESS, PERI_INCLUDE_HARMONICS, PLOT_STYLE,
+    PERI_PDC_PERM_MODE, PERI_FWHM_WINDOW_FACTOR,
 )
 from period_search.periodogram import ls, pdc_opt, plot_periodogram_plotly
-from period_search.permutation import ls_permutation_max_powers_mp, pdc_permutation_max_powers
+from period_search.permutation import (
+    ls_permutation_max_powers_mp, pdc_permutation_max_powers,
+    pdc_permutation_max_powers_batched,
+)
 from PDC.pdc_func import pdc_window
 from utils.periodogramFAPAnalysis import analyze_permutation_convergence
 
@@ -63,7 +67,8 @@ def append_period_results(results,
                           pmin,
                           pmax,
                           include_harmonics=True,
-                          include_fwhm=False):
+                          include_fwhm=False,
+                          fwhm_window_factor=np.inf):
     """
     Append periodogram diagnostics for a given period (and optionally its
     half/double harmonics) into `results`.
@@ -85,6 +90,12 @@ def append_period_results(results,
         If True, also append results at P/2 and 2P.
     include_fwhm : bool
         If True, compute FWHM bounds for the base method.
+    fwhm_window_factor : float
+        Clip the FWHM fit window to [P / factor, P * factor]. `np.inf` (the
+        default) leaves the raw half-power bounds untouched. A finite factor
+        stops candidates whose half-power point runs off the frequency grid
+        from inheriting the full [min_period, max_period] range, which lets a
+        fit escape into a distant alias basin.
     """
     if not (pmin < per < pmax):
         return
@@ -111,7 +122,7 @@ def append_period_results(results,
 
         return power, fap, iter_fap
 
-    def _maybe_add_fwhm(rec, method_name, idx):
+    def _maybe_add_fwhm(rec, method_name, idx, period_value):
         if not include_fwhm:
             return
         fL, fR = _fwhm_bounds(
@@ -119,11 +130,34 @@ def append_period_results(results,
             periodogram_res[method_name]["pow"],
             idx
         )
+        # Sort explicitly: LS and PDC store frequencies in opposite order, so
+        # mapping fL/fR to low/high by position inverts the bounds for one
+        # of them (lmfit silently reorders min > max, hiding it).
+        pers = [1.0 / f for f in (fL, fR) if np.isfinite(f) and f > 0]
+        if len(pers) == 2:
+            lo, hi = min(pers), max(pers)
+            if np.isfinite(fwhm_window_factor) and fwhm_window_factor > 1.0:
+                cap_lo, cap_hi = (period_value / fwhm_window_factor,
+                                  period_value * fwhm_window_factor)
+                # The half-power bounds bracket the nearest GRID period, which
+                # can sit outside [P/factor, P*factor] on a coarse grid at long
+                # P. Clipping blindly would then invert the window (lmfit
+                # silently swaps min/max, leaving a range that excludes the
+                # candidate). Keep the cap only where it still brackets P.
+                new_lo, new_hi = max(lo, cap_lo), min(hi, cap_hi)
+                if new_hi > new_lo:
+                    lo, hi = new_lo, new_hi
+                else:
+                    print(f"fwhm_window_factor={fwhm_window_factor} would invert "
+                          f"the window for P={period_value:.6g} "
+                          f"(raw [{lo:.6g}, {hi:.6g}]); leaving it uncapped")
+        else:
+            lo, hi = np.nan, np.nan
         rec.update({
             "fwhm_freq_low": fL,
             "fwhm_freq_high": fR,
-            "fwhm_per_low": 1.0 / fR if np.isfinite(fR) and fR > 0 else np.nan,
-            "fwhm_per_high": 1.0 / fL if np.isfinite(fL) and fL > 0 else np.nan,
+            "fwhm_per_low": lo,
+            "fwhm_per_high": hi,
         })
 
     def _add_other_methods(rec, freq_target, base_method):
@@ -148,7 +182,7 @@ def append_period_results(results,
             base_method + "_iter_fap": iter_fap_b,
         }
 
-        _maybe_add_fwhm(rec, base_method, idx)
+        _maybe_add_fwhm(rec, base_method, idx, period_value)
         _add_other_methods(rec, freq_target, base_method)
         results.append(rec)
 
@@ -291,18 +325,37 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
     run_perms = peri_params.get(PERI_RUN_PERMUTATIONS_PDC, False)
 
     if run_perms:
-        pdc_iterations = pdc_permutation_max_powers(
-            rvs=rvs,
-            mjds=mjds,
-            err_vs=err_vs,
-            n_iter=n_iter,
-            pmin=pmin,
-            pmax=pmax,
-            probabilities=(0.5, 0.01, 0.001),
-            random_state=peri_params[PERI_RANDOM_STATE],
-            show_progress=show_perm_progress,
-            samples_per_peak=pdc_spp,
-        )
+        pdc_perm_mode = str(peri_params.get(PERI_PDC_PERM_MODE, "production")).lower()
+        if pdc_perm_mode not in ("production", "batched"):
+            raise ValueError(
+                f"{PERI_PDC_PERM_MODE}={pdc_perm_mode!r} is not recognised "
+                f"(expected 'production' or 'batched')")
+        if pdc_perm_mode == "batched":
+            # Same shuffles, scored as a GEMM over all permutations at once.
+            pdc_iterations = pdc_permutation_max_powers_batched(
+                rvs=rvs,
+                mjds=mjds,
+                err_vs=err_vs,
+                n_iter=n_iter,
+                pmin=pmin,
+                pmax=pmax,
+                random_state=peri_params[PERI_RANDOM_STATE],
+                show_progress=show_perm_progress,
+                samples_per_peak=pdc_spp,
+            )
+        else:
+            pdc_iterations = pdc_permutation_max_powers(
+                rvs=rvs,
+                mjds=mjds,
+                err_vs=err_vs,
+                n_iter=n_iter,
+                pmin=pmin,
+                pmax=pmax,
+                probabilities=(0.5, 0.01, 0.001),
+                random_state=peri_params[PERI_RANDOM_STATE],
+                show_progress=show_perm_progress,
+                samples_per_peak=pdc_spp,
+            )
     else:
         pdc_iterations = []
 
@@ -374,10 +427,14 @@ def find_periods(rvs, mjds, err_vs, args_dict, star_name, out_dir=None, use_fwhm
         }
         }
     include_harmonics = peri_params.get(PERI_INCLUDE_HARMONICS, True)
+    fwhm_window_factor = peri_params.get(PERI_FWHM_WINDOW_FACTOR, np.inf)
+    fwhm_window_factor = np.inf if fwhm_window_factor is None else float(fwhm_window_factor)
     for per in ls_sig_periods:
-        append_period_results(results, "LS", per, periodogram_res, pmin, pmax,include_harmonics=include_harmonics,include_fwhm=use_fwhm)
+        append_period_results(results, "LS", per, periodogram_res, pmin, pmax,include_harmonics=include_harmonics,include_fwhm=use_fwhm,
+                              fwhm_window_factor=fwhm_window_factor)
     for per in pdc_sig_periods:
-        append_period_results(results, "PDC", per, periodogram_res, pmin, pmax,include_harmonics=include_harmonics, include_fwhm=use_fwhm)
+        append_period_results(results, "PDC", per, periodogram_res, pmin, pmax,include_harmonics=include_harmonics, include_fwhm=use_fwhm,
+                              fwhm_window_factor=fwhm_window_factor)
 
     results_df = pd.DataFrame(results)
 

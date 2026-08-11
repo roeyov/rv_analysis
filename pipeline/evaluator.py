@@ -10,6 +10,7 @@ Entry points:
 import os
 import glob
 import copy
+import hashlib
 import multiprocessing
 
 import numpy as np
@@ -120,6 +121,94 @@ def debug_compare(mini_results, data):
 # Candidate fitting (single worker + serial/parallel wrappers)
 # ---------------------------------------------------------------------------
 
+def _derive_de_seed(base_seed, *parts):
+    """
+    Per-fit differential_evolution seed derived deterministically from a base.
+
+    lmfit rescales every parameter onto the same internal bounds (+-pi/2), so a
+    single fixed seed gives every fit with the same number of free parameters an
+    identical latin-hypercube starting population — across candidates and across
+    stars. That turns an unlucky hypercube into a sample-wide systematic instead
+    of an independent per-fit draw. Hashing the candidate's identity into the
+    seed keeps the run exactly reproducible while decorrelating the starts.
+    """
+    if base_seed is None:
+        return None
+    key = "|".join([str(base_seed)] + [str(p) for p in parts])
+    return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
+
+
+_CIRC_COLS = [
+    "circ_bicc", "circ_llh", "circ_chisqr", "circ_redchi",
+    "circ_nfev", "circ_nvarys",
+    "circ_Period_value", "circ_K1_value", "circ_GAMMA_value",
+    "circ_T0_value", "circ_ln_sigmaJ_value",
+    "p_bicc_kep_vs_circ",
+]
+
+
+def _run_circular_comparison(local_args_dict, data, kep_row):
+    """
+    Fit the circular counterpart of an already-fitted Keplerian candidate.
+
+    Same period/T0 window as the Keplerian fit, but with e = 0 and
+    omega = pi/2 held fixed (the repo's circular convention, cf.
+    mcmc.models.log_likelihood_circ), i.e. 5 free parameters instead of 7.
+    `result.nvarys` therefore carries the reduced count and BICc is penalised
+    correctly by calculate_statistical_flags without any change there.
+
+    Returns a dict of circ_* columns (all-NaN if the fit fails), never raises.
+    """
+    out = {k: np.nan for k in _CIRC_COLS}
+
+    circ_args = copy.deepcopy(local_args_dict)
+    change_search_region_default(circ_args, ECC, 0.0, 0.0, 0.9999, False)
+    change_search_region_default(circ_args, OMEGA, np.pi / 2, 0.0, 6.4, False)
+    # own DE start, independent of the Keplerian fit's
+    circ_args[LMFIT_PARAMS][DE_SEED] = _derive_de_seed(
+        local_args_dict[LMFIT_PARAMS].get(DE_SEED, None), "circ")
+
+    try:
+        circ_res = lmfit_on_sample(circ_args, data, use_jitter=True)
+    except Exception as e:
+        print(f"Circular comparison fit failed for period "
+              f"{kep_row.get('candidate_period')}: {e}")
+        return out
+
+    stats = calculate_statistical_flags(data, circ_res, is_null=False)
+    params = circ_res.params
+    out.update({
+        "circ_bicc": stats["bicc"],
+        "circ_llh": stats["llh"],
+        "circ_chisqr": stats["chisqr"],
+        "circ_redchi": stats["redchi"],
+        "circ_nfev": circ_res.nfev,
+        "circ_nvarys": circ_res.nvarys,
+        "circ_Period_value": params[PERIOD].value,
+        "circ_K1_value": params[K1_STR].value,
+        "circ_GAMMA_value": params[GAMMA].value,
+        "circ_T0_value": params[T].value,
+        "circ_ln_sigmaJ_value": params[LN_SIGMA_JITTER].value,
+        "p_bicc_kep_vs_circ": calculate_binary_probability(
+            kep_row["bicc"], stats["bicc"]),
+    })
+
+    # The circular model is nested in the Keplerian one, so at their exact
+    # optima llh_circ >= llh_kep (llh is a cost). differential_evolution stops
+    # on a tolerance, so a small inversion is ordinary optimizer slack; only
+    # flag violations large enough to matter against the BICc penalty gap
+    # (~2*ln(N) ~ 6-13), which would mean the Keplerian missed its basin.
+    # Both llh values are persisted, so this is also auditable after the run.
+    kep_llh = kep_row.get("llh", np.nan)
+    tol = max(1e-3 * abs(kep_llh), 1e-6) if np.isfinite(kep_llh) else np.inf
+    if np.isfinite(kep_llh) and stats["llh"] < kep_llh - tol:
+        print(f"WARNING: circular llh ({stats['llh']:.4f}) < Keplerian llh "
+              f"({kep_llh:.4f}) for period {kep_row.get('candidate_period')} "
+              f"-> Keplerian fit under-converged")
+
+    return out
+
+
 def _fit_single_candidate_worker(packed_args):
     """
     Worker function to process a single candidate in a separate process.
@@ -150,6 +239,11 @@ def _fit_single_candidate_worker(packed_args):
         local_args_dict, T, min(data[TIME_STAMPS]),
         min(data[TIME_STAMPS]) - chosen_period, min(data[TIME_STAMPS]) + chosen_period, True
     )
+
+    # Give this candidate its own DE starting population (see _derive_de_seed).
+    local_args_dict[LMFIT_PARAMS][DE_SEED] = _derive_de_seed(
+        local_args_dict[LMFIT_PARAMS].get(DE_SEED, None),
+        star_name, getattr(cand, "method", ""), f"{chosen_period:.10g}")
 
     # 3. Run Fitting
     try:
@@ -196,6 +290,11 @@ def _fit_single_candidate_worker(packed_args):
     phase_cv = calculate_phase_criterias(data, mini_results)
     row.update(phase_cv)
     row.update(coverage_qc(phase_cv, data[RADIAL_VELS]))
+
+    # 6. Optional circular (e=0, omega=pi/2) counterpart for model comparison.
+    #    Needs row['bicc'], set by calculate_statistical_flags above.
+    if cand.jitter and local_args_dict[LMFIT_PARAMS].get(FIT_CIRCULAR_COMPARISON, False):
+        row.update(_run_circular_comparison(local_args_dict, data, row))
 
     return (row, mini_results, cand)
 
@@ -270,6 +369,10 @@ def _fit_candidates_over_periods(candidates_df, args_dict, data, star_name,init_
     """
     Iterate over candidate periods, run lmfit, summarize each result, compute phase coverage,
     and track best fit by proximity of redchi to 1. Returns (rows, best_result, best_cand).
+
+    NOTE: unused — main_single() calls _fit_candidates_over_periods_parallel().
+    The circular comparison fit (FIT_CIRCULAR_COMPARISON) lives only in
+    _fit_single_candidate_worker and is therefore absent here.
     """
     rows = []
     best_result, best_cand = None, None
@@ -359,7 +462,10 @@ def _run_null_hypothesis(args_dict, data, star_name, use_jitter=False,solution_i
     # lock PERIOD and K1 near zero
     change_search_region_default(args_dict, PERIOD, 0, -0.1, 0.1, False)
     change_search_region_default(args_dict, K1_STR, 0, -0.1, 0.1, False)
-    null_res = lmfit_on_sample(args_dict, data,
+    null_args = copy.deepcopy(args_dict)
+    null_args[LMFIT_PARAMS][DE_SEED] = _derive_de_seed(
+        args_dict[LMFIT_PARAMS].get(DE_SEED, None), star_name, "null")
+    null_res = lmfit_on_sample(null_args, data,
                                null_hyp=True,use_jitter=use_jitter)
 
     null_row = {
@@ -437,6 +543,11 @@ def _attach_probs_constraints(rows, null_row, data, rvs, massdf, path_to_csv,use
         p_bicc = calculate_binary_probability(row['bicc'], null_bicc)
         p_ev_bic = calculate_binary_probability(row['ev_bic'], null_ev_bic)
         row.update(dict(p_val=p_val, prob_full=prob_full, prob_aic=p_aic, prob_bic=p_bic, prob_bicc=p_bicc, prob_ev_bic=p_ev_bic))
+
+        # Circular model vs null (only when the circular comparison ran)
+        circ_bicc = row.get("circ_bicc", np.nan)
+        if np.isfinite(circ_bicc):
+            row["prob_bicc_circ"] = calculate_binary_probability(circ_bicc, null_bicc)
 
         # F test vs null
         f_dict = f_test(data, row, null_row)
@@ -587,6 +698,11 @@ def run_mcmc(args_dict, results_df, MJDs, rv_obs, rv_sigmas, out_dir , star_name
     P_center  = initial_ecc[0]
     T0_center = initial_ecc[1]
 
+    # Period prior width (box + Gaussian), configurable; defaults reproduce the
+    # historical hard-coded +-1% box with a 0.2% Gaussian.
+    dP_frac = float(args_dict[MCMC_PARAMS].get(DP_FRAC, 0.01))
+    sigma_P_frac = float(args_dict[MCMC_PARAMS].get(SIGMA_P_FRAC, 0.002))
+
     # --------------------------
     # Eccentric MCMC
     # --------------------------
@@ -596,7 +712,8 @@ def run_mcmc(args_dict, results_df, MJDs, rv_obs, rv_sigmas, out_dir , star_name
         P_center=P_center,
         T0_center=T0_center,
         dT0_days=P_center/2.0,
-        dP_frac=0.01,
+        dP_frac=dP_frac,
+        sigma_P_frac=sigma_P_frac,
         nwalkers=args_dict[MCMC_PARAMS][WALKERS],
         nsteps=args_dict[MCMC_PARAMS][STEPS],
         nburn=args_dict[MCMC_PARAMS][BURN],
@@ -658,7 +775,8 @@ def run_mcmc(args_dict, results_df, MJDs, rv_obs, rv_sigmas, out_dir , star_name
             P_center=P_center,
             T0_center=T0_center,
             dT0_days=P_center/2.0,
-            dP_frac=0.01,
+            dP_frac=dP_frac,
+            sigma_P_frac=sigma_P_frac,
             nwalkers=args_dict[MCMC_PARAMS][WALKERS],
             nsteps=args_dict[MCMC_PARAMS][STEPS],
             nburn=args_dict[MCMC_PARAMS][BURN],

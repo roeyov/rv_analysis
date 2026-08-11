@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from utils.constants import (
     TIME_STAMPS, RADIAL_VELS, ERRORS,
-    LMFIT_PARAMS, SEARCH_REGION, MINI_METHOD, MAX_NFEV,
+    LMFIT_PARAMS, SEARCH_REGION, MINI_METHOD, MAX_NFEV, DE_SEED,
     PERIOD, GAMMA, K1_STR, OMEGA, ECC, T,
     LN_SIGMA_JITTER, INIT_VAL, MIN_VAL, MAX_VAL, VARY,
 )
@@ -235,6 +235,14 @@ def lmfit_on_sample(args_dict, data, null_hyp=False, use_jitter=False):
     params            = lmfit.Parameters()
     search_params     = lmfit_params_dict[SEARCH_REGION]
 
+    # Optional reproducibility for differential_evolution. lmfit forwards extra
+    # kwargs straight to scipy.optimize.differential_evolution; when unset the
+    # optimizer keeps its default (unseeded) behaviour.
+    de_seed = lmfit_params_dict.get(DE_SEED, None)
+    minimize_kws = {}
+    if de_seed is not None and mini_method == "differential_evolution":
+        minimize_kws["seed"] = int(de_seed)
+
     # ---- null hypothesis: constant velocity fit ----
     if null_hyp:
         if use_jitter:
@@ -251,7 +259,7 @@ def lmfit_on_sample(args_dict, data, null_hyp=False, use_jitter=False):
                          RADIAL_VELS: v1s,
                          ERRORS: errv1s}
             )
-            result = mini.minimize(method=mini_method, max_nfev=max_nfev)
+            result = mini.minimize(method=mini_method, max_nfev=max_nfev, **minimize_kws)
             return result
         else:
             gamma0   = get_rv_weighted_mean(data)
@@ -284,7 +292,7 @@ def lmfit_on_sample(args_dict, data, null_hyp=False, use_jitter=False):
                      RADIAL_VELS: v1s,
                      ERRORS: errv1s}
         )
-    result = mini.minimize(method=mini_method, max_nfev=max_nfev)
+    result = mini.minimize(method=mini_method, max_nfev=max_nfev, **minimize_kws)
     return result
 
 

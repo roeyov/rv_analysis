@@ -47,11 +47,21 @@ PERI_RUN_PERMUTATIONS_LS = "run_permutations_ls"
 PERI_RUN_PERMUTATIONS_PDC = "run_permutations_pdc"
 PERI_SHOW_PERM_PROGRESS = "show_permutation_progress"
 PERI_INCLUDE_HARMONICS = "include_harmonics"
+# "production" (default, sequential pdc_opt loop) or "batched" (GEMM null,
+# replays the identical seeded shuffles). See period_search.permutation.
+PERI_PDC_PERM_MODE = "pdc_perm_mode"
+# Cap on the FWHM fit window: bounds are clipped to [P/factor, P*factor].
+# np.inf (default) reproduces the historical unbounded behaviour.
+PERI_FWHM_WINDOW_FACTOR = "fwhm_window_factor"
 
 LMFIT_PARAMS = "lmfit_params"
 SEARCH_REGION = "search_region"
 MINI_METHOD = "minimization_method"
 MAX_NFEV = "max_nfev"
+# Optional seed for scipy differential_evolution (reproducible fits).
+DE_SEED = "de_seed"
+# Fit a circular (e=0, omega=pi/2) counterpart for every candidate.
+FIT_CIRCULAR_COMPARISON = "fit_circular_comparison"
 BIN_TIME = "BinTime"
 INIT_VAL = "init_value"
 MIN_VAL = "min_value"
@@ -59,6 +69,14 @@ MAX_VAL = "max_value"
 VARY = "vary"
 
 MCMC_PARAMS = "mcmc_params"
+# Period prior width: uniform box +-DP_FRAC and Gaussian sigma SIGMA_P_FRAC,
+# both as fractions of the lmfit period. Defaults match the historical
+# hard-coded values (0.01 / 0.002).
+DP_FRAC = "dP_frac"
+SIGMA_P_FRAC = "sigma_P_frac"
+# Stuck-walker pruning of the published summaries (mcmc.analysis.
+# prune_stuck_walkers); the saved chains always stay raw + keep mask.
+PRUNE_STUCK_WALKERS = "prune_stuck_walkers"
 TRUTHS = "truths"
 LN_SIGMA = "__lnsigma"
 CONRER_METHOD = "method"
