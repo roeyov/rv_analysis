@@ -218,6 +218,11 @@ def plot_orbit_with_band_phase(t, rv, rv_err,
 
         gamma_map = _unpack(theta_map)[-1]
 
+        # ── combined (measurement ⊕ jitter) uncertainties ────────────
+        s_jit = float(np.exp(theta_map[-1])) if add_jitter else None
+        if s_jit is not None:
+            err_tot = np.sqrt(np.asarray(rv_err) ** 2 + s_jit ** 2)
+
         # ── figure: main + residuals (3:1) ───────────────────────────
         fig = plt.figure(figsize=(_FULL_WIDTH, _FULL_WIDTH * 0.38))
         gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.0)
@@ -233,6 +238,14 @@ def plot_orbit_with_band_phase(t, rv, rv_err,
                 label="MAP orbit")
         ax.plot(phase_grid, rv_med_grid, color="C3", lw=1.0, ls="--",
                 label="Median orbit")
+
+        if s_jit is not None:
+            ax.errorbar(phase_data[order], rv[order], yerr=err_tot[order],
+                        fmt="none", ecolor="0.55", elinewidth=0.7,
+                        capsize=2, capthick=0.7, zorder=4,
+                        label=(r"$\sigma \oplus \sigma_\mathrm{jit}$"
+                               rf" ($\sigma_\mathrm{{jit}}={s_jit:.1f}$"
+                               r" km$\,$s$^{-1}$)"))
 
         ax.errorbar(phase_data[order], rv[order], yerr=rv_err[order],
                     fmt="o", ms=4.5, color="C0", ecolor="C0",
@@ -257,6 +270,11 @@ def plot_orbit_with_band_phase(t, rv, rv_err,
 
         # ── bottom panel: O−C ────────────────────────────────────────
         ax_r.axhline(0, color="0.50", ls="-", lw=0.7)
+        if s_jit is not None:
+            ax_r.errorbar(phase_data[order], residuals[order],
+                          yerr=err_tot[order],
+                          fmt="none", ecolor="0.55", elinewidth=0.7,
+                          capsize=2, capthick=0.7, zorder=4)
         ax_r.errorbar(phase_data[order], residuals[order],
                       yerr=rv_err[order],
                       fmt="o", ms=4.5, color="C0", ecolor="C0",

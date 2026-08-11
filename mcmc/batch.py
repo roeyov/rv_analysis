@@ -60,6 +60,17 @@ def save_choose_params_file(out_dir, choose_params):
 # Single-star MCMC drivers
 # ---------------------------------------------------------------------------
 
+def _seed_and_save(args_dict, out_dir, star_name, tag):
+    """Per-(star, tag) derived seed + chain save path (None-safe)."""
+    from mcmc.chain_io import derive_seed
+
+    base_seed = args_dict.get("random_seed")
+    seed = (derive_seed(base_seed, star_name, tag)
+            if base_seed is not None else None)
+    save_path = os.path.join(out_dir, f"chains_{tag}.npz")
+    return seed, save_path
+
+
 def run_mcmc_null_full(args_dict, best_row, MJDs, rv_obs, rv_sigmas,
                        out_dir, star_name=""):
     """Run null-model MCMC for a single lmfit row."""
@@ -71,6 +82,7 @@ def run_mcmc_null_full(args_dict, best_row, MJDs, rv_obs, rv_sigmas,
     gamma_val = float(get_param(best_row, GAMMA, kind="value"))
     initial = np.array([gamma_val])
 
+    seed, save_path = _seed_and_save(args_dict, out_dir, star_name, "null")
     flat_null, logp_null, _ = run_mcmc_null(
         MJDs, rv_obs, rv_sigmas, initial,
         nwalkers=args_dict[MCMC_PARAMS][WALKERS],
@@ -78,6 +90,9 @@ def run_mcmc_null_full(args_dict, best_row, MJDs, rv_obs, rv_sigmas,
         nburn=args_dict[MCMC_PARAMS][BURN],
         thin=args_dict[MCMC_PARAMS][THIN],
         progress=True, add_jitter=add_jitter,
+        seed=seed, save_path=save_path,
+        meta={"star_name": star_name, "tag": "null"},
+        prune=args_dict[MCMC_PARAMS].get(PRUNE_STUCK_WALKERS, False),
     )
     print("Posterior samples (null):", flat_null.shape)
 
@@ -117,16 +132,25 @@ def run_mcmc_single_star(args_dict, best_row, MJDs, rv_obs, rv_sigmas,
     P_center = initial_ecc[0]
     T0_center = initial_ecc[1]
 
+    # Period prior width (box + Gaussian), configurable; defaults reproduce the
+    # historical hard-coded +-1% box with a 0.2% Gaussian.
+    dP_frac = float(args_dict[MCMC_PARAMS].get(DP_FRAC, 0.01))
+    sigma_P_frac = float(args_dict[MCMC_PARAMS].get(SIGMA_P_FRAC, 0.002))
+
     # -- Eccentric MCMC --
+    seed_ecc, save_ecc = _seed_and_save(args_dict, out_dir, star_name, "ecc")
     flat_ecc, logp_ecc, _ = run_mcmc_ecc(
         MJDs, rv_obs, rv_sigmas, initial_ecc,
         P_center=P_center, T0_center=T0_center,
-        dT0_days=P_center / 2.0, dP_frac=0.01,
+        dT0_days=P_center / 2.0, dP_frac=dP_frac, sigma_P_frac=sigma_P_frac,
         nwalkers=args_dict[MCMC_PARAMS][WALKERS],
         nsteps=args_dict[MCMC_PARAMS][STEPS],
         nburn=args_dict[MCMC_PARAMS][BURN],
         thin=args_dict[MCMC_PARAMS][THIN],
         progress=True, add_jitter=add_jitter,
+        seed=seed_ecc, save_path=save_ecc,
+        meta={"star_name": star_name, "tag": "ecc"},
+        prune=args_dict[MCMC_PARAMS].get(PRUNE_STUCK_WALKERS, False),
     )
     print("Posterior samples (ecc):", flat_ecc.shape)
 
@@ -162,15 +186,20 @@ def run_mcmc_single_star(args_dict, best_row, MJDs, rv_obs, rv_sigmas,
     # -- Circular MCMC (if e NOT significant) --
     if not ecc_significant:
         initial_circ = np.array([P_val, T0_val, K1_val, gamma_val])
+        seed_circ, save_circ = _seed_and_save(args_dict, out_dir,
+                                              star_name, "circ")
         flat_circ, logp_circ, _ = run_mcmc_circ(
             MJDs, rv_obs, rv_sigmas, initial_circ,
             P_center=P_center, T0_center=T0_center,
-            dT0_days=P_center / 2.0, dP_frac=0.01,
+            dT0_days=P_center / 2.0, dP_frac=dP_frac, sigma_P_frac=sigma_P_frac,
             nwalkers=args_dict[MCMC_PARAMS][WALKERS],
             nsteps=args_dict[MCMC_PARAMS][STEPS],
             nburn=args_dict[MCMC_PARAMS][BURN],
             thin=args_dict[MCMC_PARAMS][THIN],
             progress=True, add_jitter=add_jitter,
+            seed=seed_circ, save_path=save_circ,
+            meta={"star_name": star_name, "tag": "circ"},
+            prune=args_dict[MCMC_PARAMS].get(PRUNE_STUCK_WALKERS, False),
         )
         print("Posterior samples (circ):", flat_circ.shape)
 
@@ -276,15 +305,20 @@ def run_mcmc_batch(args_dict, rv_dir, lmfit_dir, out_dir,
         Path(star_out_dir).mkdir(parents=True, exist_ok=True)
 
         if best_row is None:
-            null_row = results_df[
+            null_sel = results_df[
                 results_df.candidate_method.str.contains('null_hyp_jitter')
-            ].iloc[0]
+            ]
+            if null_sel.empty:
+                print(f"  No null_hyp_jitter row for {star_name}, skipping.")
+                continue
             row_res = run_mcmc_null_full(
-                args_dict, null_row, MJDs, rv_obs, rv_sigmas,
+                args_dict, null_sel.iloc[0], MJDs, rv_obs, rv_sigmas,
                 star_out_dir, star_name,
             )
             row_res["star_name"] = star_name
             rows.append(row_res)
+            pd.DataFrame(rows).to_csv(
+                os.path.join(out_dir, "mcmc_params.csv"), index=False)
             print(f"  Done. Results saved under {star_out_dir}")
             continue
 
@@ -297,6 +331,8 @@ def run_mcmc_batch(args_dict, rv_dir, lmfit_dir, out_dir,
             )
             row_res["star_name"] = star_name
             rows.append(row_res)
+            pd.DataFrame(rows).to_csv(
+                os.path.join(out_dir, "mcmc_params.csv"), index=False)
             print(f"  Done. Results saved under {star_out_dir}")
         except Exception as e:
             print(f"  MCMC failed for {star_name}: {e}")

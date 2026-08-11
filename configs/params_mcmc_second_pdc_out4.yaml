@@ -1,0 +1,57 @@
+# =============================================================================
+# params_mcmc_second_pdc_out4.yaml — mcmc_out4 production rerun: seeded,
+# chain-saving, 10x longer chains than mcmc_out3.
+#
+#   python -m mcmc.batch --config configs/params_mcmc_second_pdc_out4.yaml
+#
+# Burn/thin choice: tables/mcmc_diagnostics.csv (measured at 32x2000) gives
+# tau_max = 45-140 steps (worst: 4-043 inner 140; 1-068 112). burn: 2000 is
+# >= 14x the worst tau_max (>= 3x tau is the usual discard rule); the retained
+# 18,000 steps are >= 128x tau_max even for the worst star, so autocorrelation
+# estimates are reliable (> 50 tau) and worst-case ESS ~ 32*18000/140 ~ 4100.
+# thin: 5 kept for continuity with mcmc_out3 (storage only; quantiles are
+# unaffected by thinning below tau). Flat samples: 32 * 18000 / 5 = 115,200.
+#
+# random_seed is consumed (unlike mcmc_out3, which defined but never read it):
+# per-(star, tag) seeds via mcmc.chain_io.derive_seed, so each star/model run
+# is independently reproducible and batch-order-invariant.
+# =============================================================================
+
+plot: true
+plot_style: "paper"
+random_seed: 562
+
+base_dir:      "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded"
+lmfit_subdir:  "second_pdc"        # stage 4 reads lmfit summaries from here
+mcmc_subdir:   "mcmc_out4"         # stage 4 writes here (nested under lmfit_subdir)
+
+pipeline_io:
+  object_list: []
+  mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"
+  use_fwhm: true
+
+# ---- MCMC posterior sampling ----
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 2000
+  steps: 20000
+  thin: 5
+  walkers: 32
+
+  # Best-row selection: prob_bicc > 0.5, mass_flag_peri == 0, and the
+  # period-method-matched iterative FAP < 0.2; best (minimum) BICc.
+  # Identical to params_mcmc_second_pdc.yaml (mcmc_out3).
+  filter_expression: >-
+    ~candidate_method.str.contains('MANUAL')
+    & ~candidate_method.str.contains('null')
+    & candidate_method.str.contains('jitter')
+    & (prob_bicc > 0.5)
+    & (mass_flag_peri == 0)
+    & ((candidate_method.str.contains('LS')
+    & (LS_iter_fap < 0.2))
+    | (candidate_method.str.contains('PDC')
+    & (PDC_iter_fap < 0.2)))
+  field_to_check: "bicc"
+  take_min: true

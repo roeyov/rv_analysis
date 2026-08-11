@@ -74,12 +74,16 @@ def log_likelihood(theta, t, rv, rv_err, add_jitter=False):
 
 def log_probability(theta, t, rv, rv_err,
                     P_center, T0_center, K1_center, omega_center=np.pi,
-                    dP_frac=0.1, dT0_days=2.0, add_jitter=False):
+                    dP_frac=0.1, dT0_days=2.0, add_jitter=False,
+                    sigma_P_frac=0.002):
     """
     Wrapper that combines prior and likelihood and passes add_jitter through.
+
+    `sigma_P_frac` is appended last so the existing positional argument tuples
+    in mcmc.runner stay valid; omitting it keeps the historical 0.2% Gaussian.
     """
     lp = log_prior(theta, P_center, T0_center, dT0_days, K1_center,omega_center=omega_center,
-                   dP_frac=dP_frac, add_jitter=add_jitter)
+                   dP_frac=dP_frac, sigma_P_frac=sigma_P_frac, add_jitter=add_jitter)
     if not np.isfinite(lp):
         return -np.inf
     return lp + log_likelihood(theta, t, rv, rv_err, add_jitter=add_jitter)
@@ -135,9 +139,11 @@ def log_likelihood_circ(theta, t, rv, rv_err, add_jitter=False):
 
 def log_probability_circ(theta, t, rv, rv_err,
                          P_center, T0_center, K1_center,
-                         dP_frac=0.01, dT0_days=2.0, add_jitter=False):
+                         dP_frac=0.01, dT0_days=2.0, add_jitter=False,
+                         sigma_P_frac=0.002):
     lp = log_prior_circ(theta, P_center, T0_center, dT0_days, K1_center,
-                        dP_frac=dP_frac, add_jitter=add_jitter)
+                        dP_frac=dP_frac, sigma_P_frac=sigma_P_frac,
+                        add_jitter=add_jitter)
     if not np.isfinite(lp):
         return -np.inf
     return lp + log_likelihood_circ(theta, t, rv, rv_err, add_jitter=add_jitter)
