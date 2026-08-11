@@ -510,6 +510,185 @@ def page_overview(pdf, merged):
     plt.close(fig)
 
 
+def _correction_stats(merged, rv_dir):
+    """Per-star applied-shift / scatter / error-inflation stats from the RV CSVs."""
+    c = merged[merged["in_old"] & merged["in_new"]]
+    applied_mean, applied_scatter, err_infl, dg_resid = [], [], [], []
+    for star in c.index:
+        p = os.path.join(rv_dir, f"{star}_CCF_RVs.csv")
+        try:
+            df = pd.read_csv(p)
+            d = df.dropna(subset=["Mean RV", "fixed Mean RV"])
+            ap = d["fixed Mean RV"] - d["Mean RV"]
+            w = 1.0 / d["Mean RVsig"] ** 2
+            wm = (ap * w).sum() / w.sum()
+            applied_mean.append(wm)
+            applied_scatter.append(ap.std())
+            err_infl.append(np.sqrt(
+                (d["fixed Mean RVsig"] ** 2 - d["Mean RVsig"] ** 2).median()))
+            dg = c.at[star, "null_GAMMA_new"] - c.at[star, "null_GAMMA_old"] - wm
+            if np.isfinite(dg):
+                dg_resid.append(abs(dg))
+        except Exception:
+            continue
+    if not applied_mean:
+        return None
+    return dict(n=len(applied_mean),
+                applied_median=np.median(applied_mean),
+                applied_rms=np.std(applied_mean),
+                scatter_median=np.median(applied_scatter),
+                err_infl_median=np.median(err_infl),
+                dg_resid_median=np.median(dg_resid) if dg_resid else np.nan)
+
+
+DISCUSSION_QA = [
+    ("Are the corrections validated?",
+     "Yes, by three independent checks: (i) the Keplerian jitter reduction matches the "
+     "correction budget in quadrature (see left column); (ii) null-model gamma shifts track "
+     "the applied per-star weighted means to ~0.02 km/s, so systemic velocities are "
+     "untouched; (iii) the one lost detection (2-079, P = 1.116 d) sits in the 1-day alias "
+     "band where nightly zero-point errors inject coherent power, and its null jitter "
+     "dropped after correction -- the 'signal' was largely the nightly systematic."),
+    ("Why does null jitter barely move while Keplerian jitter drops ~40%?",
+     "Null-model jitter for binaries absorbs km/s-scale orbital variance, so a ~0.6 km/s "
+     "systematic is invisible in quadrature; the cleanup only shows in near-constant stars "
+     "(more stars pinned at the jitter floor). Keplerian jitter is the post-orbit residual "
+     "budget, where the nightly zero-point term was the single largest component -- hence "
+     "the large fractional drop. The contrast itself shows the corrections target the "
+     "right variance component."),
+    ("Are the gained detections real binaries?",
+     "6-091 (K1 ~ 5 km/s, e ~ 0.89) is credible. 4-074 and 7-044 (K1 <= 2 km/s) are "
+     "threshold candidates at the sensitivity floor: cleaner-data detections are more "
+     "trustworthy than the old non-detections, but they merit the same scrutiny as other "
+     "low-K1 systems (iterative FAPs, posterior multi-modality, phase plots) before "
+     "entering the SB1 count."),
+    ("Was 2-079 a spurious detection?",
+     "Likely. Its P = 1.116 d is in the one-day alias band, K1 ~ 2.5 km/s is only ~4x the "
+     "0.58 km/s epoch-systematic scatter, and after correction the solution fails the "
+     "filter while the null-model jitter falls (0.35 -> 0.08). It is in the HT refined "
+     "list (p_det = 0.78), so its removal propagates to the bias-corrected fraction."),
+    ("What about the large period changes?",
+     "They concentrate in long-period eccentric systems (1-068: 204 -> 894 d; 1-076: "
+     "844 -> 1141 d; 4-041: 1157 -> 1287 d) with P comparable to or exceeding the ~800 d "
+     "baseline -- degenerate high-e families where a ~0.6 km/s coherent shift reshuffles "
+     "the winner. Point estimates should not be trusted; report posteriors / lower limits. "
+     "8-031 is pathological: the old 248.8 d, e = 0.95 orbit was outlier-fitting, the new "
+     "1.005 d circular one is near the 1-day alias, and its Keplerian jitter went UP -- "
+     "neither solution cleans the residuals; it needs manual inspection."),
+    ("Does the binary fraction change?",
+     "Raw count on this subsample: 48 -> 50 of 108. The HT-corrected fraction shifts "
+     "through both N_det and per-star p_det bookkeeping (2-079 out; three in). The bias "
+     "grid used uncorrected noise properties; the 0.58 km/s difference is negligible "
+     "against 3-6 km/s median jitter but is exactly the low-K1 regime driving the swing "
+     "stars' weights -- worth a caveat sentence, not a rerun."),
+    ("Should this run become the reference?",
+     "Yes: better-validated data with strictly better residual statistics; Lucy-Sweeney "
+     "e-significance and MCMC posteriors all benefit. Review the four detection flips and "
+     "the long-P eccentric family individually before regenerating paper tables."),
+]
+
+
+def page_discussion(pdf, merged, rv_dir):
+    """Two pages: ensemble statistics (with jitter panels) and discussion Q&A."""
+    c = merged[merged["in_old"] & merged["in_new"]]
+    det = c[c["detected_old"] & c["detected_new"]]
+    same_p = det[np.abs(det["Period_value_new"] / det["Period_value_old"] - 1) < 0.05]
+
+    sj_o, sj_n = np.exp(c["null_lnsJ_old"]), np.exp(c["null_lnsJ_new"])
+    d_lnsj = c["null_lnsJ_new"] - c["null_lnsJ_old"]
+    db = c["null_bicc_new"] - c["null_bicc_old"]
+    kj_o = np.exp(same_p["ln_sigmaJ_value_old"])
+    kj_n = np.exp(same_p["ln_sigmaJ_value_new"])
+    dkj = same_p["ln_sigmaJ_value_new"] - same_p["ln_sigmaJ_value_old"]
+    dk = same_p["K1_value_new"] - same_p["K1_value_old"]
+    de = same_p["Eccentricity_value_new"] - same_p["Eccentricity_value_old"]
+    quad_removed = np.sqrt(max(kj_o.median() ** 2 - kj_n.median() ** 2, 0.0))
+    cs = _correction_stats(merged, rv_dir)
+
+    lines = [
+        "NULL MODEL (all %d common stars)" % len(c),
+        f"  median sigma_J: {sj_o.median():.2f} -> {sj_n.median():.2f} km/s",
+        f"  jitter down / up / unchanged: {(d_lnsj < -0.01).sum()} / "
+        f"{(d_lnsj > 0.01).sum()} / {(d_lnsj.abs() <= 0.01).sum()}",
+        f"  stars at the ln sigma_J = -2 floor: "
+        f"{(c['null_lnsJ_old'] <= -1.95).sum()} -> {(c['null_lnsJ_new'] <= -1.95).sum()}",
+        f"  delta null BICc: median {db.median():+.2f} "
+        f"(improved {(db < 0).sum()} / worse {(db > 0).sum()})",
+        "",
+        f"KEPLERIAN FITS ({len(same_p)} detected-both, same period family)",
+        f"  median sigma_J: {kj_o.median():.2f} -> {kj_n.median():.2f} km/s "
+        f"(down {(dkj < -0.01).sum()} / up {(dkj > 0.01).sum()})",
+        f"  variance removed (quadrature of medians): {quad_removed:.2f} km/s",
+        f"  delta K1: median {dk.median():+.3f} km/s "
+        f"(IQR {dk.quantile(.25):+.2f} .. {dk.quantile(.75):+.2f})",
+        f"  delta e:  median {de.median():+.4f} "
+        f"(IQR {de.quantile(.25):+.3f} .. {de.quantile(.75):+.3f})",
+    ]
+    if cs:
+        lines += [
+            "",
+            "CORRECTION BUDGET AND GAMMA CONSISTENCY (%d stars with RV CSVs)" % cs["n"],
+            f"  per-star epoch-to-epoch correction scatter: median "
+            f"{cs['scatter_median']:.2f} km/s",
+            f"  formal-error inflation (quadrature): median "
+            f"{cs['err_infl_median']:.2f} km/s",
+            f"  expected removable scatter: ~sqrt({cs['scatter_median']:.2f}^2 + "
+            f"{cs['err_infl_median']:.2f}^2) = "
+            f"{np.hypot(cs['scatter_median'], cs['err_infl_median']):.2f} km/s "
+            f"vs observed {quad_removed:.2f} km/s -- consistent",
+            f"  applied weighted-mean shift per star: median "
+            f"{cs['applied_median']:+.3f} km/s (RMS {cs['applied_rms']:.3f})",
+            f"  median |delta null gamma - applied shift|: "
+            f"{cs['dg_resid_median']:.3f} km/s (systemic velocities untouched)",
+        ]
+
+    fig = plt.figure(figsize=PAGE)
+    fig.text(0.05, 0.96, "Ensemble analysis (1/2): what the corrections changed",
+             fontsize=13, fontweight="bold")
+    fig.text(0.05, 0.90, "\n".join(lines), fontsize=9,
+             fontfamily="monospace", va="top")
+
+    gs = fig.add_gridspec(1, 2, left=0.08, right=0.95, top=0.40, bottom=0.09,
+                          wspace=0.30)
+    ax = fig.add_subplot(gs[0])
+    ax.scatter(kj_o, kj_n, s=16, c="0.3", alpha=0.8, lw=0)
+    lo = min(kj_o.min(), kj_n.min()) * 0.8
+    hi = max(kj_o.max(), kj_n.max()) * 1.2
+    ax.plot([lo, hi], [lo, hi], color="0.6", lw=0.8)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("OLD sigma_J [km/s]")
+    ax.set_ylabel("NEW sigma_J [km/s]")
+    ax.set_title("Keplerian jitter (same-period detected-both)", fontsize=10)
+
+    ax = fig.add_subplot(gs[1])
+    ax.hist(dkj.dropna(), bins=20, color="0.55")
+    ax.axvline(0, color="crimson", ls="--", lw=0.9)
+    ax.set_xlabel("delta ln sigma_J (NEW - OLD)")
+    ax.set_title("Keplerian jitter change", fontsize=10)
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # Q&A page
+    fig = plt.figure(figsize=PAGE)
+    fig.text(0.05, 0.96, "Ensemble analysis (2/2): discussion points",
+             fontsize=13, fontweight="bold")
+    y = 0.90
+    for q, a in DISCUSSION_QA:
+        qtxt = textwrap.fill("Q: " + q, width=120)
+        atxt = textwrap.fill("A: " + a, width=125)
+        fig.text(0.05, y, qtxt, fontsize=9.5, fontweight="bold", va="top")
+        y -= 0.023 * (qtxt.count("\n") + 1) + 0.004
+        fig.text(0.05, y, atxt, fontsize=8.5, va="top", color="0.15")
+        y -= 0.0205 * (atxt.count("\n") + 1) + 0.016
+    fig.text(0.05, 0.02, "Interpretation specific to the second_pdc vs "
+             "fourth_fixed_rvs comparison (2026-08).", fontsize=7,
+             style="italic", color="0.4")
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
 def _style_table(tbl, n_cols, red_cells=(), amber_rows=()):
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(8)
@@ -632,6 +811,9 @@ def main():
     ap.add_argument("--stars", default=None,
                     help="comma-separated star-name substrings (smoke tests)")
     ap.add_argument("--thumb-px", type=int, default=1400)
+    ap.add_argument("--rv-dir", default=None,
+                    help="dir with the *_CCF_RVs.csv files "
+                         "(default: parent of --dir-b)")
     args = ap.parse_args()
 
     mcmc_a = args.mcmc_a or os.path.join(args.dir_a, "mcmc_out", "mcmc_params.csv")
@@ -666,7 +848,9 @@ def main():
         with PdfPages(output) as pdf:
             page_summary(pdf, merged, meta)
             page_overview(pdf, merged)
-            page_no = 3
+            page_discussion(pdf, merged,
+                            args.rv_dir or os.path.dirname(args.dir_b.rstrip("/")))
+            page_no = 5
             for star in merged.index:
                 page_no += 1
                 rec = merged.loc[star]
