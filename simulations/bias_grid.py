@@ -166,13 +166,42 @@ def main():
     cfg = copy.deepcopy(DEFAULT_BIAS_CFG)
     cfg["logP_cutoff_scope"] = logP_cutoff_scope_cfg
     cfg["logP_cutoff_smooth_sigma"] = _bg("logP_cutoff_smooth_sigma")
-    # The variant matrix only spans logP_cutoff_mode in {none, numerical};
-    # there is no 'manual' variant, so no manual cutoff value is used.
-    cfg["logP_cutoff_value"] = None
+    # Manual P* cutoff value. Only consumed by variants with
+    # logP_cutoff_mode == 'manual', which enter the sweep solely via an
+    # explicit variant_filter request (constants.all_variants); the default
+    # 12-variant matrix spans {none, numerical} and ignores this value.
+    _manual_cutoff = _bg("logP_cutoff_value")
+    cfg["logP_cutoff_value"] = (None if _manual_cutoff is None
+                                else float(_manual_cutoff))
     # Drop single-mode keys so nothing downstream reads a stale scalar.
     cfg.pop("e_score_mode", None)
     cfg.pop("logP_cutoff_mode", None)
     cfg.pop("split_e_circular", None)
+
+    # --- Run-level scoring knobs (2026-09 variant campaign) --------------
+    # All default to the historical behavior. Each must be (a) validated
+    # here, (b) copied into cfg, (c) recorded in resolved_bg, and (d)
+    # consumed in the engine preamble / cutoffs / scoring — YAML keys not
+    # copied into cfg NEVER reach the scorer (see periodogram_params note).
+    cfg["e_mask_mode"] = _bg("e_mask_mode")
+    if cfg["e_mask_mode"] not in ("lucy_all", "lucy_envelope"):
+        raise ValueError(
+            "bias_grid.e_mask_mode must be 'lucy_all' or 'lucy_envelope', "
+            "got %r" % (cfg["e_mask_mode"],))
+    cfg["envelope_period_days"] = float(_bg("envelope_period_days"))
+    if not cfg["envelope_period_days"] > 0:
+        raise ValueError(
+            "bias_grid.envelope_period_days must be > 0, got %r"
+            % (cfg["envelope_period_days"],))
+    cfg["binomial_mode"] = _bg("binomial_mode")
+    if cfg["binomial_mode"] not in ("catalog", "none"):
+        raise ValueError(
+            "bias_grid.binomial_mode must be 'catalog' or 'none', got %r"
+            % (cfg["binomial_mode"],))
+    obs_exclude_ids = _bg("obs_exclude_ids") or []
+    if isinstance(obs_exclude_ids, str):
+        obs_exclude_ids = [obs_exclude_ids]
+    obs_exclude_ids = [str(x).strip() for x in obs_exclude_ids]
 
     # --- Single-variant / single-metric restriction (opt-in) -------------
     # variant_filter subsets the 12-variant product; scored_tests subsets the
@@ -186,6 +215,13 @@ def main():
             % (variant_filter,))
     # all_variants validates the enum values and raises on an empty selection.
     variant_list = all_variants(restrict=variant_filter)
+    # Fail fast: a 'manual' variant without a hand-set cutoff value would
+    # only explode later, inside every scoring-ctx build.
+    if any(cm == "manual" for (_em, cm, _lucy) in variant_list) \
+            and cfg["logP_cutoff_value"] is None:
+        raise ValueError(
+            "variant_filter requests logP_cutoff_mode='manual' but "
+            "bias_grid.logP_cutoff_value is not set")
 
     _valid_tests = tuple(list(_ALL_TESTS) + list(_DIST_TESTS))  # ks, ad, cvm, wass
     scored_tests_cfg = _bg("scored_tests")
@@ -273,11 +309,30 @@ def main():
     logger.info("Loading observed distributions from LaTeX tables "
                 "(apply_lucy_sweeny_e is swept: {False, True})...")
     obs = load_observed_from_tex(sb1_tex, sb2_tex,
-                                 apply_lucy_sweeny_e=apply_lucy_sweeny_e)
+                                 apply_lucy_sweeny_e=apply_lucy_sweeny_e,
+                                 exclude_ids=obs_exclude_ids)
     # Catalog counts feed the binomial under scope="exclude" (full O-star
     # population, independent of the period cutoff). Loaded eagerly so a
     # bad path fails fast before the grid starts.
     n_catalog_total, n_catalog_nonsingle = _load_catalog_counts(ostar_catalog)
+    # Optional overrides for anchor-swap variants (e.g. a Sana-2025-style
+    # binomial). The catalog file is still loaded first so a bad path fails
+    # fast and the true counts are visible in the log next to the override.
+    _bn_total = _bg("binomial_n_total")
+    _bn_nonsingle = _bg("binomial_n_nonsingle")
+    if _bn_total is not None or _bn_nonsingle is not None:
+        if _bn_total is not None:
+            n_catalog_total = int(_bn_total)
+        if _bn_nonsingle is not None:
+            n_catalog_nonsingle = int(_bn_nonsingle)
+        if not (0 <= n_catalog_nonsingle <= n_catalog_total):
+            raise ValueError(
+                "binomial override invalid: need 0 <= n_nonsingle (%d) <= "
+                "n_total (%d)" % (n_catalog_nonsingle, n_catalog_total))
+        logger.info(
+            "  binomial anchor OVERRIDE: N_stars=%d N_det_obs=%d "
+            "(catalog file said %s)",
+            n_catalog_total, n_catalog_nonsingle, ostar_catalog)
     logger.info("  SB1: %d, SB2: %d, Total: %d",
                 obs['n_sb1'], obs['n_sb2'], len(obs['logP']))
     cfg["n_det_obs"] = len(obs["logP"])
@@ -380,6 +435,13 @@ def main():
         "scored_tests": scored_tests_active,
         "logP_cutoff_scope": cfg["logP_cutoff_scope"],
         "logP_cutoff_smooth_sigma": cfg.get("logP_cutoff_smooth_sigma", 0.15),
+        "logP_cutoff_value": cfg["logP_cutoff_value"],
+        "e_mask_mode": cfg["e_mask_mode"],
+        "envelope_period_days": cfg["envelope_period_days"],
+        "binomial_mode": cfg["binomial_mode"],
+        "binomial_n_total": _bn_total,
+        "binomial_n_nonsingle": _bn_nonsingle,
+        "obs_exclude_ids": list(obs_exclude_ids),
         "apply_lucy_sweeny_e": apply_lucy_sweeny_e,
         "log_p_min": cfg["log_p_min"],
         "log_p_max": cfg["log_p_max"],

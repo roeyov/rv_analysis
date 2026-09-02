@@ -36,7 +36,8 @@ def _parse_val_with_errors(s):
     return np.nan
 
 
-def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
+def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True,
+                           exclude_ids=None):
     """
     Parse SB1 and SB2 LaTeX solution tables and return observed distributions.
 
@@ -47,6 +48,13 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         upper limit ("\\leq 0.0X") are folded into ``obs['e']``.
         True  — collapse to e = 0 (circular).
         False — keep the limit value itself as e.
+    exclude_ids : iterable of str, optional
+        System IDs (as written in the tables' ID column, e.g. "1-068") whose
+        rows are dropped from the observed sample in BOTH tables — used for
+        robustness variants (e.g. removing the weakest-K1 orbits). The drop
+        removes the system from all observed CDFs; the catalog-anchored
+        binomial counts are loaded separately and are NOT affected. Raises
+        ``ValueError`` if any requested ID matches no row (typo guard).
 
     Returns
     -------
@@ -65,6 +73,18 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         'n_sb1'            : number of usable SB1 systems
         'n_sb2'            : number of SB2 systems
     """
+    exclude_set = {str(x).strip() for x in (exclude_ids or ())}
+    excluded_found = set()
+    n_excl_sb1 = 0
+    n_excl_sb2 = 0
+
+    def _row_id(raw):
+        """Normalize the tables' ID column to a bare 'F-NNN' string."""
+        s = raw.replace("$", "").replace(r"\,", " ").strip()
+        if s.startswith("BLOeM"):
+            s = s[len("BLOeM"):].strip()
+        return s
+
     all_logP = []
     all_e = []
     all_e_value = []
@@ -120,6 +140,13 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         # Skip the "outer" row of 4-043 double-Kepler
         if "(outer)" in cols[1]:
             continue
+
+        if exclude_set:
+            rid = _row_id(cols[1])
+            if rid in exclude_set:
+                excluded_found.add(rid)
+                n_excl_sb1 += 1
+                continue
 
         all_logP.append(np.log10(P_val))
         sb1_q_min.append(q_min_val)
@@ -181,6 +208,13 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         if np.isnan(K1_val):
             continue
 
+        if exclude_set:
+            rid = _row_id(cols[1])
+            if rid in exclude_set:
+                excluded_found.add(rid)
+                n_excl_sb2 += 1
+                continue
+
         all_logP.append(np.log10(P_val))
         e_is_upper_limit = r"\leq" in cols[5]
         if np.isnan(e_val):
@@ -211,6 +245,16 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True):
         "n_sb1": n_sb1,
         "n_sb2": n_sb2,
     }
+    if exclude_set:
+        missing = sorted(exclude_set - excluded_found)
+        if missing:
+            raise ValueError(
+                "obs_exclude_ids: %s matched no row in %s / %s — typo, or "
+                "the system is already outside the observed sample (RLOF "
+                "section / outer row)" % (missing, sb1_path, sb2_path))
+        logger.info("load_observed_from_tex: obs_exclude_ids dropped "
+                    "%d SB1 + %d SB2 rows (%s)",
+                    n_excl_sb1, n_excl_sb2, sorted(excluded_found))
     logger.info("load_observed_from_tex: SB1=%d SB2=%d total=%d "
                 "(apply_lucy_sweeny_e=%s)",
                 n_sb1, n_sb2, len(all_logP), apply_lucy_sweeny_e)

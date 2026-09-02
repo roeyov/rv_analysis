@@ -53,8 +53,9 @@ _LOGP_CUTOFF_SCOPES = ("period_only", "exclude")
 # All-variants run (schema v4): one simulation pass is scored under every
 # (e_score_mode, logP_cutoff_mode) combination so the explorer can compare
 # fitting mechanisms without re-injecting populations. ``manual`` is not
-# enumerated (it needs a hand-set value); scope / smooth_sigma / value are
-# held fixed by bias_grid.main (scope=exclude, sigma=0.15, value=None).
+# enumerated by default (it needs a hand-set value) but may be requested
+# explicitly via variant_filter.logP_cutoff_mode together with a YAML
+# bias_grid.logP_cutoff_value; scope / smooth_sigma stay run-level.
 # ---------------------------------------------------------------------------
 
 _RUN_E_SCORE_MODES = ("combined", "split", "eccentric_only")
@@ -120,10 +121,28 @@ def all_variants(restrict=None):
     that axis). ``restrict=None`` (the default) returns all 12, so every
     existing caller is unaffected. Raises ``ValueError`` if the filter selects
     no variants.
+
+    ``logP_cutoff_mode: manual`` is opt-in only: it is valid *inside*
+    ``restrict`` (the caller must also set ``logP_cutoff_value``) but never
+    part of the default sweep — the enumerated axis stays {none, numerical}
+    unless a manual mode is explicitly requested.
     """
+    cm_axis = list(_RUN_LOGP_CUTOFF_MODES)
+    if restrict:
+        cm_req = _as_filter_set(restrict.get("logP_cutoff_mode"))
+        if cm_req:
+            bad = sorted(m for m in cm_req if m not in _LOGP_CUTOFF_MODES)
+            if bad:
+                raise ValueError(
+                    "variant_filter.logP_cutoff_mode contains unknown "
+                    "mode(s) %s; valid: %s" % (bad, _LOGP_CUTOFF_MODES))
+            # Opt-in extension: explicitly-requested non-run modes (i.e.
+            # "manual") join the axis, after the defaults for stable order.
+            cm_axis += [m for m in _LOGP_CUTOFF_MODES
+                        if m in cm_req and m not in cm_axis]
     full = [(em, cm, lucy)
             for em in _RUN_E_SCORE_MODES
-            for cm in _RUN_LOGP_CUTOFF_MODES
+            for cm in cm_axis
             for lucy in _RUN_LUCY_SWEENY]
     if not restrict:
         return full

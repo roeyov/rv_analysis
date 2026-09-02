@@ -292,6 +292,17 @@ class GridSearchEngine:
         smooth_sigma = float(self.cfg.get("logP_cutoff_smooth_sigma", 0.15))
         manual_value = self.cfg.get("logP_cutoff_value")
         n_stars_sample = self.cfg.get("n_stars_sample", len(self.M1_arr))
+        # Run-level scoring knobs (2026-09 variant campaign). Defaults
+        # reproduce the historical behavior; values are echoed here so the
+        # launcher log proves the YAML knob actually reached the scorer.
+        e_mask_mode = self.cfg.get("e_mask_mode", "lucy_all")
+        envelope_period_days = float(
+            self.cfg.get("envelope_period_days", 5.0))
+        binomial_mode = self.cfg.get("binomial_mode", "catalog")
+        logger.info(
+            "  scoring knobs: e_mask_mode=%s envelope_period_days=%s "
+            "binomial_mode=%s logP_cutoff_value=%s",
+            e_mask_mode, envelope_period_days, binomial_mode, manual_value)
 
         # Keep the observed arrays pristine — every variant masks its own
         # copy. logP/K1 are lucy-independent; the eccentricities are kept
@@ -338,7 +349,9 @@ class GridSearchEngine:
                 em, cm, lucy, logP_cutoff_scope,
                 obs_logP_raw, obs_e_value, obs_e_is_upper_limit, obs_K1_raw,
                 n_stars_sample, n_catalog_total, n_catalog_nonsingle,
-                smooth_sigma=smooth_sigma, manual_value=manual_value)
+                smooth_sigma=smooth_sigma, manual_value=manual_value,
+                e_mask_mode=e_mask_mode,
+                envelope_period_days=envelope_period_days)
             ctx = _make_scoring_ctx(
                 obs_logP=vi["obs_logP"], obs_e=vi["obs_e"], obs_K1=vi["obs_K1"],
                 clip_range=vi["clip_range"], e_score_mode=em,
@@ -346,7 +359,8 @@ class GridSearchEngine:
                 n_obs_circ=vi["n_obs_circ"] or 0,
                 n_obs_e_total=vi["n_obs_e_total"] or 0,
                 N_det_obs=vi["N_det_obs"], N_stars=vi["N_stars"],
-                sim_logP_floor=vi["sim_logP_floor"])
+                sim_logP_floor=vi["sim_logP_floor"],
+                binomial_mode=binomial_mode)
             # Restrict which metrics the per-cell scorer computes (default:
             # all). Travels with the ctx into the parallel workers.
             ctx["pvalue_tests"] = active_pvalue_tests
@@ -999,6 +1013,20 @@ class GridSearchEngine:
                         len(pending_tasks), len(existing_shards),
                         n_workers)
 
+            # Re-score-dir safety (2026-09 variant campaign): offline
+            # re-score dirs hold a SYMLINK to another run's det_shards.
+            # Injecting new points would write shards THROUGH the symlink
+            # into the reference run — refuse, whatever the caller's
+            # config claims.
+            if pending_tasks and checkpoint_dir and os.path.islink(
+                    os.path.join(checkpoint_dir, _DET_SHARDS_DIR)):
+                raise RuntimeError(
+                    "det_shards is a symlink (offline re-score dir) but "
+                    "%d grid points want injection — the config's "
+                    "grid/preset does not match the shard set. Refusing "
+                    "to write shards through the symlink."
+                    % len(pending_tasks))
+
             if not pending_tasks:
                 logger.info("All grid points already completed.")
 
@@ -1132,6 +1160,18 @@ class GridSearchEngine:
 
         else:
             # --- Sequential grid loop (original behaviour) ---
+            # The sequential path has no shard-resume/re-score logic: it
+            # re-injects and REWRITES every shard. On a re-score dir
+            # (symlinked det_shards) that would corrupt the reference
+            # run's shards — refuse outright; re-scores must run in
+            # parallel_grid mode with n_workers > 1.
+            if checkpoint_dir and os.path.islink(
+                    os.path.join(checkpoint_dir, _DET_SHARDS_DIR)):
+                raise RuntimeError(
+                    "det_shards is a symlink (offline re-score dir) but "
+                    "the engine is in sequential mode, which re-injects "
+                    "and rewrites shards. Use parallel_grid: true with "
+                    "n_workers > 1 for re-scores.")
             for step, ((i, pi), (j, kappa), (k, eta), (l, fbin)) in \
                     enumerate(grid_points):
                 if step < max(start_step, grid_start):

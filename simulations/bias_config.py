@@ -40,6 +40,29 @@ DEFAULT_BIAS_CFG = {
     "logP_cutoff_value": None,        # used iff mode == "manual"
     "logP_cutoff_smooth_sigma": 0.15, # Gaussian σ (dex) for "numerical"
 
+    # --- Run-level scoring knobs (2026-09 variant campaign) ---
+    # Scope of the Lucy-Sweeney collapse under lucyT variants:
+    #   "lucy_all"      — collapse every observed e upper-limit to 0
+    #                     (historical behavior).
+    #   "lucy_envelope" — collapse only limits with P < envelope_period_days;
+    #                     longer-period circulars keep their reported limit
+    #                     (the tables' p95) and re-enter the eccentric
+    #                     comparison under eccentric_only.
+    "e_mask_mode": "lucy_all",
+    "envelope_period_days": 5.0,
+    # Binomial term in the combined log-GMF:
+    #   "catalog" — historical behavior (catalog-anchored count term in).
+    #   "none"    — p_binom still computed/stored, but omitted from every
+    #               log-GMF (Fisher over the CDF terms only).
+    "binomial_mode": "catalog",
+    # Optional overrides of the catalog binomial counts (anchor swap).
+    # None ⇒ use ostar_catalog.csv counts.
+    "binomial_n_total": None,
+    "binomial_n_nonsingle": None,
+    # System IDs (table ID column, e.g. "1-068") dropped from the observed
+    # CDF sample in both tex tables. None/[] ⇒ keep everything.
+    "obs_exclude_ids": None,
+
     # logP cutoff scope (2-way). Controls HOW the cutoff (found by
     # logP_cutoff_mode) is APPLIED.
     #   "period_only" — cutoff filters only the period CDF KS/AD/CvM
@@ -391,6 +414,37 @@ GRID_PRESETS = {
         "kappa": np.linspace(-3.05, 1.80, 16),
         "eta":   np.linspace(-1.25, 0.55, 16),
         "fbin":  np.linspace(0.45, 0.85, 16),
+        "n_inject_per_star": 100,
+    },
+    # Posterior-driven refinement of ed_hoc_rlof_check_ext (from the ext_fast
+    # run's marginals): every axis >= 2 grid cells per posterior sigma.
+    #   pi:    edges pulled in ~1 cell each (were at ~4 sigma, <2e-4 mass).
+    #   kappa: 7 dead cells below -1.1 dropped (zero mass), positive tail to
+    #          +1.80 kept, 16 -> 20 cells (1.08 -> 2.2 cells/sigma).
+    #   eta:   UNCHANGED — the -1.25 floor is intentional (below it, clipped
+    #          injections under-produce systems for noiseless fitting and the
+    #          GMF grows an artificial bump). Already 2.1 cells/sigma.
+    #   fbin:  upper edge 0.85 -> 0.78 (was 5.3 sigma out; 0.78 is +3.9 sigma).
+    # 16*20*16*16 = 81,920 pts (1.25x ext).
+    "ed_hoc_rlof_check_ext2": {
+        "pi":    np.linspace(-1.55, 0.10, 16),
+        "kappa": np.linspace(-1.30, 1.80, 20),
+        "eta":   np.linspace(-1.25, 0.55, 16),
+        "fbin":  np.linspace(0.45, 0.78, 16),
+        "n_inject_per_star": 100,
+    },
+    # ext2 with the kappa floor extended for the q_min=0.1 companion run
+    # (2026-09 variant campaign, Tier 1.1). Domain-restricted refits sit at
+    # kappa(q>=0.1) ~ -0.76+/-0.48 (older gen down to ~-1.4), so ext2's
+    # -1.30 floor would clip the posterior. Same step (0.163 dex) as ext2:
+    # kappa linspace(-2.44, 1.80, 27) extends the floor by 7 cells; pi /
+    # eta / fbin identical to ext2 (the eta -1.25 floor stays intentional —
+    # artificial GMF bump below). 16*27*16*16 = 110,592 pts (1.35x ext2/3).
+    "ed_hoc_rlof_check_ext2_kx": {
+        "pi":    np.linspace(-1.55, 0.10, 16),
+        "kappa": np.linspace(-2.44, 1.80, 27),
+        "eta":   np.linspace(-1.25, 0.55, 16),
+        "fbin":  np.linspace(0.45, 0.78, 16),
         "n_inject_per_star": 100,
     },
     # FINE×2 — IDENTICAL bounds to final5_cvm_1e3, doubled point count on every

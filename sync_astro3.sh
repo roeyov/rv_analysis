@@ -37,9 +37,11 @@ push() {
         "${REMOTE}:~/Scripts/"
 
     echo "[3/5] Syncing LaTeX tables + catalog -> ~/tables/"
+    # Globs pick up variant tables too (e.g. sb1_solutions_inner5.tex for
+    # the 2026-09 inner-orbit bias-grid variant).
     rsync -avz \
-        "${LOCAL_TABLES}/sb1_solutions.tex" \
-        "${LOCAL_TABLES}/sb2_solutions.tex" \
+        "${LOCAL_TABLES}"/sb1_solutions*.tex \
+        "${LOCAL_TABLES}"/sb2_solutions*.tex \
         "${LOCAL_TABLES}/ostar_catalog.csv" \
         "${REMOTE}:~/tables/"
 

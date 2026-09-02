@@ -1,0 +1,141 @@
+# =============================================================================
+# params_bias_astro3_ext3_rescore_pstar_5d.yaml — 2026-09 bias-grid variant campaign.
+#
+# GENERATED from params_bias_astro3_ed_hoc_rlof_check_ext3.yaml (data-only
+# A/B of ext2; obs SB1=46 SB2=26 total=72, catalog non-single 77/134).
+# All settings identical to ext3 except the deltas below. YAML comments of
+# the base file are not carried over — ext3's file is the annotated one.
+#
+# OFFLINE RE-SCORE of ed_hoc_rlof_check_ext3 (no injections): the output
+# dir contains only a det_shards symlink -> ext3's shards; the engine's
+# resume gap re-score recomputes every cube in ~15 min on 94 workers.
+# Launched via simulations/run_variant_rescore_chain.sh, which (a) checks
+# the preset grid matches ext3 BEFORE launching (a mismatch would inject
+# through the symlink), (b) asserts "0 grid points to compute" after,
+# and (c) never resumes a re-score dir (wipe + rerun on crash).
+#
+# Delta vs ext3:
+#   bias_grid.variant_filter: {'e_score_mode': 'eccentric_only', 'logP_cutoff_mode': 'manual', 'apply_lucy_sweeny_e': True}
+#   bias_grid.logP_cutoff_value: 0.6989700043360189
+#   bias_grid.adaptive_n_cutoff: 0.5266248325033714
+#   bias_grid.output_dir: /jonathan_storage/roeyovadia/bias_grid_results/ext3_rescore_pstar_5d/
+# Tier 2.6 (PM-012/JV-021): P* = 5 d, logP_cutoff_value =
+# log10(5).
+
+# =============================================================================
+plot: false
+plot_style: paper
+random_seed: 562
+fast_detect_backend: numpy
+manual_candidate_periods: []
+drv_threshold: 10.0
+significance_threshold: 4.0
+base_dir: /jonathan_storage/roeyovadia/bias_grid_results
+lmfit_subdir: second_pdc
+mcmc_subdir: mcmc_out
+pipeline_io:
+  object_list: []
+  mass_file: /jonathan_storage/roeyovadia/data/mass_bloem.csv
+  use_fwhm: true
+bias_grid:
+  sb1_tex: /jonathan_storage/roeyovadia/tables/sb1_solutions.tex
+  sb2_tex: /jonathan_storage/roeyovadia/tables/sb2_solutions.tex
+  mass_file: /jonathan_storage/roeyovadia/data/mass_bloem.csv
+  rv_dir: /jonathan_storage/roeyovadia/data/rv_csvs/
+  sb2_analysis_dir: /jonathan_storage/roeyovadia/data/sb2_per_star
+  ostar_catalog: /jonathan_storage/roeyovadia/tables/ostar_catalog.csv
+  output_dir: /jonathan_storage/roeyovadia/bias_grid_results/ext3_rescore_pstar_5d/
+  preset: ed_hoc_rlof_check_ext2
+  n_inject: 50
+  seed: 42
+  n_stars_sample: null
+  variant_filter:
+    e_score_mode: eccentric_only
+    logP_cutoff_mode: manual
+    apply_lucy_sweeny_e: true
+  scored_tests:
+  - cvm
+  logP_cutoff_smooth_sigma: 0.15
+  logP_cutoff_scope: exclude
+  detect_method: pipeline_batched
+  apply_rlof_gate: false
+  count_false_positives: false
+  log_p_min: 0.046
+  log_p_max: 3.5
+  q_min: 0.01
+  q_max: 1.0
+  adaptive_n_inject: true
+  n_above_cutoff_target: 1100
+  n_inject_max: 50000
+  adaptive_n_cutoff: 0.5266248325033714
+  n_workers: 94
+  parallel_grid: true
+  logP_cutoff_value: 0.6989700043360189
+periodogram_params:
+  min_period: 1.0
+  max_period: 10000.0
+  ls_norm: model
+  ls_method: fast
+  ls_fa_method: baluev
+  ls_sample_per_peak: 20
+  n_bootsraps: 50
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10
+  run_pdc: true
+  run_permutations_ls: true
+  run_permutations_pdc: true
+lmfit_params:
+  minimization_method: differential_evolution
+  search_region:
+    Period:
+      init_value: 29.7949
+      min_value: 1.0
+      max_value: 45.0
+      vary: false
+    GAMMA:
+      init_value: 150.0
+      min_value: -300.0
+      max_value: 300.0
+      vary: true
+    K1:
+      init_value: 200.0
+      min_value: 0.0
+      max_value: 400.0
+      vary: true
+    OMEGA_rad:
+      init_value: 3.14
+      min_value: 0.0
+      max_value: 6.4
+      vary: true
+    Eccentricity:
+      init_value: 0.0
+      min_value: 0.0
+      max_value: 0.9999
+      vary: true
+    T0:
+      init_value: 0.0
+      min_value: 0.0
+      max_value: 0.0
+      vary: true
+    ln_sigmaJ:
+      init_value: 0.0
+      min_value: -2
+      max_value: 4.5
+      vary: true
+mcmc_params:
+  __lnsigma:
+    init_value: 0.1
+    min_value: 0.001
+    max_value: 2.0
+  method: emcee
+  nan_policy: omit
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+  filter_expression: ''
+  field_to_check: bicc
+  take_min: true

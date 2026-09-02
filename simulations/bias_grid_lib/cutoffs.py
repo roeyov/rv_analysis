@@ -105,7 +105,8 @@ def _build_variant_inputs(e_score_mode, logP_cutoff_mode, apply_lucy_sweeny_e,
                           logP_cutoff_scope,
                           obs_logP, obs_e_value, obs_e_is_upper_limit, obs_K1,
                           n_stars_sample, n_catalog_total, n_catalog_nonsingle,
-                          smooth_sigma=0.15, manual_value=None):
+                          smooth_sigma=0.15, manual_value=None,
+                          e_mask_mode="lucy_all", envelope_period_days=5.0):
     """Resolve the obs-side scoring inputs for ONE scoring variant.
 
     A "variant" is one ``(e_score_mode, logP_cutoff_mode,
@@ -130,9 +131,29 @@ def _build_variant_inputs(e_score_mode, logP_cutoff_mode, apply_lucy_sweeny_e,
     # Lucy-Sweeney: collapse observed e upper-limits to 0 (True) or keep
     # the reported limit value (False). This is the only thing the lucy
     # axis changes (logP/K1/counts/sim are all lucy-independent).
+    #
+    # e_mask_mode scopes WHICH upper-limit rows the collapse touches:
+    #   "lucy_all"      — every upper-limit row (historical behavior).
+    #   "lucy_envelope" — only rows with P < envelope_period_days. Longer-
+    #     period circulars keep their reported limit (the tables' p95), so
+    #     under eccentric_only they re-enter the eccentric comparison —
+    #     the exclusion is then tidal physics, not a modelling choice.
+    # Under lucyF variants nothing collapses either way.
+    if e_mask_mode not in ("lucy_all", "lucy_envelope"):
+        raise ValueError(
+            "e_mask_mode must be 'lucy_all' or 'lucy_envelope', got %r"
+            % (e_mask_mode,))
     obs_e = np.asarray(obs_e_value, dtype=float).copy()
     if apply_lucy_sweeny_e:
-        obs_e[np.asarray(obs_e_is_upper_limit, dtype=bool)] = 0.0
+        collapse = np.asarray(obs_e_is_upper_limit, dtype=bool).copy()
+        if e_mask_mode == "lucy_envelope":
+            envelope_period_days = float(envelope_period_days)
+            if not np.isfinite(envelope_period_days) or envelope_period_days <= 0:
+                raise ValueError(
+                    "envelope_period_days must be a positive finite number, "
+                    "got %r" % (envelope_period_days,))
+            collapse &= obs_logP < np.log10(envelope_period_days)
+        obs_e[collapse] = 0.0
 
     logP_cutoff = _compute_logP_cutoff(
         obs_logP, logP_cutoff_mode,

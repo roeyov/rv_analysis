@@ -21,13 +21,24 @@ def _make_scoring_ctx(obs_logP, obs_e, obs_K1, clip_range,
                       e_score_mode, obs_e_cont,
                       n_obs_circ, n_obs_e_total,
                       N_det_obs, N_stars,
-                      sim_logP_floor=0.0):
+                      sim_logP_floor=0.0,
+                      binomial_mode="catalog"):
     """Bundle the per-run constants that every grid-point score needs.
 
     ``sim_logP_floor`` is the joint-mask threshold applied to the
     sim-detected arrays before CDF tests under scope="exclude". It is
     0 in every other scope, so the mask is a no-op there.
+
+    ``binomial_mode`` controls whether the detection-count binomial term
+    enters the combined log-GMF:
+      "catalog" — historical behavior, p_binom multiplies in.
+      "none"    — p_binom is still computed and stored (diagnostics) but
+                  omitted from every log-GMF (Fisher over the CDFs only).
     """
+    if binomial_mode not in ("catalog", "none"):
+        raise ValueError(
+            "binomial_mode must be 'catalog' or 'none', got %r"
+            % (binomial_mode,))
     if e_score_mode not in _E_SCORE_MODES:
         raise ValueError(
             "e_score_mode must be one of %s, got %r" %
@@ -67,6 +78,7 @@ def _make_scoring_ctx(obs_logP, obs_e, obs_K1, clip_range,
         "N_stars": int(N_stars),
         "wass_sigma": wass_sigma,
         "sim_logP_floor": float(sim_logP_floor),
+        "binomial_mode": binomial_mode,
     }
 
 
@@ -128,6 +140,10 @@ def _compute_scores(res, ctx):
         p_binom = 0.0
 
     out = {"p_binom": p_binom}
+    # binomial_mode="none" drops p_binom from every combined log-GMF
+    # (Fisher over the CDF terms only); the pmf itself is still computed
+    # and stored above for diagnostics.
+    use_binom = ctx.get("binomial_mode", "catalog") != "none"
     mode = ctx["e_score_mode"]
     # Restrict which metrics are computed (default: all). The engine threads
     # the active p-value tests + Wasserstein toggle through the ctx so the
@@ -155,7 +171,9 @@ def _compute_scores(res, ctx):
             else:
                 p_e_circ = None
 
-        gmf_pvals = [p_logP, p_e, p_K1, p_binom]
+        gmf_pvals = [p_logP, p_e, p_K1]
+        if use_binom:
+            gmf_pvals.append(p_binom)
         if mode == "split":
             gmf_pvals.append(p_e_circ)
         log_gmf = 0.0
@@ -198,10 +216,12 @@ def _compute_scores(res, ctx):
         out["wass_p_K1"]   = d_K1     # values are distances, not probabilities
 
         if (np.isfinite(d_logP) and np.isfinite(d_e) and np.isfinite(d_K1)
-                and p_binom > 0):
+                and (p_binom > 0 or not use_binom)):
             log_gmf_wass = -(d_logP / sigma["logP"]
                              + d_e   / sigma["e"]
-                             + d_K1  / sigma["K1"]) + np.log(p_binom)
+                             + d_K1  / sigma["K1"])
+            if use_binom:
+                log_gmf_wass += np.log(p_binom)
             if mode == "split":
                 if p_e_circ and p_e_circ > 0:
                     log_gmf_wass += np.log(p_e_circ)
