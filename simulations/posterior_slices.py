@@ -30,6 +30,9 @@ import sys
 
 import numpy as np
 
+# numpy 2.x renamed trapz -> trapezoid
+_trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+
 AXES = ("pi", "kappa", "eta", "f_bin")
 GRID_KEYS = ("pi_grid", "kappa_grid", "eta_grid", "fbin_grid")
 
@@ -67,7 +70,7 @@ def gmf_to_prob(cube):
 def marginal_1d(prob, axis, grid):
     axes = tuple(i for i in range(4) if i != axis)
     m = np.nansum(prob, axis=axes)
-    norm = np.trapz(m, grid)
+    norm = _trapz(m, grid)
     return m / norm if norm > 0 else m
 
 
@@ -143,7 +146,7 @@ def main():
                  if i != 1]):
             axes = tuple(i for i in range(3) if i != ax3)
             m = np.nansum(sl, axis=axes)
-            norm = np.trapz(m, grid)
+            norm = _trapz(m, grid)
             if norm > 0:
                 m = m / norm
             line, (p16, p50, p84, _mode) = fmt(name, m, grid)
