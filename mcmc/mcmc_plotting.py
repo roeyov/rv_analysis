@@ -47,6 +47,12 @@ _AA_RC_RV = {**_AA_RC,
 }
 
 _FULL_WIDTH = 7.09          # inches ≈ 180 mm (A&A two-column)
+# Phase-figure height/width ratio of the FIGURE SPEC; the saved PNG comes out
+# taller because bbox_inches="tight" grows it to include the below-axes
+# legend. 0.32 lands the tight-cropped PNG near 0.38, so three phase figures
+# stack per A&A page in the paper's orbit atlas (was 0.38 -> PNG 0.44,
+# two per page; changed 2026-09-23).
+_PHASE_ASPECT = 0.315
 
 
 def _sanitize_name(name):
@@ -173,8 +179,12 @@ def plot_orbit_with_band_phase(t, rv, rv_err,
                 return P, T0, omega, e, K1, gamma
 
             def model_on_grid(theta):
+                # evaluate at the same absolute times the data fold uses
+                # (MAP ephemeris): re-anchoring each draw at its own T0
+                # leaves the correlated omega scatter as a phase smear,
+                # inflating the band for loose-omega fits
                 P, T0, omega, e, K1, gamma = _unpack(theta)
-                return rv_model(T0 + phase_grid * P,
+                return rv_model(T0_map + phase_grid * P_map,
                                 P, T0, omega, e, K1, gamma)
 
             def model_at_data(theta):
@@ -189,8 +199,10 @@ def plot_orbit_with_band_phase(t, rv, rv_err,
                 return P, T0, K1, gamma
 
             def model_on_grid(theta):
+                # MAP-ephemeris times, as in the eccentric branch (keeps the
+                # genuine T0/phase scatter of the draws in the band)
                 P, T0, K1, gamma = _unpack(theta)
-                return rv_model(T0 + phase_grid * P,
+                return rv_model(T0_map + phase_grid * P_map,
                                 P, T0, np.pi / 2, 0.0, K1, gamma)
 
             def model_at_data(theta):
@@ -224,7 +236,7 @@ def plot_orbit_with_band_phase(t, rv, rv_err,
             err_tot = np.sqrt(np.asarray(rv_err) ** 2 + s_jit ** 2)
 
         # ── figure: main + residuals (3:1) ───────────────────────────
-        fig = plt.figure(figsize=(_FULL_WIDTH, _FULL_WIDTH * 0.38))
+        fig = plt.figure(figsize=(_FULL_WIDTH, _FULL_WIDTH * _PHASE_ASPECT))
         gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.0)
         ax = fig.add_subplot(gs[0])
         ax_r = fig.add_subplot(gs[1], sharex=ax)
@@ -281,7 +293,9 @@ def plot_orbit_with_band_phase(t, rv, rv_err,
                       elinewidth=0.7, capsize=2, capthick=0.7, zorder=5)
 
         ax_r.set_xlabel("Orbital phase")
-        ax_r.set_ylabel(r"O$-$C (km$\,$s$^{-1}$)")
+        # Units match the RV panel; the short label keeps the two
+        # rotated ylabels from colliding at the squashed atlas aspect.
+        ax_r.set_ylabel(r"O$-$C")
         ax_r.set_xlim(0, 1)
 
         fig.align_ylabels([ax, ax_r])
@@ -290,7 +304,7 @@ def plot_orbit_with_band_phase(t, rv, rv_err,
         fig.legend(handles, labels, loc="lower center",
                    ncol=len(labels), frameon=True, fancybox=False,
                    edgecolor="black", fontsize=7,
-                   bbox_to_anchor=(0.5, -0.15),
+                   bbox_to_anchor=(0.5, -0.21),
                    prop={"family": "serif"})
 
         outname = os.path.join(out_dir, f"phase_{tag}.png")

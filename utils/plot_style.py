@@ -7,7 +7,7 @@ INTERACTIVE : screen-optimised (current default behaviour)
 PAPER       : single-column journal figure (~88 mm / ~3.3")
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from typing import Tuple
 
 
@@ -139,11 +139,28 @@ _PRESETS = {
 def get_style(style):
     """Resolve *style* to a `PlotStyle` instance.
 
-    Accepts a preset name string (``"interactive"``, ``"paper"``) or a
-    `PlotStyle` instance directly.
+    Accepts a preset name string (``"interactive"``, ``"paper"``), a
+    `PlotStyle` instance, or a mapping that picks a preset and overrides
+    individual fields. The mapping form lets a config keep a preset's sizing
+    and fonts while changing one behaviour — notably restoring the figure
+    and subplot headers that ``paper`` suppresses (``show_title=False``):
+
+        plot_style:
+          preset: "paper"
+          show_title: true
     """
     if isinstance(style, PlotStyle):
         return style
+    if isinstance(style, dict):
+        overrides = dict(style)
+        base = get_style(overrides.pop("preset", "interactive"))
+        valid = {f.name for f in fields(PlotStyle)}
+        unknown = set(overrides) - valid
+        if unknown:
+            raise ValueError(
+                f"unknown plot_style override(s): {sorted(unknown)}. "
+                f"Valid fields: {sorted(valid)}")
+        return replace(base, **overrides)
     return _PRESETS[style.lower()]
 
 
