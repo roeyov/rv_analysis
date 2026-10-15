@@ -5,7 +5,11 @@ Tier 3.2 + 3.3 support of the 2026-09 variant campaign (JV-023a, TSA-103):
 * 1-D marginal pseudo-posteriors for (pi, kappa, eta, f_bin) with
   median / 16th / 84th percentiles — same math as
   make_bias_corner_figure.py (exp(logGMF - max), nansum-marginalise,
-  trapz-normalise, percentiles from the cumulative trapezoid).
+  trapz-normalise, percentiles from the cell-centred grid CDF of
+  bias_grid_lib.marginals). Before 2026-09-29 this script used a
+  node-anchored trapezoid CDF instead, which differed from the paper
+  script's estimator; ext3 medians moved by <= 0.01 when the two were
+  unified.
 * kappa-CONDITIONAL slices: fix kappa at the node nearest each requested
   value, renormalise prob[:, j, :, :], and report conditional
   (pi, eta, f_bin) medians/percentiles.
@@ -29,6 +33,8 @@ import os
 import sys
 
 import numpy as np
+
+from simulations.bias_grid_lib.marginals import grid_quantiles
 
 # numpy 2.x renamed trapz -> trapezoid
 _trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
@@ -75,12 +81,7 @@ def marginal_1d(prob, axis, grid):
 
 
 def percentiles(m, grid, qs=(0.16, 0.50, 0.84)):
-    cdf = np.concatenate([[0.0], np.cumsum(
-        0.5 * (m[1:] + m[:-1]) * np.diff(grid))])
-    if cdf[-1] <= 0:
-        return [np.nan] * len(qs)
-    cdf /= cdf[-1]
-    return [float(np.interp(q, cdf, grid)) for q in qs]
+    return grid_quantiles(m, grid, qs)
 
 
 def fmt(name, m, grid):
@@ -96,7 +97,7 @@ def main():
     ap.add_argument("--variant", default=None,
                     help="variant tag (default: the cube's single variant)")
     ap.add_argument("--metric", default="cvm",
-                    choices=["ks", "ad", "cvm", "wass"])
+                    choices=["ks", "ad", "cvm", "wass", "lik"])
     ap.add_argument("--kappa-slices", default="0,-0.1,-1",
                     help="comma-separated kappa values to condition on")
     ap.add_argument("--dump", default=None,

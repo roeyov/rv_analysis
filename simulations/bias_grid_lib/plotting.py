@@ -12,6 +12,7 @@ import pandas as pd
 
 from simulations.bias_grid_lib.constants import _trapz
 from simulations.bias_grid_lib.logging_utils import logger
+from simulations.bias_grid_lib.marginals import grid_quantiles
 from simulations.bias_grid_lib.statistics import _SCORED_TESTS
 
 
@@ -65,12 +66,9 @@ def plot_grid_results(results, output_dir=None, obs_logP=None, obs_e=None,
         ax.axvline(mode, color="crimson", lw=1.5, ls="--",
                    label=f"Mode = {mode:.2f}")
 
-        # 68% CI
-        cdf = np.cumsum(post_1d)
-        if cdf[-1] > 0:
-            cdf /= cdf[-1]
-            lo = np.interp(0.16, cdf, grid)
-            hi = np.interp(0.84, cdf, grid)
+        # 68% CI (cell-centred grid quantiles)
+        lo, hi = grid_quantiles(post_1d, grid, (0.16, 0.84))
+        if np.isfinite(lo) and np.isfinite(hi):
             ax.axvspan(lo, hi, alpha=0.12, color="crimson",
                        label=f"68% CI [{lo:.2f}, {hi:.2f}]")
 

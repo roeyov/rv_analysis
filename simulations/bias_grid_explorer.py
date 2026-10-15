@@ -32,6 +32,7 @@ from simulations.bias_grid import (
     variant_tag, split_variant_tag,
 )
 from simulations.bias_grid_lib.constants import KILL_FLAG_LABELS
+from simulations.bias_grid_lib.marginals import grid_quantiles
 
 
 # ---------------------------------------------------------------------------
@@ -426,12 +427,9 @@ def plot_corner(prob, grids, best_fit, current_vals, smooth=True):
                     name=PARAM_NAMES[idx], showlegend=False,
                 ), row=row, col=col)
 
-                # 68% CI band
-                cdf = np.cumsum(post)
-                if cdf[-1] > 0:
-                    cdf = cdf / cdf[-1]
-                    lo = np.interp(0.16, cdf, grid)
-                    hi = np.interp(0.84, cdf, grid)
+                # 68% CI band (cell-centred grid quantiles)
+                lo, hi = grid_quantiles(post, grid, (0.16, 0.84))
+                if np.isfinite(lo) and np.isfinite(hi):
                     fig.add_vrect(x0=lo, x1=hi, fillcolor="crimson",
                                   opacity=0.1, line_width=0,
                                   row=row, col=col)

@@ -33,6 +33,7 @@ from simulations.bias_grid import (
 from simulations.bias_grid_lib.cube_io import (
     is_multi_variant, resolve_variant_tag,
 )
+from simulations.bias_grid_lib.marginals import grid_quantiles
 
 _trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 
@@ -241,11 +242,8 @@ def _draw_marginals_row(axes_row, prob, grids, best_fit):
         ax.fill_between(grid, post, alpha=0.25, color=color)
         ax.plot(grid, post, color=color, lw=2)
 
-        cdf = np.cumsum(post)
-        if cdf[-1] > 0:
-            cdf_n = cdf / cdf[-1]
-            lo = float(np.interp(0.16, cdf_n, grid))
-            hi = float(np.interp(0.84, cdf_n, grid))
+        lo, hi = grid_quantiles(post, grid, (0.16, 0.84))
+        if np.isfinite(lo) and np.isfinite(hi):
             ax.axvspan(lo, hi, color="crimson", alpha=0.10,
                        label=r"68\% CI" if col == 0 else None)
 
