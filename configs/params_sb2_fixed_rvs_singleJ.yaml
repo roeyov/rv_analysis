@@ -1,0 +1,82 @@
+# =============================================================================
+# params_sb2_fixed_rvs_singleJ.yaml — SB2 fixed-RVs batch, SHARED-jitter
+# variant: identical to params_sb2_fixed_rvs.yaml except
+#   1. output_dir     -> scriptsOut/sb2_fixed_rvs_singleJ
+#   2. jitter_mode    -> "shared" (ONE ln_sigmaJ for both components:
+#                        lmfit 8 free params, MCMC theta 8 ecc / 6 circ)
+# The cleaned per-epoch tables (rv_sb2_cleaned.csv) from the separate-jitter
+# run are copied into the new tree before running, so the data are identical.
+#   python -m sb2_pipeline.batch --config configs/params_sb2_fixed_rvs_singleJ.yaml
+# Created 2026-08-13.
+# =============================================================================
+
+plot: true
+plot_style: "paper"
+random_seed: 562
+manual_candidate_periods: []
+
+sb2_io:
+  sb2_root: "/Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR5.0_Combined_perStar_sb2"
+  provenance_csv: "/Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/notes/sb2_solution_provenance.csv"
+  corrections_csv: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded/RVcorrectionsDR5.csv"
+  output_dir: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/sb2_fixed_rvs_singleJ"
+  object_list: []
+  mjd_match_tolerance: 5.0e-3
+  rv_file_priority: ["rv_final_for_mcmc.csv", "rv_final.csv", "rv_corrected.csv", "rv_extracted.csv"]
+  use_fwhm: true
+
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 1000
+  random_state: 123
+  n_sig_periods: 4
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10000
+  run_permutations_ls: false
+  run_permutations_pdc: false
+  # ESSENTIAL for SB2: |rv1-rv2| of a (near-)circular binary peaks at P/2.
+  include_harmonics: true
+  show_permutation_progress: false
+  fwhm_window_factor: 1.5
+
+lmfit_params:
+  minimization_method: "differential_evolution"
+  de_seed: 562
+  max_nfev: 200000
+  fit_circular_comparison: true
+  jitter_mode: "shared"              # ONE ln_sigmaJ for both components
+  search_region:
+    Period:       {init_value: 5.0,   min_value: 0.4,    max_value: 10000.0, vary: true}
+    T0:           {init_value: 0.0,   min_value: 0.0,    max_value: 0.0,     vary: true}
+    Eccentricity: {init_value: 0.0,   min_value: 0.0,    max_value: 0.9999,  vary: true}
+    OMEGA_rad:    {init_value: 3.14,  min_value: 0.0,    max_value: 6.4,     vary: true}
+    GAMMA:        {init_value: 150.0, min_value: -300.0, max_value: 600.0,   vary: true}
+    K1:           {init_value: 100.0, min_value: 0.0,    max_value: 500.0,   vary: true}
+    K2:           {init_value: 200.0, min_value: 0.0,    max_value: 500.0,   vary: true}
+    ln_sigmaJ:    {init_value: 0.0,   min_value: -2.0,   max_value: 4.5,     vary: true}
+
+mcmc_params:
+  burn: 2000
+  steps: 20000
+  thin: 5
+  walkers: 32
+  dP_frac: 0.01
+  sigma_P_frac: 0.002
+  prune_stuck_walkers: true
+
+  lucy_sweeney_threshold: 2.49
+  lucy_sweeney_estimator: "median"
+
+  filter_expression: >-
+    ~candidate_method.str.contains('MANUAL')
+    & ~candidate_method.str.contains('null')
+    & candidate_method.str.contains('jitter')
+    & (prob_bicc > 0.5)
+  field_to_check: "bicc"
+  take_min: true
