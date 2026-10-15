@@ -45,13 +45,26 @@ def _ssr_linear(Y, s, SYY, oY, N):
     return SYY - Q
 
 
+# Free parameters counted in the corrected BIC, as in the production lmfit
+# fit and Eq. (bicc) of the paper: the orbit has P, K1, e, omega, T0, gamma
+# and the jitter (profiled here, fitted there); the constant model has gamma
+# and the jitter. Until 2026-10-10 the orbit was scored with 6, which made
+# the fast detector more permissive than the production classification.
+N_PARAM_ORBIT = 7
+N_PARAM_CONSTANT = 2
+
+
 def _llh_bicc(SSR, err2, N, nvarys):
     """Profiled-jitter negative-log-likelihood and BICc, per injection.
 
     SSR : (n_batch,) residual sum of squares. err2 : (n_batch,) per-star err².
+    With N <= nvarys + 2 the BICc is undefined and the model is never
+    preferred (BICc = +inf).
     """
     sig2 = np.clip(SSR / N, err2 + _SIGJ_LO ** 2, err2 + _SIGJ_HI ** 2)
     llh = N * np.log(sig2) + SSR / sig2
+    if N - nvarys - 2.0 <= 0:
+        return llh, np.full_like(np.asarray(llh, dtype=float), np.inf)
     bicc = nvarys * np.log(N) * (N / (N - nvarys - 2.0)) + llh
     return llh, bicc
 
@@ -140,8 +153,8 @@ def fit_batch(Y, t, err, period, fwhm_lo, fwhm_hi,
         gamma_fit = np.zeros(n_batch)
 
     ssr_null = SYY - oY * oY / N
-    llh_orb, orb_bicc = _llh_bicc(best_ssr, err2, N, nvarys=6)
-    llh_null, null_bicc = _llh_bicc(ssr_null, err2, N, nvarys=2)
+    llh_orb, orb_bicc = _llh_bicc(best_ssr, err2, N, nvarys=N_PARAM_ORBIT)
+    llh_null, null_bicc = _llh_bicc(ssr_null, err2, N, nvarys=N_PARAM_CONSTANT)
     prob_bicc = 1.0 / (1.0 + np.exp(-0.5 * (null_bicc - orb_bicc)))
 
     return {
