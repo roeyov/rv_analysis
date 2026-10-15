@@ -42,7 +42,7 @@ def _load(base_dir):
     return df, truth
 
 
-def _joint_best_fit(base_dir, variant=None):
+def _joint_best_fit(base_dir, variant=None, test="ks"):
     sum_log_gmf = None
     grids = {}
     n_seeds = 0
@@ -55,7 +55,7 @@ def _joint_best_fit(base_dir, variant=None):
             continue
         z = np.load(p, allow_pickle=True)
         try:
-            cube, _ = read_gmf_cube(z, test="ks", tag=variant)
+            cube, _ = read_gmf_cube(z, test=test, tag=variant)
             cube = cube.astype(np.float64)
         except KeyError:
             continue
@@ -323,13 +323,17 @@ def main():
                     help="Directory containing seed_*/ subdirs and per_seed_summary.csv.")
     ap.add_argument("--output", default=None,
                     help="Output PDF path. Default: <base-dir>/closure_summary.pdf")
+    ap.add_argument("--test", default="ks",
+                    choices=["ks", "ad", "cvm", "wass"],
+                    help="Which scored test's GMF cube to use.")
     ap.add_argument("--variant", default=None,
                     help="Scoring variant tag for all-variants (v4) cubes; "
                          "default eccentric_only__numerical.")
     args = ap.parse_args()
 
     df, truth = _load(args.base_dir)
-    joint = _joint_best_fit(args.base_dir, variant=args.variant)
+    joint = _joint_best_fit(args.base_dir, variant=args.variant,
+                            test=args.test)
     n_seeds = len(df)
 
     out_path = args.output or os.path.join(args.base_dir, "closure_summary.pdf")

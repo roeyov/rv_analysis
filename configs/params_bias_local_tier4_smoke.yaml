@@ -1,0 +1,122 @@
+# =============================================================================
+# params_bias_local_tier4_smoke.yaml — LOCAL smoke config for the Tier-4
+# coverage campaign (GENERATED from params_bias_astro3_ext3_rv10.yaml:
+# identical science knobs, local paths, preset quick (3^4), sequential mode
+# (macOS parallel_grid hang). Used by run_coverage_campaign.sh smoke only —
+# NEVER for production numbers.
+# =============================================================================
+plot: false
+plot_style: paper
+random_seed: 562
+fast_detect_backend: numpy
+manual_candidate_periods: []
+drv_threshold: 10.0
+significance_threshold: 4.0
+base_dir: /Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut
+lmfit_subdir: second_pdc
+mcmc_subdir: mcmc_out
+pipeline_io:
+  object_list: []
+  mass_file: /jonathan_storage/roeyovadia/data/mass_bloem.csv
+  use_fwhm: true
+bias_grid:
+  sb1_tex: /Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb1_solutions.tex
+  sb2_tex: /Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/sb2_solutions.tex
+  mass_file: /Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv
+  rv_dir: /Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded/
+  sb2_analysis_dir: /Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR5.0_Combined_perStar_sb2
+  ostar_catalog: /Users/roeyovadia/Roey/Masters/Reasearch/Ostars_article/tables/ostar_catalog.csv
+  output_dir: null
+  preset: quick
+  n_inject: 50
+  seed: 42
+  n_stars_sample: null
+  variant_filter:
+    e_score_mode: eccentric_only
+    logP_cutoff_mode: numerical
+    apply_lucy_sweeny_e: true
+  scored_tests:
+  - cvm
+  logP_cutoff_smooth_sigma: 0.15
+  logP_cutoff_scope: exclude
+  detect_method: rv_threshold
+  apply_rlof_gate: false
+  count_false_positives: false
+  log_p_min: 0.046
+  log_p_max: 3.5
+  q_min: 0.01
+  q_max: 1.0
+  adaptive_n_inject: true
+  n_above_cutoff_target: 1100
+  n_inject_max: 50000
+  adaptive_n_cutoff: null
+  n_workers: 1
+  parallel_grid: false
+periodogram_params:
+  min_period: 1.0
+  max_period: 10000.0
+  ls_norm: model
+  ls_method: fast
+  ls_fa_method: baluev
+  ls_sample_per_peak: 20
+  n_bootsraps: 50
+  random_state: 123
+  n_sig_periods: 1
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10
+  run_pdc: true
+  run_permutations_ls: true
+  run_permutations_pdc: true
+lmfit_params:
+  minimization_method: differential_evolution
+  search_region:
+    Period:
+      init_value: 29.7949
+      min_value: 1.0
+      max_value: 45.0
+      vary: false
+    GAMMA:
+      init_value: 150.0
+      min_value: -300.0
+      max_value: 300.0
+      vary: true
+    K1:
+      init_value: 200.0
+      min_value: 0.0
+      max_value: 400.0
+      vary: true
+    OMEGA_rad:
+      init_value: 3.14
+      min_value: 0.0
+      max_value: 6.4
+      vary: true
+    Eccentricity:
+      init_value: 0.0
+      min_value: 0.0
+      max_value: 0.9999
+      vary: true
+    T0:
+      init_value: 0.0
+      min_value: 0.0
+      max_value: 0.0
+      vary: true
+    ln_sigmaJ:
+      init_value: 0.0
+      min_value: -2
+      max_value: 4.5
+      vary: true
+mcmc_params:
+  __lnsigma:
+    init_value: 0.1
+    min_value: 0.001
+    max_value: 2.0
+  method: emcee
+  nan_policy: omit
+  burn: 100
+  steps: 2000
+  thin: 5
+  walkers: 32
+  filter_expression: ''
+  field_to_check: bicc
+  take_min: true

@@ -4,9 +4,10 @@ catalog at a known (pi, kappa, eta, fbin) truth and write it as LaTeX SB1/SB2
 tables that simulations/bias_grid.py can ingest unchanged.
 
 The synthetic detections are produced by the *same* per-star injection-recovery
-machinery the grid uses internally (_worker_star_injections_vectorized) at the
-truth point, with n_inject=1 (one binary/single coin flip per real BLOeM
-star). The resulting detected catalog is split into SB1/SB2 by a mass-ratio
+machinery the grid uses internally at the truth point, with n_inject=1 (one
+binary/single coin flip per real BLOeM star): _worker_star_injections_vectorized
+for --detect-method rv_threshold (default), _worker_field_injections_batched
+(single-star batches) for --detect-method pipeline_batched. The resulting detected catalog is split into SB1/SB2 by a mass-ratio
 threshold, then formatted into LaTeX tables matching the columns the bias_grid
 parser reads (see load_observed_from_tex).
 
@@ -36,6 +37,7 @@ from simulations.bias_grid import (
     _worker_star_injections_vectorized,
     load_star_properties,
 )
+from simulations.bias_grid_lib.injection import _worker_field_injections_batched
 from simulations.bias_config import DEFAULT_BIAS_CFG
 from simulations.common import BLOEM_MJD_ARRAYS
 from pipeline.config import load_args
@@ -176,10 +178,53 @@ def _write_sb2_table(path, rows, p_circ):
 # Synthetic-catalog generation
 # ---------------------------------------------------------------------------
 
+def build_generation_cfg(args_dict):
+    """Bias cfg for mock generation: DEFAULT_BIAS_CFG + the YAML overlays
+    that ``bias_grid.py`` applies before injecting.
+
+    The grid models the population with the YAML's sampling bounds
+    (``log_p_min``/``log_p_max``/``q_min``/``q_max``); a mock drawn from the
+    bare defaults would come from a DIFFERENT population than the one the
+    grid fits, so the same keys must be overlaid here. The detection knobs
+    (``apply_rlof_gate``/``count_false_positives``/``periodogram_params``)
+    only matter for detect_method='pipeline_batched' — detect_batch reads
+    them from cfg, and YAML keys not copied in never reach it.
+    """
+    bg_cfg = args_dict.get("bias_grid", {}) or {}
+
+    def _bg(key):
+        if key in bg_cfg and bg_cfg[key] is not None:
+            return bg_cfg[key]
+        return DEFAULT_BIAS_CFG.get(key)
+
+    cfg = dict(DEFAULT_BIAS_CFG)
+    cfg["log_p_min"] = float(_bg("log_p_min"))
+    cfg["log_p_max"] = float(_bg("log_p_max"))
+    cfg["q_min"] = float(_bg("q_min"))
+    cfg["q_max"] = float(_bg("q_max"))
+    cfg["apply_rlof_gate"] = bool(_bg("apply_rlof_gate"))
+    cfg["count_false_positives"] = bool(_bg("count_false_positives"))
+    cfg["periodogram_params"] = dict(args_dict.get("periodogram_params") or {})
+    return cfg
+
+
 def generate_synthetic_detections(star_df, args_dict, cfg,
                                   truth_pi, truth_kappa, truth_eta, truth_fbin,
-                                  seed, n_inject=1):
-    """Run rv_threshold injection-recovery at truth, one shot per star.
+                                  seed, n_inject=1,
+                                  detect_method="rv_threshold"):
+    """Run injection-recovery at truth, one shot per star.
+
+    detect_method='rv_threshold' uses the vectorized ΔRV-threshold worker;
+    'pipeline_batched' routes each star through the batched pipeline-fidelity
+    detector (LS+PDC periodograms, prob_bicc + permutation FAP gates). The
+    per-star seeds are drawn from the mock rng in the SAME order in both
+    modes, and the batched worker's population draws consume an identical
+    RNG stream — so for a given ``seed`` the injected population is
+    bit-identical across detect methods; only the detection decision
+    differs. Stars are submitted as single-star batches to keep the
+    star→detection mapping (the permutation FAP is per-injection, so batch
+    size does not change the statistic; the periodogram design is cached by
+    MJD grid across stars of a field).
 
     Returns
     -------
@@ -193,6 +238,7 @@ def generate_synthetic_detections(star_df, args_dict, cfg,
     n_physical = 0
     n_detected = 0
     n_false_positive = 0
+    false_positive_ids = []     # star IDs whose single was falsely detected
 
     star_ids = star_df["ID"].values
     M1_arr = star_df["Mspec"].values.astype(float)
@@ -206,27 +252,49 @@ def generate_synthetic_detections(star_df, args_dict, cfg,
         MJDs = np.asarray(BLOEM_MJD_ARRAYS[fld], dtype=float)
         star_seed = int(rng.integers(0, 2**63))
 
-        task = (
-            star_seed,
-            MJDs,
-            float(rv_err_arr[i]),
-            float(M1_arr[i]),
-            float(R1_arr[i]),
-            float(gamma_arr[i]),
-            n_inject,
-            float(truth_fbin),
-            float(truth_pi),
-            float(truth_kappa),
-            float(truth_eta),
-            cfg,
-            args_dict,
-            "rv_threshold",
-        )
-        result = _worker_star_injections_vectorized(task)
+        if detect_method == "pipeline_batched":
+            task = (
+                MJDs,
+                [star_seed],
+                np.array([rv_err_arr[i]], dtype=float),
+                np.array([M1_arr[i]], dtype=float),
+                np.array([R1_arr[i]], dtype=float),
+                np.array([gamma_arr[i]], dtype=float),
+                n_inject,
+                float(truth_fbin),
+                float(truth_pi),
+                float(truth_kappa),
+                float(truth_eta),
+                cfg,
+                args_dict,
+                detect_method,
+            )
+            result = _worker_field_injections_batched(task)
+        else:
+            task = (
+                star_seed,
+                MJDs,
+                float(rv_err_arr[i]),
+                float(M1_arr[i]),
+                float(R1_arr[i]),
+                float(gamma_arr[i]),
+                n_inject,
+                float(truth_fbin),
+                float(truth_pi),
+                float(truth_kappa),
+                float(truth_eta),
+                cfg,
+                args_dict,
+                "rv_threshold",
+            )
+            result = _worker_star_injections_vectorized(task)
 
         n_physical += result["n_physical"]
         n_detected += result["n_detected"]
         n_false_positive += result["n_false_positive"]
+        # Bookkeeping only (no RNG): which stars' singles were detected. The
+        # per-star true-posterior likelihood needs the star, not just the count.
+        false_positive_ids.extend([str(sid)] * int(result["n_false_positive"]))
 
         for j in range(len(result["logP_det"])):
             detections.append({
@@ -243,6 +311,7 @@ def generate_synthetic_detections(star_df, args_dict, cfg,
         "n_physical": int(n_physical),
         "n_detected": int(n_detected),
         "n_false_positive": int(n_false_positive),
+        "false_positive_ids": false_positive_ids,
     }
     return detections, summary
 
@@ -303,6 +372,12 @@ def _build_parser():
                     help="q >= this -> SB2 row, else SB1.")
     ap.add_argument("--n-inject", type=int, default=1,
                     help="Injections per star (default 1 = one realization).")
+    ap.add_argument("--detect-method", default="rv_threshold",
+                    choices=["rv_threshold", "pipeline_batched"],
+                    help="Detection used to build the mock catalog. MUST "
+                         "match the detect_method of the grid that will "
+                         "score it (a proxy-detected mock scored by a "
+                         "pipeline grid measures nothing).")
     return ap
 
 
@@ -311,7 +386,7 @@ def main(argv=None):
     os.makedirs(args.output_dir, exist_ok=True)
 
     args_dict = load_args(args.config)
-    cfg = dict(DEFAULT_BIAS_CFG)
+    cfg = build_generation_cfg(args_dict)
     p_circ = float(cfg.get("p_circ", 2.26))
 
     bg_cfg = args_dict.get("bias_grid", {}) or {}
@@ -337,6 +412,7 @@ def main(argv=None):
         truth_fbin=args.truth_fbin,
         seed=args.seed,
         n_inject=args.n_inject,
+        detect_method=args.detect_method,
     )
     print("[closure-gen] %d detected of %d physical (%d false positives)" %
           (summary["n_detected"], summary["n_physical"],
@@ -376,11 +452,37 @@ def main(argv=None):
         "p_circ": p_circ,
     })
 
+    mock_meta = os.path.join(args.output_dir, "mock_meta.yaml")
+    _write_truth_yaml(mock_meta, {
+        "truth": {
+            "pi": float(args.truth_pi),
+            "kappa": float(args.truth_kappa),
+            "eta": float(args.truth_eta),
+            "fbin": float(args.truth_fbin),
+        },
+        "seed": int(args.seed),
+        "detect_method": args.detect_method,
+        "n_inject_per_star": int(args.n_inject),
+        "n_sb1": int(len(sb1_rows)),
+        "n_sb2": int(len(sb2_rows)),
+        "summary": summary,
+        "sampling_bounds": {
+            "log_p_min": float(cfg["log_p_min"]),
+            "log_p_max": float(cfg["log_p_max"]),
+            "q_min": float(cfg["q_min"]),
+            "q_max": float(cfg["q_max"]),
+            "e_max": float(cfg["e_max"]),
+            "p_circ": p_circ,
+        },
+        "config": args.config,
+    })
+
     print("[closure-gen] wrote:")
     print("  %s" % sb1_path)
     print("  %s" % sb2_path)
     print("  %s" % obs_csv)
     print("  %s" % truth_yaml)
+    print("  %s" % mock_meta)
 
 
 if __name__ == "__main__":

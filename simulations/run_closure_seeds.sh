@@ -90,6 +90,11 @@ PY
         --output-dir "$SEED_DIR" \
         > "$SEED_DIR/closure_gen.log" 2>&1
 
+    # Anchor the binomial on this mock's own detections, not the real
+    # catalogue's 77 (see simulations/closure_anchor.py).
+    python -m simulations.closure_anchor --seed-yaml "$SEED_YAML" \
+        --truth-yaml "$SEED_DIR/truth_params.yaml" | tee -a "$MASTER_LOG"
+
     echo "[seed $SEED] $(date) running bias_grid..." | tee -a "$MASTER_LOG"
     python -m simulations.bias_grid \
         --config "$SEED_YAML" \

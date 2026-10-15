@@ -25,7 +25,7 @@ def _load_truth(seed_dir):
     return truth
 
 
-def _load_per_seed_summaries(base_dir):
+def _load_per_seed_summaries(base_dir, test="ks"):
     rows = []
     for seed_dir in sorted(glob.glob(os.path.join(base_dir, "seed_*"))):
         seed = int(os.path.basename(seed_dir).split("_")[1])
@@ -35,7 +35,12 @@ def _load_per_seed_summaries(base_dir):
             print(f"[seed {seed}] missing closure_summary.csv -- skipping")
             continue
         df = pd.read_csv(summary_csv)
-        ks_row = df[df["test"] == "ks"].iloc[0]
+        sel = df[df["test"] == test]
+        if sel.empty:
+            print(f"[seed {seed}] no {test!r} row in closure_summary.csv "
+                  f"(has: {sorted(df['test'].unique())}) -- skipping")
+            continue
+        ks_row = sel.iloc[0]
         truth = _load_truth(seed_dir)
         rows.append({
             "seed": seed,
@@ -53,7 +58,7 @@ def _load_per_seed_summaries(base_dir):
     return pd.DataFrame(rows)
 
 
-def _joint_best_fit(base_dir, variant=None):
+def _joint_best_fit(base_dir, variant=None, test="ks"):
     """Sum log_gmf cubes across seeds and report the joint mode.
 
     Each per-seed cube is the KS log-GMF for the chosen scoring `variant`
@@ -78,7 +83,7 @@ def _joint_best_fit(base_dir, variant=None):
     for p in cubes_paths:
         z = np.load(p, allow_pickle=True)
         try:
-            cube, resolved_tag = read_gmf_cube(z, test="ks", tag=variant)
+            cube, resolved_tag = read_gmf_cube(z, test=test, tag=variant)
             cube = cube.astype(np.float64)
         except KeyError:
             print(f"  no log_gmf cube in {p} -- skipping")
@@ -120,9 +125,12 @@ def main():
                     help="Scoring variant tag '<e_score_mode>__<logP_cutoff_"
                          "mode>' to read from all-variants (v4) cubes. "
                          "Default: eccentric_only__numerical.")
+    ap.add_argument("--test", default="ks",
+                    choices=["ks", "ad", "cvm", "wass"],
+                    help="Which scored test's summary row + GMF cube to use.")
     args = ap.parse_args()
 
-    df = _load_per_seed_summaries(args.base_dir)
+    df = _load_per_seed_summaries(args.base_dir, test=args.test)
     if df.empty:
         print("No completed seeds found.")
         return
@@ -131,13 +139,13 @@ def main():
         os.path.join(args.base_dir, "seed_*")))[0])["truth"]
 
     print("=" * 78)
-    print(f"Per-seed closure recovery ({len(df)} seeds)")
+    print(f"Per-seed closure recovery ({len(df)} seeds, test={args.test})")
     print("=" * 78)
     print(df.to_string(index=False, float_format=lambda v: f"{v:7.3f}"))
 
     print()
     print("=" * 78)
-    print("Mean +/- std across seeds (KS)")
+    print("Mean +/- std across seeds (%s)" % args.test.upper())
     print("=" * 78)
     for col, t in (("recovered_pi", truth["pi"]),
                    ("recovered_kappa", truth["kappa"]),
@@ -152,7 +160,8 @@ def main():
     print(f"  {'log_gmf_gap':>16s}: {df['log_gmf_gap'].mean():7.3f} "
           f"+/- {df['log_gmf_gap'].std():6.3f}")
 
-    joint = _joint_best_fit(args.base_dir, variant=args.variant)
+    joint = _joint_best_fit(args.base_dir, variant=args.variant,
+                            test=args.test)
     if joint:
         print()
         print("=" * 78)
