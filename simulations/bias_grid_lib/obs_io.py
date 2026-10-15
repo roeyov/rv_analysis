@@ -72,6 +72,9 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True,
                              rows of 'logP'
         'n_sb1'            : number of usable SB1 systems
         'n_sb2'            : number of SB2 systems
+        'id'               : row label from the ID column (footnote
+                             markers removed), aligned with 'logP'
+        'table'            : 'SB1' or 'SB2' per row, aligned with 'logP'
     """
     exclude_set = {str(x).strip() for x in (exclude_ids or ())}
     excluded_found = set()
@@ -85,6 +88,10 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True,
             s = s[len("BLOeM"):].strip()
         return s
 
+    def _row_label(raw):
+        """Row ID with LaTeX footnote markers removed ('4-080 Aa,Ab')."""
+        return re.sub(r"\^\{?\(?[a-z]\)?\}?", "", _row_id(raw)).strip()
+
     all_logP = []
     all_e = []
     all_e_value = []
@@ -92,6 +99,8 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True,
     all_K1 = []
     sb2_q = []
     sb1_q_min = []
+    all_ids = []
+    all_tables = []
 
     # --- Parse SB1 table ---
     with open(sb1_path, "r") as f:
@@ -149,6 +158,8 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True,
                 continue
 
         all_logP.append(np.log10(P_val))
+        all_ids.append(_row_label(cols[1]))
+        all_tables.append("SB1")
         sb1_q_min.append(q_min_val)
         e_is_upper_limit = r"\leq" in cols[5]
         if np.isnan(e_val):
@@ -216,6 +227,8 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True,
                 continue
 
         all_logP.append(np.log10(P_val))
+        all_ids.append(_row_label(cols[1]))
+        all_tables.append("SB2")
         e_is_upper_limit = r"\leq" in cols[5]
         if np.isnan(e_val):
             e_to_append = 0.0
@@ -244,6 +257,12 @@ def load_observed_from_tex(sb1_path, sb2_path, apply_lucy_sweeny_e=True,
         "q_min_sb1": np.array(sb1_q_min),
         "n_sb1": n_sb1,
         "n_sb2": n_sb2,
+        # Row labels as written in the tables' ID column, footnote markers
+        # removed (e.g. '1-023', '4-080 Aa,Ab', '4-043 (inner)'), and the
+        # table each row came from. Aligned with 'logP'. Not read by the
+        # CvM scorer; used by the per-star true-posterior catalogue.
+        "id": np.array(all_ids, dtype=object),
+        "table": np.array(all_tables, dtype=object),
     }
     if exclude_set:
         missing = sorted(exclude_set - excluded_found)

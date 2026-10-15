@@ -501,9 +501,29 @@ def _draw_star_binaries(MJDs, n_epochs, rv_err_val, M1, R1, gamma,
     Returns ``(logP, e_arr, K1_arr, q_arr, rv_obs[n_bin, n_epochs], M1_j, R1_j)``.
     """
     logP = powerlaw_draw(n_bin, pi, cfg["log_p_min"], cfg["log_p_max"], rng)
-    P = 10.0 ** logP
     q_arr = powerlaw_draw(n_bin, kappa, cfg["q_min"], cfg["q_max"], rng)
     e_arr = powerlaw_draw(n_bin, eta, 1e-6, cfg["e_max"], rng)
+    return _star_binary_rvs(MJDs, n_epochs, rv_err_val, M1, R1, gamma,
+                            logP, q_arr, e_arr, cfg, rng)[:7]
+
+
+def _star_binary_rvs(MJDs, n_epochs, rv_err_val, M1, R1, gamma,
+                     logP, q_arr, e_arr, cfg, rng):
+    """Everything after the (logP, q, e) draws, for one star's binaries.
+
+    Applies the p_circ rule (``e = 0`` below ``cfg['p_circ']``, in place on
+    ``e_arr``), then draws the nuisances in the grid's fixed order:
+    isotropic inclination, omega, T0, M1 and R1 scatter. It then computes
+    K1 and the Keplerian RVs and adds Gaussian noise at ``rv_err_val``.
+    ``_draw_star_binaries`` (the grid) and the true-posterior injection set
+    both call this, so the two share one nuisance and noise model; the grid
+    draws are bit-identical to the pre-split code (parity fixtures).
+
+    Returns ``(logP, e_arr, K1_arr, q_arr, rv_obs[n_bin, n_epochs], M1_j,
+    R1_j, incl, omega, T0_arr)``.
+    """
+    n_bin = len(logP)
+    P = 10.0 ** logP
     e_arr[P < cfg["p_circ"]] = 0.0
     incl = np.arccos(rng.uniform(0, 1, n_bin))
     omega = rng.uniform(0, TWOPI, n_bin)
@@ -528,7 +548,7 @@ def _draw_star_binaries(MJDs, n_epochs, rv_err_val, M1, R1, gamma,
     rv_true = gamma + K1_arr[:, None] * (
         np.cos(nu + omega[:, None]) + e_arr[:, None] * np.cos(omega[:, None]))
     rv_obs = rv_true + rng.normal(0.0, rv_err_val, (n_bin, n_epochs))
-    return logP, e_arr, K1_arr, q_arr, rv_obs, M1_j, R1_j
+    return logP, e_arr, K1_arr, q_arr, rv_obs, M1_j, R1_j, incl, omega, T0_arr
 
 
 def _worker_field_injections_batched(field_task):
