@@ -126,6 +126,25 @@ mcmc_params:
   dP_frac: 0.01
   sigma_P_frac: 0.002
 
+  # Lucy-Sweeney threshold on e_mode/sigma_minus (2026-08-13: unified with
+  # the SB2 pipeline at 2.49; was hard-coded 2.45 in earlier runs).
+  lucy_sweeney_threshold: 2.49
+
+  # Drop stuck walkers from the PUBLISHED summaries (walker-mean ln-posterior
+  # more than 10 below the best walker, with a guard keeping any walker whose
+  # best sample is within 5 of the global maximum — a competitive secondary
+  # mode). Sampling is unaffected and chains_*.npz always stores the full raw
+  # chain plus the keep_walkers mask, so this is reversible via
+  # mcmc.chain_io.load_chain (flat_samples vs flat_samples_pruned).
+  #
+  # Measured on this run: 0/50 Lucy-Sweeney verdicts change, so detections and
+  # the ecc/circ split are identical either way; what it fixes is inflated and
+  # asymmetric error bars on 16/108 stars — including BLOeM_8-073 and
+  # BLOeM_3-014, the two the manual 2026-07 reruns had to correct by hand
+  # (e.g. 2-029 K1 -2.11/+0.94 -> -0.52/+0.56; 3-014 P -0.006/+0.024 ->
+  # -0.006/+0.005). Central values move well under 1 sigma.
+  prune_stuck_walkers: true
+
   # Best-row selection: prob_bicc > 0.5, mass_flag_peri == 0, and the
   # period-method-matched iterative FAP < 0.2; best (minimum) BICc.
   filter_expression: >-

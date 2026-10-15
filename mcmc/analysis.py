@@ -6,7 +6,7 @@ import os
 import numpy as np
 
 
-def lucy_sweeney_significant(e, sigma_e, threshold=2.45, add_jitter=False):
+def lucy_sweeney_significant(e, sigma_e, threshold=2.49, add_jitter=False):
     """
     Lucy–Sweeney test: eccentricity is significant if e / sigma_e >= threshold.
     """

@@ -1,0 +1,147 @@
+# =============================================================================
+# params_dr5_fifth_fixed_rvs_mcmc20k.yaml — Stage 4 ONLY rerun of
+# params_dr5_fifth_fixed_rvs.yaml at the mcmc_out4 production sampler length.
+#
+#   Stage 4:  python -m mcmc.batch --config configs/params_dr5_fifth_fixed_rvs_mcmc20k.yaml
+#
+# Identical to params_dr5_fifth_fixed_rvs.yaml except:
+#   1. mcmc_subdir        -> "mcmc_out_20k" (fresh output dir; nothing overwritten)
+#   2. mcmc_params.steps  -> 20000  (was 2000; matches params_mcmc_second_pdc_out4)
+#   3. mcmc_params.burn   -> 2000   (was 100;  matches params_mcmc_second_pdc_out4)
+# Reads the SAME fifth_fixed_rvs lmfit tree (stage 2 outputs untouched).
+# Created 2026-08-12 for the paper adoption of the fixed-RV run.
+# =============================================================================
+
+plot: true
+plot_style: "paper"
+random_seed: 562
+manual_candidate_periods: [30]
+
+base_dir:      "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_neb_div_from_coadded"
+lmfit_subdir:  "fifth_fixed_rvs"   # stage 2 writes here, stage 4 reads
+mcmc_subdir:   "mcmc_out_20k"      # stage 4 writes here (nested under lmfit_subdir)
+
+pipeline_io:
+  object_list: []                  # empty list = process all stars
+  mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"
+  use_fwhm: true
+  rv_col:    "fixed Mean RV"       # default when absent: "Mean RV"
+  rverr_col: "fixed Mean RVsig"    # default when absent: "Mean RVsig"
+
+# ---- Periodogram settings ----
+periodogram_params:
+  min_period: 0.4
+  max_period: 10000.0
+  ls_norm: "model"
+  ls_method: "fast"
+  ls_fa_method: "baluev"
+  ls_sample_per_peak: 50
+  n_bootsraps: 1000
+  random_state: 123
+  n_sig_periods: 4
+  min_period_separation: 1.1
+  pdc_samples_per_peak: 10
+  window_iterations: 10000
+  run_permutations_ls: true
+  run_permutations_pdc: true
+  include_harmonics: false         # default when absent: true
+  show_permutation_progress: false # keep the batch log readable (display only)
+  pdc_perm_mode: "batched"         # default when absent: "production"
+  fwhm_window_factor: 1.5          # default when absent: unbounded (.inf)
+
+# ---- Simulated data parameters (unused here; keys expected by loaders) ----
+simulated_params:
+  T0: 0.0
+  Period: 250.0
+  Eccentricity: 0.3
+  OMEGA_rad: 1.0
+  K1: 15.0
+  K2: 7.0
+  GAMMA: 10.0
+  number_of_samples: 25
+  noise_sigma: 3.0
+
+# ---- lmfit search region ----
+lmfit_params:
+  possible_minimization_method:
+    - leastsq
+    - least_squares
+    - nelder
+    - lbfgsb
+    - powell
+    - cg
+    - newton
+    - cobyla
+    - bfgs
+    - tnc
+    - trust-constr
+    - slsqp
+    - emcee
+    - ampgo
+    - basinhopping
+    - differential_evolution
+    - brute
+  minimization_method: "differential_evolution"
+  de_seed: 562                     # default when absent: unseeded
+  fit_circular_comparison: true    # default when absent: false
+  search_region:
+    Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
+    GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
+    K1:           {init_value: 200.0,   min_value: 0.0,    max_value: 400.0,   vary: true}
+    OMEGA_rad:    {init_value: 3.14,    min_value: 0.0,    max_value: 6.4,     vary: true}
+    Eccentricity: {init_value: 0.0,     min_value: 0.0,    max_value: 0.9999,  vary: true}
+    T0:           {init_value: 0.0,     min_value: 0.0,    max_value: 0.0,     vary: true}
+    ln_sigmaJ:    {init_value: 0.0,     min_value: -2,     max_value: 4.5,     vary: true}
+
+# ---- MCMC posterior sampling ----
+mcmc_params:
+  __lnsigma: {init_value: 0.1, min_value: 0.001, max_value: 2.0}
+  method: "emcee"
+  nan_policy: "omit"
+  burn: 2000
+  steps: 20000
+  thin: 5
+  walkers: 32
+
+  # Period prior width: uniform box +-dP_frac and a Gaussian of width
+  # sigma_P_frac, both as fractions of the lmfit period. These values are the
+  # historical hard-coded ones; widen them for the long-period tail
+  # (P >~ baseline/2 ~ 400 d), where the posterior width is prior-dominated.
+  dP_frac: 0.01
+  sigma_P_frac: 0.002
+
+  # Lucy-Sweeney threshold on e_mode/sigma_minus (2026-08-13: unified with
+  # the SB2 pipeline at 2.49; was hard-coded 2.45 in earlier runs — verified
+  # that NO star in this run's mcmc_out_20k flips verdict at 2.49, the
+  # nearest ratios being 2.35, 2.37, and 2.52).
+  lucy_sweeney_threshold: 2.49
+
+  # Drop stuck walkers from the PUBLISHED summaries (walker-mean ln-posterior
+  # more than 10 below the best walker, with a guard keeping any walker whose
+  # best sample is within 5 of the global maximum — a competitive secondary
+  # mode). Sampling is unaffected and chains_*.npz always stores the full raw
+  # chain plus the keep_walkers mask, so this is reversible via
+  # mcmc.chain_io.load_chain (flat_samples vs flat_samples_pruned).
+  #
+  # Measured on this run: 0/50 Lucy-Sweeney verdicts change, so detections and
+  # the ecc/circ split are identical either way; what it fixes is inflated and
+  # asymmetric error bars on 16/108 stars — including BLOeM_8-073 and
+  # BLOeM_3-014, the two the manual 2026-07 reruns had to correct by hand
+  # (e.g. 2-029 K1 -2.11/+0.94 -> -0.52/+0.56; 3-014 P -0.006/+0.024 ->
+  # -0.006/+0.005). Central values move well under 1 sigma.
+  prune_stuck_walkers: true
+
+  # Best-row selection: prob_bicc > 0.5, mass_flag_peri == 0, and the
+  # period-method-matched iterative FAP < 0.2; best (minimum) BICc.
+  filter_expression: >-
+    ~candidate_method.str.contains('MANUAL')
+    & ~candidate_method.str.contains('null')
+    & candidate_method.str.contains('jitter')
+    & (prob_bicc > 0.5)
+    & (mass_flag_peri == 0)
+    & ((candidate_method.str.contains('LS')
+    & (LS_iter_fap < 0.2))
+    | (candidate_method.str.contains('PDC')
+    & (PDC_iter_fap < 0.2)))
+  field_to_check: "bicc"
+  take_min: true

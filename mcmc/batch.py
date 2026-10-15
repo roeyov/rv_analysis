@@ -175,11 +175,14 @@ def run_mcmc_single_star(args_dict, best_row, MJDs, rv_obs, rv_sigmas,
         out_dir=out_dir, add_jitter=add_jitter, star_name=star_name,
     )
 
-    # -- Lucy-Sweeney --
+    # -- Lucy-Sweeney (threshold configurable; 2.49 = the SB2/paper
+    #    convention, adopted for SB1 as well on 2026-08-13) --
+    ls_threshold = float(args_dict[MCMC_PARAMS].get("lucy_sweeney_threshold",
+                                                    2.49))
     e_lm = dict_row["ecc_e_mode"]
     sigma_e_lm = dict_row["ecc_e_errm"]
     ecc_significant = lucy_sweeney_significant(e_lm, sigma_e_lm,
-                                                threshold=2.45,
+                                                threshold=ls_threshold,
                                                 add_jitter=add_jitter)
     print(f"Lucy–Sweeney says eccentricity significant? {ecc_significant}")
 

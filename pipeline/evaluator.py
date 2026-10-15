@@ -691,8 +691,11 @@ def run_mcmc(args_dict, results_df, MJDs, rv_obs, rv_sigmas, out_dir , star_name
 
         e_lm       = lmfit_result.params[ECC].value
         sigma_e_lm = lmfit_result.params[ECC].stderr
-    ecc_significant = lucy_sweeney_significant(e_lm, sigma_e_lm,
-                                               threshold=2.45, add_jitter=add_jitter)
+    ecc_significant = lucy_sweeney_significant(
+        e_lm, sigma_e_lm,
+        threshold=float(args_dict[MCMC_PARAMS].get("lucy_sweeney_threshold",
+                                                   2.49)),
+        add_jitter=add_jitter)
     print(f"Lucy–Sweeney says eccentricity significant? {ecc_significant}")
 
     P_center  = initial_ecc[0]
