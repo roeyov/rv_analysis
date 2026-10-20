@@ -20,9 +20,7 @@ from spectroscopy.constants import (
 )
 from spectroscopy.ccf_core import cross_cor
 from spectroscopy.coaddition import create_coadded_spectra
-from spectroscopy.plotting import (
-    plot_rv_vs_mjd, plot_rv_vs_mjd_combined,
-)
+from spectroscopy.plotting import plot_rv_vs_mjd_combined
 from spectroscopy.mean_rv import calculate_weighted_rv_with_flags
 from spectroscopy.spectra_drawer import load_all_spectra, load_templates, load_template
 from spectroscopy.files_collector import find_files_with_strings, load_elements_list
@@ -160,12 +158,8 @@ def main():
             a, star, template[star], lines_to_windows, cfg,
             meta_data=meta_data, seperate_speed=cfg.seperate_speed,
         )
-        plot_rv_vs_mjd(cc_result, star, marker_dict=marker_dict)
-
         mean_calc = calculate_weighted_rv_with_flags(cc_result)
-        plot_rv_vs_mjd(mean_calc, star, plot_only=["Mean"], filter=True,
-                       marker_dict=marker_dict)
-        plot_rv_vs_mjd(mean_calc, star, filter=True, marker_dict=marker_dict)
+        # Per-line + mean RVs vs MJD, saved as HTML under visuals/ (no pop-up).
         plot_rv_vs_mjd_combined(
             cc_result_df=cc_result, mean_calc_df=mean_calc,
             name=star, out=visuals_path, marker_dict=marker_dict,
