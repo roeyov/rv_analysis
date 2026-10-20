@@ -30,13 +30,46 @@ matched to epochs by nearest MJD within 0.005 d. `pipeline_io.rv_col` /
 `params.yaml` also uses the same fit settings as the paper's Stage-2 run
 (`configs/params_dr5_fifth_fixed_rvs.yaml`).
 
-**There is no batch wrapper for `run_star.sh`.** You don't need one, because
-every stage already accepts a list. There are two ways to run a list:
+There are three ways to run a list:
 
-- **Route A (recommended): run each stage once over the whole list.** Faster to
-  set up, and the fitting stage can resume after a crash.
+- **Quick start (recommended): `pipeline/make_run.py` + `run_sample.sh`.** One
+  command writes a run folder whose configs point at *your* data and output
+  directories, and a second runs every stage of Route A over it. See the next
+  section.
+- **Route A: run each stage by hand over the whole list.** What `run_sample.sh`
+  does, step by step. The fitting stage can resume after a crash.
 - **Route B: loop `run_star.sh` over the list.** You get exactly the per-star
   output layout of `run_star.sh`, but there are caveats (see below).
+
+## Quick start: `make_run` + `run_sample.sh`
+
+After the one-time setup (section 0):
+
+```bash
+conda activate tau_binary
+cd Scripts
+python -m pipeline.make_run --run my_run --stars /abs/path/my_stars.txt \
+    --data-dir /abs/path/BLOeM_Data --out-dir /abs/path/scriptsOut   # --setup bdwarfs (default) | ostars | bdwarfs_neb
+caffeinate -i ./run_sample.sh /abs/path/scriptsOut/CCF/my_run --to ccf
+#   -> read line_quality.txt (per-line use, epochs to check) before fitting
+caffeinate -i ./run_sample.sh /abs/path/scriptsOut/CCF/my_run --from corrections
+#   -> summary.txt / pass2/fixed_rvs/detections_summary.csv
+```
+
+`make_run` expects the data layout listed in its docstring (FITS, templates,
+v sin i, mass and RV-correction tables under `--data-dir`; each can be
+overridden). It checks every star before writing anything: a star without
+FITS, a template, a v sin i or mass row, or RV corrections for its field stops
+it. The setups copy the line set and fit settings from the repo configs:
+`bdwarfs` = `ccf_input_*_bdwarfs.yaml` + `params_bdwarfs.yaml`, `ostars` =
+`ccf_input_{first,second}.yaml` + `params.yaml`, `bdwarfs_neb` = the nebular
+B-dwarf line set. Only path keys are changed. Outputs land in the run folder:
+`pass1/`, `pass2/` (corrected RVs), `pass2/fixed_rvs/` (fits),
+`pass2/fixed_rvs/mcmc_out/` (MCMC), plus a log per stage.
+
+`--from` / `--to` take `ccf`, `corrections`, `fit`, `mcmc`, `summary`. After a
+stalled fit (see Troubleshooting), rerun with `--from fit`: finished stars are
+skipped.
 
 ---
 
@@ -45,29 +78,20 @@ every stage already accepts a list. There are two ways to run a list:
 ### Environment
 
 ```bash
+git clone https://github.com/roeyov/rv_analysis.git Scripts
 conda create -n tau_binary python=3.12
 conda activate tau_binary
 cd Scripts
-pip install -r requirements.txt -c constraints.txt
-pip install kaleido streamlit     # not in requirements.txt: kaleido = PNG export of plotly plots, streamlit = Stage 3 app
+pip install -r requirements-local.txt -c constraints.txt
+plotly_get_chrome    # once: kaleido needs a Chrome to export plotly PNGs (skip if Chrome is installed)
+python -c "from PDC.pdc_func import calc_pdc_optimized; import lmfit, emcee, numba; print('OK')"
 ```
 
-`constraints.txt` pins the versions the pipeline was validated with (numpy < 2).
-Run everything from the `Scripts/` directory with `tau_binary` active
-(`run_star.sh` changes into `Scripts/` itself). `run_star.sh` calls whatever
-`python` is on your `PATH`.
-
-### PDC module (currently missing from the repo)
-
-`period_search/` imports `PDC.pdc_func` (`calc_pdc`, `pdc_window`,
-`calc_pdc_optimized`). `PDC/` is recorded in git as a submodule pointer with no
-URL, so a fresh clone gets an **empty `PDC/` directory**, and the upstream PDC
-code does not contain `calc_pdc_optimized`. Until this is fixed in the repo,
-get `pdc_func.py` from Roey and put it at `PDC/pdc_func.py`. Check it with:
-
-```bash
-python -c "from PDC.pdc_func import calc_pdc, pdc_window, calc_pdc_optimized; print('PDC OK')"
-```
+`requirements-local.txt` is `requirements.txt` (what the cloud image installs)
+plus kaleido, streamlit and openpyxl. `constraints.txt` pins the versions the
+pipeline was validated with (numpy < 2). Run everything from the `Scripts/`
+directory with `tau_binary` active (`run_star.sh` and `run_sample.sh` change
+into `Scripts/` themselves and call whatever `python` is on your `PATH`).
 
 ### Input data (not in the repo)
 
@@ -293,7 +317,8 @@ diagnostic plots are in `<base_dir>/visuals/`.
 - **`No rows match the filter expression`.** No candidate passed the detection
   criteria, so the star is treated as having no orbital solution and gets the
   null-model MCMC.
-- **`ModuleNotFoundError: PDC.pdc_func`.** See *PDC module* above.
+- **`ModuleNotFoundError: PDC.pdc_func`.** You are not in `Scripts/`, or the
+  clone predates the commit that added `PDC/pdc_func.py` (`git pull`).
 - **`KeyError: ... missing columns ['fixed Mean RV', 'fixed Mean RVsig']`.** The
   correction step didn't run on that file, or pass 2 was rerun afterwards. Run
   `apply_rv_corrections` again (A1b).
