@@ -15,13 +15,18 @@ manual_candidate_periods: [30]
 # All *_dir values in pipeline_io / mcmc_params that are relative
 # are resolved against base_dir by load_args().
 base_dir:      "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/dr5_reruns2_from_coadded"
-lmfit_subdir:  &lmfit_subdir  "third_pdc"             # stage 2 writes, stage 4 reads
-mcmc_subdir:   &mcmc_subdir   "mcmc_out2"            # stage 4 writes (nested under lmfit_subdir)
+lmfit_subdir:  &lmfit_subdir  "fixed_rvs"             # stage 2 writes, stage 4 reads
+mcmc_subdir:   &mcmc_subdir   "mcmc_out"             # stage 4 writes (nested under lmfit_subdir)
 
 pipeline_io:
   object_list: ['3-042']          # empty list = process all stars
   mass_file: "/Users/roeyovadia/Documents/Data/BLOeM_Data/mass_bloem.csv"            # path to mass_bloem.csv, empty = skip
   use_fwhm: true
+  # Per-epoch RV zero-point-corrected columns, written by
+  # spectroscopy/apply_rv_corrections.py (run_star.sh runs it after CCF pass 2).
+  # Set both to "Mean RV" / "Mean RVsig" to fit the uncorrected RVs.
+  rv_col:    "fixed Mean RV"       # default when absent: "Mean RV"
+  rverr_col: "fixed Mean RVsig"    # default when absent: "Mean RVsig"
 
 # ---- Periodogram settings ----
 periodogram_params:
@@ -39,6 +44,12 @@ periodogram_params:
   window_iterations: 10000
   run_permutations_ls: true
   run_permutations_pdc: true
+  # As in params_dr5_fifth_fixed_rvs.yaml (the paper's Stage-2 run):
+  include_harmonics: false         # default when absent: true (adds P/2, 2P candidates)
+  pdc_perm_mode: "batched"         # default when absent: "production"; identical
+                                   # iter_fap, ~100x faster PDC permutations
+  fwhm_window_factor: 1.5          # default when absent: unbounded; caps the fit
+                                   # window at [P/1.5, 1.5P] (cf. BLOeM_2-035)
 
 # ---- Simulated data parameters ----
 simulated_params:
@@ -73,6 +84,8 @@ lmfit_params:
     - differential_evolution
     - brute
   minimization_method: "differential_evolution"
+  de_seed: 562                     # default when absent: unseeded (fits not reproducible)
+  fit_circular_comparison: true    # default when absent: false (adds circ_* columns)
   search_region:
     Period:       {init_value: 29.7949, min_value: 1.0,    max_value: 45.0,    vary: false}
     GAMMA:        {init_value: 150.0,   min_value: -300.0, max_value: 300.0,   vary: true}
@@ -91,6 +104,11 @@ mcmc_params:
   steps: 2000
   thin: 5
   walkers: 32
+  dP_frac: 0.01                    # period prior: uniform box +-1% ...
+  sigma_P_frac: 0.002              # ... and a 0.2% Gaussian (code defaults)
+  lucy_sweeney_threshold: 2.49     # e_mode / sigma_minus (code default)
+  prune_stuck_walkers: true        # default when absent: false; drops stuck walkers
+                                   # from the summaries (raw chains are kept)
 
   # Best-row selection for MCMC input
   filter_expression: >-

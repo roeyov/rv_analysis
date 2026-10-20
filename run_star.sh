@@ -1,15 +1,30 @@
 #!/bin/bash
-# Run the full CCF + pipeline workflow for a single star.
+# Run the full CCF + pipeline workflow for a single star:
+#   CCF pass 1 -> CCF pass 2 -> per-epoch RV zero-point corrections
+#   -> period search + orbital fit -> best solution -> MCMC
 #
 # Usage:
 #   ./run_star.sh 4-043              # HeII + all HeI lines
 #   ./run_star.sh 4-043 --nebular    # HeII only
+#
+# The RV corrections table (config,MJD,rv_correction,Error) defaults to
+# $SCRIPTS_OUT/CCF/dr5_neb_div_from_coadded/RVcorrectionsDR5.csv; override with
+#   RV_CORRECTIONS=/path/to/RVcorrectionsDR5.csv ./run_star.sh 4-043
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"   # the python -m calls below need the repo root as cwd
 CCF_FIRST="$SCRIPT_DIR/spectroscopy/ccf_input_first.yaml"
 CCF_SECOND="$SCRIPT_DIR/spectroscopy/ccf_input_second.yaml"
 PARAMS="$SCRIPT_DIR/configs/params.yaml"
+SCRIPTS_OUT="${SCRIPTS_OUT:-/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut}"
+RV_CORRECTIONS="${RV_CORRECTIONS:-$SCRIPTS_OUT/CCF/dr5_neb_div_from_coadded/RVcorrectionsDR5.csv}"
+
+if [ ! -f "$RV_CORRECTIONS" ]; then
+    echo "RV corrections file not found: $RV_CORRECTIONS"
+    echo "  set RV_CORRECTIONS=/path/to/RVcorrectionsDR5.csv"
+    exit 1
+fi
 
 # --- Parse arguments ---
 if [ $# -lt 1 ]; then
@@ -104,6 +119,28 @@ python -m spectroscopy.ccf_main --input_file "$CCF_FIRST"
 echo ""
 echo ">>> Running CCF second pass..."
 python -m spectroscopy.ccf_main --input_file "$CCF_SECOND"
+
+# --- Apply per-field, per-epoch RV zero-point corrections ---
+# Adds 'fixed Mean RV' / 'fixed Mean RVsig' to this star's pass-2
+# *_CCF_RVs.csv; pipeline_io.rv_col / rverr_col in params.yaml select them for
+# the fit and the MCMC. The fit reads its RVs from base_dir, so that must be
+# the pass-2 output directory.
+RV_DIR=$(python -c "
+import os, sys, yaml
+sys.path.insert(0, '$SCRIPT_DIR')
+from pipeline.config import load_args
+rv_dir = load_args('$PARAMS')['pipeline_io']['rv_input_dir']
+with open('$CCF_SECOND') as f:
+    ccf_out = yaml.safe_load(f)['path_to_output']
+if os.path.realpath(rv_dir) != os.path.realpath(ccf_out):
+    sys.exit(f'params.yaml base_dir ({rv_dir}) is not the CCF pass-2 '
+             f'path_to_output ({ccf_out})')
+print(rv_dir)
+")
+echo ""
+echo ">>> Applying RV zero-point corrections ($RV_CORRECTIONS)..."
+python -m spectroscopy.apply_rv_corrections \
+    --corrections "$RV_CORRECTIONS" --input-dir "$RV_DIR" --stars "BLOeM_${STAR}"
 
 # --- Update configs/params.yaml ---
 sed -i '' "s/object_list: \[.*\]/object_list: ['${STAR}']/" "$PARAMS"

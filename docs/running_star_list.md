@@ -1,7 +1,8 @@
 # Running the single-star chain (`run_star.sh`) on a list of stars
 
-This covers the **SB1 chain only**: iterative CCF RV extraction → period search
-+ orbital fitting → best-solution selection → MCMC on the best solution.
+This covers the **SB1 chain only**: iterative CCF RV extraction → per-epoch RV
+zero-point correction → period search + orbital fitting → best-solution
+selection → MCMC on the best solution.
 SB2 systems use `sb2_pipeline/` instead. Bias grids and simulations are not
 covered here.
 
@@ -13,12 +14,21 @@ covered here.
 |---|---|---|---|
 | 1. CCF pass 1 | `python -m spectroscopy.ccf_main --input_file spectroscopy/ccf_input_first.yaml` | FITS spectra, per-star model templates (`template_path`), v sin i table | `<pass1_out>/BLOeM_<ID>_CCF_RVs.csv`, `_CoAdded.csv` |
 | 2. CCF pass 2 | same, with `ccf_input_second.yaml` | FITS spectra, **pass-1 co-added spectrum as template** | `<pass2_out>/BLOeM_<ID>_CCF_RVs.csv`, `_CoAdded.csv` |
-| 3. Fit | `python -m pipeline.evaluator` (`configs/params.yaml`) | pass-2 `_CCF_RVs.csv`, mass table | `<base_dir>/<lmfit_subdir>/BLOeM_<ID>/lmfit_summary.csv` + plots |
-| 4. Best solution | inline Python | `lmfit_summary.csv`, `mcmc_params.filter_expression` | prints the row, opens its phase plot |
-| 5. MCMC | inline Python (`mcmc.batch.run_mcmc_single_star`) | best row (or the null-model row if no row passes the filter) | `<base_dir>/<lmfit_subdir>/BLOeM_<ID>/mcmc/` |
+| 3. RV corrections | `python -m spectroscopy.apply_rv_corrections --stars BLOeM_<ID>` | pass-2 `_CCF_RVs.csv`, corrections table | adds `fixed Mean RV`, `fixed Mean RVsig` to the pass-2 `_CCF_RVs.csv` |
+| 4. Fit | `python -m pipeline.evaluator` (`configs/params.yaml`) | `fixed Mean RV(sig)` from the pass-2 `_CCF_RVs.csv`, mass table | `<base_dir>/<lmfit_subdir>/BLOeM_<ID>/lmfit_summary.csv` + plots |
+| 5. Best solution | inline Python | `lmfit_summary.csv`, `mcmc_params.filter_expression` | prints the row, opens its phase plot |
+| 6. MCMC | inline Python (`mcmc.batch.run_mcmc_single_star`) | best row (or the null-model row if no row passes the filter) | `<base_dir>/<lmfit_subdir>/BLOeM_<ID>/mcmc/` |
 
 It does this by editing the three YAMLs in place with `sed` (the star name, and
 the line list for `--nebular` / `--balmer` / `--he_1`), then calling the stages.
+
+Step 3 subtracts the per-field, per-epoch RV zero-point offset from each RV,
+`fixed Mean RV = Mean RV − rv_correction`, and adds the correction error in
+quadrature, `fixed Mean RVsig = sqrt(Mean RVsig² + Error²)`. Corrections are
+matched to epochs by nearest MJD within 0.005 d. `pipeline_io.rv_col` /
+`rverr_col` in `params.yaml` make the fit and the MCMC use these columns.
+`params.yaml` also uses the same fit settings as the paper's Stage-2 run
+(`configs/params_dr5_fifth_fixed_rvs.yaml`).
 
 **There is no batch wrapper for `run_star.sh`.** You don't need one, because
 every stage already accepts a list. There are two ways to run a list:
@@ -43,8 +53,9 @@ pip install kaleido streamlit     # not in requirements.txt: kaleido = PNG expor
 ```
 
 `constraints.txt` pins the versions the pipeline was validated with (numpy < 2).
-Run everything from the `Scripts/` directory with `tau_binary` active.
-`run_star.sh` calls whatever `python` is on your `PATH`.
+Run everything from the `Scripts/` directory with `tau_binary` active
+(`run_star.sh` changes into `Scripts/` itself). `run_star.sh` calls whatever
+`python` is on your `PATH`.
 
 ### PDC module (currently missing from the repo)
 
@@ -68,6 +79,7 @@ Ask Roey where to get these:
 | Per-star model templates | `template_path` (`ccf_input_first.yaml` only) | one file per star, filename containing `BLOeM_<ID>` |
 | v sin i table | `path_to_meta_data_csv` (`ccf_input_first.yaml` only) | columns `ID, vsini, evsini`; used to broaden the templates |
 | Mass table | `pipeline_io.mass_file` (`params.yaml`) | needed for the Roche-lobe flag `mass_flag_peri` that the default best-solution filter uses |
+| RV zero-point corrections (`RVcorrectionsDR5.csv`) | `RV_CORRECTIONS` env var for `run_star.sh`; `--corrections` for `apply_rv_corrections` | columns `config, MJD, rv_correction, Error`, with `config = F<field>_E<epoch>`. `run_star.sh` defaults to `$SCRIPTS_OUT/CCF/dr5_neb_div_from_coadded/RVcorrectionsDR5.csv` |
 
 ### Paths you must edit
 
@@ -143,6 +155,22 @@ Always pass `--input_file`. Without it, `ccf_main` looks for `./ccf_input.yaml`.
 If you see `No template found for BLOeM_X-YYY. using first MJD sample as template`,
 the template file is missing or its name doesn't contain the star ID.
 
+### A1b. RV zero-point corrections over the whole pass-2 directory
+
+```bash
+python -m spectroscopy.apply_rv_corrections \
+    --corrections /abs/path/to/RVcorrectionsDR5.csv --input-dir <OUT>/pass2/ --dry-run
+python -m spectroscopy.apply_rv_corrections \
+    --corrections /abs/path/to/RVcorrectionsDR5.csv --input-dir <OUT>/pass2/
+```
+
+Without `--stars`, it processes every `*_CCF_RVs.csv` in the directory. It
+checks every file before writing any, so if one file fails (e.g. an epoch with
+no correction within 0.005 d), nothing is written. Rerunning it just rewrites
+the `fixed` columns from `Mean RV`, so it is safe to repeat. Run it again
+whenever pass 2 is rerun, because pass 2 rewrites the CSVs without the `fixed`
+columns.
+
 ### A2. Period search + orbital fitting
 
 In `configs/params.yaml`:
@@ -191,8 +219,10 @@ caffeinate -i nohup python -m mcmc.batch --config configs/params.yaml > mcmc.log
 For each star, it picks the best row with the same filter and runs the
 eccentric MCMC, plus a circular MCMC when the Lucy–Sweeney test finds the
 eccentricity not significant. If no row passes the filter, it runs the null
-(constant RV + jitter) model instead. Expect roughly 5–15 min per star with the
-default 32 walkers × 2000 steps.
+(constant RV + jitter) model instead. It is fast: with the default 32 walkers ×
+2000 steps, 30 B dwarfs (13 orbits, 17 null models) took 68 s in total
+(Oct 2026). 2000 steps can be short for long periods, though: check the
+autocorrelation time `tau` stored in `chains_ecc.npz` (aim for nsteps ≳ 50 τ).
 
 Differences from `run_star.sh` to be aware of:
 - **Output location**: `<base_dir>/<lmfit_subdir>/<mcmc_subdir>/BLOeM_<ID>/`, plus a
@@ -220,6 +250,10 @@ done < /abs/path/to/my_stars.txt
 ```
 
 To use a line flag, append it to every call (e.g. `./run_star.sh "$id" --nebular`).
+If the corrections table is not at the default location, run
+`export RV_CORRECTIONS=/abs/path/to/RVcorrectionsDR5.csv` before the loop.
+`run_star.sh` checks that `params.yaml`'s `base_dir` equals the pass-2
+`path_to_output` and stops if it doesn't.
 
 Caveats:
 - **`path_to_list_of_objects` must be `""` in both CCF YAMLs.** It takes
@@ -230,8 +264,8 @@ Caveats:
 - **macOS only as written**: it uses BSD `sed -i ''`. On Linux, change these to `sed -i`.
 - **It edits the YAMLs in place**. After the loop they point at the last star
   and the last line set. Check `git diff spectroscopy/ configs/` before you commit.
-- **Skips**: if a star already has `lmfit_summary.csv` *and* a non-empty `mcmc/`,
-  the fit is skipped, but MCMC is still rerun. To redo a star from scratch,
+- **Skips**: if a star already has `lmfit_summary.csv`, the fit is skipped, but
+  CCF, the corrections and MCMC still rerun. To redo a star from scratch,
   delete `<base_dir>/<lmfit_subdir>/BLOeM_<ID>/`. `BLOeM_6-107` is skipped by the
   evaluator, so its MCMC step then fails (logged as `FAILED`).
 
@@ -260,6 +294,13 @@ diagnostic plots are in `<base_dir>/visuals/`.
   criteria, so the star is treated as having no orbital solution and gets the
   null-model MCMC.
 - **`ModuleNotFoundError: PDC.pdc_func`.** See *PDC module* above.
+- **`KeyError: ... missing columns ['fixed Mean RV', 'fixed Mean RVsig']`.** The
+  correction step didn't run on that file, or pass 2 was rerun afterwards. Run
+  `apply_rv_corrections` again (A1b).
+- **`apply_rv_corrections`: `rows beyond tolerance` / `no corrections for field N`.**
+  An epoch in the CSV has no entry in the corrections table. Don't raise
+  `--tolerance`: the closest epochs in field 8 are only 0.0185 d apart, so a
+  larger tolerance can match the wrong epoch. Check which table version you have.
 - **`lmfit_summary.csv not found` / `FileNotFoundError` on `_CCF_RVs.csv`.**
   `base_dir` doesn't match the pass-2 `path_to_output`, or pass 2 didn't run for
   that star.

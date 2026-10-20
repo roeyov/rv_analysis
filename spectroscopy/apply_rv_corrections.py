@@ -22,6 +22,11 @@ columns in place (idempotent).
 Usage:
     python -m spectroscopy.apply_rv_corrections \
         --corrections <dir>/RVcorrectionsDR5.csv --input-dir <dir> [--dry-run]
+
+    # only some stars (e.g. from run_star.sh); other files are not touched
+    python -m spectroscopy.apply_rv_corrections \
+        --corrections <dir>/RVcorrectionsDR5.csv --input-dir <dir> \
+        --stars BLOeM_4-043 BLOeM_8-031
 """
 
 import argparse
@@ -135,10 +140,24 @@ def main(argv=None):
                     help="max |MJD_csv - MJD_corr| in days (default: 5e-3)")
     ap.add_argument("--dry-run", action="store_true",
                     help="validate and report only; write nothing")
+    ap.add_argument("--stars", nargs="+", default=None,
+                    help="only these stars (BLOeM_4-043 or 4-043); "
+                         "default: every *_CCF_RVs.csv in --input-dir")
     args = ap.parse_args(argv)
 
     fields = load_corrections(args.corrections, args.tolerance)
-    files = sorted(glob.glob(os.path.join(args.input_dir, "*_CCF_RVs.csv")))
+    if args.stars:
+        files = []
+        for star in args.stars:
+            name = star if star.startswith("BLOeM_") else f"BLOeM_{star}"
+            path = os.path.join(args.input_dir, f"{name}_CCF_RVs.csv")
+            if not os.path.isfile(path):
+                raise SystemExit(f"{name}: no {os.path.basename(path)} in "
+                                 f"{args.input_dir}")
+            files.append(path)
+        files = sorted(set(files))
+    else:
+        files = sorted(glob.glob(os.path.join(args.input_dir, "*_CCF_RVs.csv")))
     if not files:
         raise SystemExit(f"no *_CCF_RVs.csv files in {args.input_dir}")
 
