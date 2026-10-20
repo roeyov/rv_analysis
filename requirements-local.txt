@@ -1,0 +1,10 @@
+# Packages for running the pipeline on a laptop. The Cloud Batch image
+# (Dockerfile) installs requirements.txt only and does not need these.
+#
+#   pip install -r requirements-local.txt -c constraints.txt
+#
+# Versions pinned from the working tau_binary env (2026-10).
+-r requirements.txt
+kaleido==1.1.0       # plotly PNG/PDF export (plot: true); needs Chrome: run `plotly_get_chrome` once
+streamlit==1.45.1    # Stage 3 selector app (mcmc/selector_app.py)
+openpyxl==3.1.5      # pandas.read_excel (Comprehensive catalogue)
