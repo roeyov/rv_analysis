@@ -1,0 +1,68 @@
+# CCF pass 1 for the B-dwarf SB1 batch (non-nebular, 30 slowest rotators).
+# Same settings as ccf_input_first.yaml except the line set, the star list and
+# the output directory. List made by spectroscopy/select_bdwarf_sample.py.
+#
+#   python -m spectroscopy.ccf_main --input_file spectroscopy/ccf_input_first_bdwarfs.yaml
+
+# Interpolation method used in processing
+intr_kind: cubic
+
+# Whether to plot the first result
+plot_first: false
+
+# Whether to plot all results
+plot_all: false
+
+# Fraction of the range to fit
+fit_range_fraction: 0.87
+
+# Oversampling factor for calculations
+OverSampleFac: 1
+
+# Whether to calculate speed separately
+seperate_speed: true
+
+# Ranges for cross-correlation in the spectrum (B dwarfs, B0-B2.5).
+# HeII 4200 is dropped (flat in the templates for B1 and later). The old
+# HeII_4542 window is kept as SiIII+HeII_4553: it holds Si III 4553 (and HeII
+# 4542 at B0-B0.5). Windows must end <= ~4563 A: ccf_core pads them by
+# x(1 + 1.1*450/c) and the LR02 data end at 4570.8 A.
+# Batch-1 line check (2026-10-20): O II 4415 and Si III 4553 are much shallower
+# in the co-added data than in the Crowther templates; Si III locked onto
+# spurious CCF peaks (scatter 4.0 km/s, slope 1.05 vs mean RV). Both dropped.
+cross_cor_ranges:
+  # "H_Gamma": (4325.0, 4355.0)
+  # "H_Delta": (4086.0, 4116.0)
+  "HeI+HeII_4026": (4006.0, 4046.0)
+  "HeI_4143": (4123.0, 4163.0)
+  "CII_4267": (4252.0, 4282.0)
+  "HeI_4388": (4368.0, 4408.0)
+  # "OII_4415": (4409.0, 4429.0)
+  "HeI_4471": (4451.0, 4491.0)
+  # "SiIII+HeII_4553": (4522.0, 4562.0)
+
+# Velocity range for the analysis
+velocity_range: [-450.0, 600.0]  # In km/s
+
+# Signal-to-noise ratio calculation range
+S2Nrange: [4445.0, 4460.0]  # In Angstroms
+
+# Path to observation data
+path_to_observations: "/Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR5.0_Combined/"
+
+# Path to the list of objects to process (takes precedence over list_of_objects)
+path_to_list_of_objects: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/bdwarfs_dr5/bdwarfs_sb1_slow30.txt"
+list_of_objects: []
+
+# Identifier string for files
+str_identifier: "Combined.fits"
+
+# Path to save the output files
+path_to_output: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/bdwarfs_dr5/pass1/"
+
+# Path to the template files for cross-correlation
+template_path: "/Users/roeyovadia/Documents/Data/BLOeM_Data/Crowther_templates/per_star_templates"
+
+# v sin i table used to broaden the templates
+path_to_meta_data_csv: "/Users/roeyovadia/Documents/master_table_vsini_v1.csv"
+columns_to_load: ["ID", "vsini", "evsini"]

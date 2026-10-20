@@ -1,0 +1,64 @@
+# CCF pass 2 for the B-dwarf SB1 batch: template = the pass-1 co-added spectrum.
+# Same settings as ccf_input_second.yaml except the line set, the star list
+# and the directories. Line set identical to ccf_input_first_bdwarfs.yaml.
+#
+#   python -m spectroscopy.ccf_main --input_file spectroscopy/ccf_input_second_bdwarfs.yaml
+
+# Interpolation method used in processing
+intr_kind: cubic
+
+# Whether to plot the first result
+plot_first: false
+
+# Whether to plot all results
+plot_all: false
+
+# Fraction of the range to fit
+fit_range_fraction: 0.87
+
+# Oversampling factor for calculations
+OverSampleFac: 1
+
+# Whether to calculate speed separately
+seperate_speed: true
+
+# Ranges for cross-correlation in the spectrum (see ccf_input_first_bdwarfs.yaml)
+# Batch-1 line check (2026-10-20): O II 4415 and Si III 4553 are much shallower
+# in the co-added data than in the Crowther templates; Si III locked onto
+# spurious CCF peaks (scatter 4.0 km/s, slope 1.05 vs mean RV). Both dropped.
+cross_cor_ranges:
+  # "H_Gamma": (4325.0, 4355.0)
+  # "H_Delta": (4086.0, 4116.0)
+  "HeI+HeII_4026": (4006.0, 4046.0)
+  "HeI_4143": (4123.0, 4163.0)
+  "CII_4267": (4252.0, 4282.0)
+  "HeI_4388": (4368.0, 4408.0)
+  # "OII_4415": (4409.0, 4429.0)
+  "HeI_4471": (4451.0, 4491.0)
+  # "SiIII+HeII_4553": (4522.0, 4562.0)
+
+# Velocity range for the analysis
+velocity_range: [-450.0, 600.0]  # In km/s
+
+# Signal-to-noise ratio calculation range
+S2Nrange: [4445.0, 4460.0]  # In Angstroms
+
+# Path to observation data
+path_to_observations: "/Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR5.0_Combined/"
+
+# Path to the list of objects to process (takes precedence over list_of_objects)
+path_to_list_of_objects: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/bdwarfs_dr5/bdwarfs_sb1_slow30.txt"
+list_of_objects: []
+
+# Identifier string for files
+str_identifier: "Combined.fits"
+
+# Path to save the output files (= base_dir of configs/params_bdwarfs.yaml)
+path_to_output: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/bdwarfs_dr5/pass2/"
+
+# Template = pass-1 output (co-added spectra)
+template_path: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/bdwarfs_dr5/pass1/"
+
+# No broadening: the co-added spectrum is the star's own
+path_to_meta_data_csv: ""
+columns_to_load: ["ID", "vsini", "evsini"]

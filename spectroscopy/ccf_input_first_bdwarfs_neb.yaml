@@ -1,0 +1,66 @@
+# CCF pass 1 for the NEBULAR B dwarfs (bdwarfs_sb1_neb.txt). Not run yet.
+# As ccf_input_first_bdwarfs.yaml, but without the lines most affected by
+# nebular emission in LR02: He I 4026, He I 4471 and Balmer.
+# Caveat: C II 4267 is also a (weak) nebular recombination line; check it on
+# the first run.
+#
+#   python -m spectroscopy.ccf_main --input_file spectroscopy/ccf_input_first_bdwarfs_neb.yaml
+
+# Interpolation method used in processing
+intr_kind: cubic
+
+# Whether to plot the first result
+plot_first: false
+
+# Whether to plot all results
+plot_all: false
+
+# Fraction of the range to fit
+fit_range_fraction: 0.87
+
+# Oversampling factor for calculations
+OverSampleFac: 1
+
+# Whether to calculate speed separately
+seperate_speed: true
+
+# Ranges for cross-correlation in the spectrum (nebular-safe B-dwarf set)
+# NOTE: in the non-nebular batch 1 (2026-10-20), O II 4415 and Si III 4553
+# were dropped (much shallower in the data than in the templates; Si III gave
+# spurious CCF peaks). Check both before the first nebular run.
+cross_cor_ranges:
+  # "H_Gamma": (4325.0, 4355.0)
+  # "H_Delta": (4086.0, 4116.0)
+  # "HeI+HeII_4026": (4006.0, 4046.0)
+  "HeI_4143": (4123.0, 4163.0)
+  "CII_4267": (4252.0, 4282.0)
+  "HeI_4388": (4368.0, 4408.0)
+  "OII_4415": (4409.0, 4429.0)
+  # "HeI_4471": (4451.0, 4491.0)
+  "SiIII+HeII_4553": (4522.0, 4562.0)
+
+# Velocity range for the analysis
+velocity_range: [-450.0, 600.0]  # In km/s
+
+# Signal-to-noise ratio calculation range
+S2Nrange: [4445.0, 4460.0]  # In Angstroms
+
+# Path to observation data
+path_to_observations: "/Users/roeyovadia/Documents/Data/BLOeM_Data/BLOeM_DR5.0_Combined/"
+
+# Path to the list of objects to process (takes precedence over list_of_objects)
+path_to_list_of_objects: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/bdwarfs_dr5/bdwarfs_sb1_neb.txt"
+list_of_objects: []
+
+# Identifier string for files
+str_identifier: "Combined.fits"
+
+# Path to save the output files
+path_to_output: "/Users/roeyovadia/Roey/Masters/Reasearch/scriptsOut/CCF/bdwarfs_dr5_neb/pass1/"
+
+# Path to the template files for cross-correlation
+template_path: "/Users/roeyovadia/Documents/Data/BLOeM_Data/Crowther_templates/per_star_templates"
+
+# v sin i table used to broaden the templates
+path_to_meta_data_csv: "/Users/roeyovadia/Documents/master_table_vsini_v1.csv"
+columns_to_load: ["ID", "vsini", "evsini"]
