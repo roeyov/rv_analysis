@@ -116,7 +116,7 @@ def _node_block(args):
 
 
 def _tensors(inj, base_tensors, pi_grid, kappa_grid, eta_grid, cut, q_min,
-             cut_groups):
+             cut_groups, lim_logp=None):
     """The alpha tensors for one data set.
 
     ``base_tensors`` (from ``alpha_tensors`` on the same grid and q_min) are
@@ -128,14 +128,16 @@ def _tensors(inj, base_tensors, pi_grid, kappa_grid, eta_grid, cut, q_min,
     if base_tensors is None:
         return inj.alpha_tensors(pi_grid, kappa_grid, eta_grid, cut,
                                  q_min=q_min,
-                                 groups=("den", "num_all") + tuple(cut_groups))
+                                 groups=("den", "num_all") + tuple(cut_groups),
+                                 lim_logp=lim_logp)
     T = dict(base_tensors)
     same_cut = ("_cut" in T and cut is not None
                 and abs(float(T["_cut"]) - float(cut)) < 1e-12)
     todo = tuple(g for g in cut_groups if not (same_cut and g in T))
     if todo:
         T.update(inj.alpha_tensors(pi_grid, kappa_grid, eta_grid, cut,
-                                   q_min=q_min, groups=todo))
+                                   q_min=q_min, groups=todo,
+                                   lim_logp=lim_logp))
     return T
 
 
@@ -266,8 +268,11 @@ def evaluate_grid_split(inj, obs, pi_grid, kappa_grid, eta_grid, q_min=None,
     (default: the module lattice)."""
     t0 = time.time()
     fg, fl, ft = split_f_lattice() if f_lattice is None else f_lattice
+    censor = getattr(obs, "censor_plim", False)
     T = _tensors(inj, base_tensors, pi_grid, kappa_grid, eta_grid, obs.cut,
-                 q_min, ("num_cut", "den_cut"))
+                 q_min, ("num_cut", "den_cut") + (("num_lim",) if censor
+                                                  else ()),
+                 lim_logp=(obs.lim_logp if censor else None))
     shape = shape_precompute(obs, inj, pi_grid, kappa_grid, eta_grid,
                              q_min=q_min, use_errors=use_errors)
     b = inj.bounds
@@ -399,8 +404,11 @@ def run(injset, obs_csv, out_dir, preset=None, f_grid=None, c_n=None,
         inj_cache=None, log=print, pi_grid=None, kappa_grid=None,
         eta_grid=None, base_tensors=None, c_grid=None, c2_zero=False,
         count=True, below_pcirc_ecc="raise", model="mix", split_f=None,
-        k1_floor=None, k1_unknown="raise", below_shape=None):
-    """``k1_floor`` (km/s) evaluates the amplitude-floor survey (see
+        k1_floor=None, k1_unknown="raise", below_shape=None,
+        censor_plim=False):
+    """``censor_plim`` (split model): the period-lower-limit stars enter
+    with P(det, P >= P_lim) instead of P(det, P >= P*) (TS5-015).
+    ``k1_floor`` (km/s) evaluates the amplitude-floor survey (see
     ``InjectionSet``); with ``inj_cache`` the cached set must have been
     built with the same floor. ``k1_unknown`` is passed to
     ``ObservedData``. ``below_shape`` ("k1" or "k1e", split model): the
@@ -426,7 +434,7 @@ def run(injset, obs_csv, out_dir, preset=None, f_grid=None, c_n=None,
     obs = ObservedData(table, inj.stars, cut, inj.p_circ, p_env,
                        inj.bounds["e_max"], below_pcirc_ecc=below_pcirc_ecc,
                        k1_floor=k1_floor, k1_unknown=k1_unknown,
-                       below_shape=below_shape)
+                       below_shape=below_shape, censor_plim=censor_plim)
     grids = make_grids(preset, pi_grid, kappa_grid, eta_grid, f_grid)
     c_grid_given = c_grid
     if c_grid is None:
@@ -455,6 +463,7 @@ def run(injset, obs_csv, out_dir, preset=None, f_grid=None, c_n=None,
                 "obs_csv": os.path.abspath(obs_csv), "model": "split",
                 "tag": TAG_SPLIT, "metric": METRIC, "q_min": q_min,
                 "k1_floor": k1_floor, "below_shape": below_shape,
+                "censor_plim": bool(censor_plim),
                 "below_pcirc_ecc": below_pcirc_ecc,
                 "c_grid": (list(map(float, c_split)) if c_split is not None
                            else list(SPLIT_C)),
@@ -566,6 +575,10 @@ def main(argv=None):
                          "amplitude density (k1) or amplitude and "
                          "eccentricity densities (k1e) instead of the plain "
                          "detection term; their period density is not used")
+    ap.add_argument("--censor-plim", action="store_true",
+                    help="split model: the period-lower-limit stars enter "
+                         "with the probability of a detection at P >= "
+                         "their limit (censored), not just above P*")
     ap.add_argument("--below-pcirc-as-circular", action="store_true",
                     help="treat orbits with a significant e below p_circ as "
                          "circular (the model forces e = 0 there)")
@@ -588,7 +601,7 @@ def main(argv=None):
         split_f=a.split_f,
         k1_floor=a.k1_floor,
         k1_unknown=("above_floor" if a.k1_unknown_above_floor else "raise"),
-        below_shape=a.below_shape,
+        below_shape=a.below_shape, censor_plim=a.censor_plim,
         below_pcirc_ecc=("as_circular" if a.below_pcirc_as_circular
                          else "raise"))
     return 0

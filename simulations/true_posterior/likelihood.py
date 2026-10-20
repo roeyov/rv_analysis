@@ -290,7 +290,7 @@ class InjectionSet:
     # -- grid tensors --------------------------------------------------------
     def alpha_tensors(self, pi_grid, kappa_grid, eta_grid, cut, q_min=None,
                       progress=None, groups=("den", "num_all", "num_cut"),
-                      logp_range=None):
+                      logp_range=None, lim_logp=None):
         """Per-star weight sums on a (pi, kappa, eta) grid, by tensor
         contraction (a few BLAS calls per star instead of a node loop).
 
@@ -305,7 +305,14 @@ class InjectionSet:
         disjoint ranges, which is what a model whose q law differs between
         period ranges needs (``two_kappa``): one tensor set per range, each
         on its own kappa grid.
+
+        Group ``num_lim`` (censored period lower limits) sums the detected
+        injections with logP >= lim_logp[s], a per-star limit (array of
+        n_stars, NaN where a star has none; those stars fall back on the
+        cut, so for them num_lim equals num_cut).
         """
+        if "num_lim" in groups and lim_logp is None:
+            raise ValueError("group num_lim needs lim_logp")
         pis = np.asarray(pi_grid, dtype=float)
         kas = np.asarray(kappa_grid, dtype=float)
         ets = np.asarray(eta_grid, dtype=float)
@@ -351,6 +358,10 @@ class InjectionSet:
             masks = {"den": None, "num_all": det,
                      "den_cut": above,
                      "num_cut": (det & above) if above is not None else None}
+            if "num_lim" in groups:
+                lim = float(lim_logp[s])
+                lim = cut if not np.isfinite(lim) else max(lim, cut)
+                masks["num_lim"] = det & (self.logP[sl] >= lim)
             for g in groups:
                 m = masks[g]
                 Am = A if m is None else A * m
@@ -385,7 +396,7 @@ class ObservedData:
 
     def __init__(self, table, inj_stars, cut, p_circ, p_env, e_max,
                  below_pcirc_ecc="raise", k1_floor=None, k1_unknown="raise",
-                 below_shape=None):
+                 below_shape=None, censor_plim=False):
         """``k1_floor``: amplitude floor of the survey (see
         ``InjectionSet``). ``k1_unknown`` says what to do, under a floor,
         with detected stars that have no K1: ``"raise"`` or
@@ -457,6 +468,24 @@ class ObservedData:
         cat[do & ~np.isin(rs, ["below_cut", "P_lower_limit"])] = CAT_DOANY
         self.cat = cat
         self.cut = float(cut)
+        # censor_plim: a period-lower-limit star (CAT_DOA) contributes
+        # f_gt P(det, logP >= log P_lim) instead of f_gt P(det, logP >= cut),
+        # so its limit informs pi (TS5-015). lim_logp is NaN elsewhere.
+        self.censor_plim = bool(censor_plim)
+        self.lim_logp = np.full(len(tab), np.nan)
+        if self.censor_plim:
+            if "P_lower_limit" not in tab.columns:
+                raise ValueError("censor_plim needs a P_lower_limit column")
+            m = cat == CAT_DOA
+            plim = np.asarray(tab["P_lower_limit"], dtype=float)[m]
+            if not np.all(np.isfinite(plim) & (plim > 0)):
+                raise ValueError("censor_plim: missing P_lower_limit for %s"
+                                 % list(tab.loc[m, "star_id"]))
+            lim = np.log10(plim)
+            if np.any(lim < self.cut - 1e-12):
+                raise ValueError("censor_plim: a period lower limit lies "
+                                 "below the cut")
+            self.lim_logp[m] = lim
         dx = tab[tab["outcome"] == "DX"]
         if (dx["logP"] < cut - 1e-12).any():
             raise ValueError("DX rows below the cut")
@@ -800,6 +829,8 @@ def node_loglike(T, shape, obs, beta, i, k, l, f_grid, c_grid,
 #             (with below_shape: f_lt p_s(e, u | theta, c) for the rows that
 #              have a K1; no period density, P_det(x) cancels)
 #   DO above  f_gt a_gt                              (P lower limits)
+#             (with censor_plim: f_gt P(det, logP >= log P_lim)/F_gt, so
+#              the limit itself informs pi)
 #   DO any    f_gt a_gt + f_lt a_lt + (1 - f_gt - f_lt) beta
 # where a_gt = P(det, logP >= cut)/F_gt and a_lt = P(det, logP < cut)/F_lt
 # are the within-component detection probabilities of star s. The prior on
@@ -883,8 +914,14 @@ def node_table_split(T, shape, obs, beta, i, k, l, fg, fl, c1, c2, F_gt):
                     + np.log(a_lt[..., m]).sum(axis=-1)[None, None])
         m = cat == CAT_DOA
         if m.any():
+            a_doa = a_gt
+            if getattr(obs, "censor_plim", False):
+                # censored limit: P(det, logP >= log P_lim) within the
+                # component above the cut (same normalisation as a_gt)
+                Nl = _lin(T["num_lim"], None, i, k, l, c1, c2)
+                a_doa = np.where(Dg > 0, Nl / np.where(Dg > 0, Dg, 1.0), 0.0)
             tot += (m.sum() * np.log(fg)[:, None, None, None]
-                    + np.log(a_gt[..., m]).sum(axis=-1)[None, None])
+                    + np.log(a_doa[..., m]).sum(axis=-1)[None, None])
         n_dx = obs.dx_pos.size
         if n_dx:
             tot += (n_dx * (np.log(fg)[:, None, None, None] - np.log(F_gt))
